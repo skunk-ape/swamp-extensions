@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: '@skunk-ape/stef'
-version: 2026.08.14.1
+version: 2026.08.14.2
 description: |
   Simple Technical English Flavored — a deterministic prose linter plus a
   bounded LLM rewrite loop.
@@ -15,8 +15,12 @@ description: |
 
   - `lint` — run the eleven checks and emit `kind: findings`. Deterministic,
     no model call, no API key.
-  - `rewrite` — rewrite the draft, re-linting after each attempt and binding the
-    findings into the next prompt. Stops clean or at `maxAttempts`.
+  - `rewrite` — tool-call mode: run the whole loop in one command by spawning
+    `claude -p`. Runs on whatever credential Claude Code already holds, so no
+    API key is stored in a vault.
+  - `start` / `record` — referee mode: hold state and enforce the attempt cap
+    while a driving agent does the writing. Executes nothing, needs no
+    credential. The bundled `simple-english` skill drives this loop.
 
   ## Checks
 
@@ -42,7 +46,7 @@ description: |
   ## Prerequisites
 
   - swamp initialized in the repository (`swamp repo init`)
-  - An Anthropic API key in a vault, for `rewrite` only
+  - Claude Code on PATH, for `rewrite` only (referee mode needs nothing)
 repository: 'https://github.com/skunk-ape/swamp-extensions'
 models:
   - stef.ts
@@ -51,7 +55,8 @@ vaults: []
 drivers: []
 datastores: []
 reports: []
-skills: []
+skills:
+  - simple-english
 additionalFiles:
   - LICENSE
 labels:

@@ -3,9 +3,9 @@
 // A deterministic Simple English linter, plus two ways to drive a rewrite loop
 // against it. The linter is always the oracle; only the writer changes.
 //
-//   tool-call mode  `rewrite` runs the whole loop inside one method, reaching a
-//                   model through `claude -p` or the Messages API. One command,
-//                   and the model owns the binary or credential dependency.
+//   tool-call mode  `rewrite` runs the whole loop inside one method by spawning
+//                   `claude -p`. One command, and it runs on whatever credential
+//                   Claude Code already holds — no vault entry needed.
 //
 //   referee mode    `start` and `record` hold state and enforce the gates while
 //                   the calling agent does the writing. No credential at all —
@@ -18,7 +18,7 @@
 
 import { z } from "npm:zod@4";
 import { CHECKS, type Check, type Finding, lint, LIMITS } from "./_lib/lint.ts";
-import { type Driver, generate } from "./_lib/generate.ts";
+import { generate } from "./_lib/generate.ts";
 
 const SeveritySchema = z.enum(["critical", "high", "medium", "low"]);
 type Severity = z.infer<typeof SeveritySchema>;
@@ -77,17 +77,11 @@ const GlobalArgsSchema = z.object({
   ).default([]),
 
   // --- tool-call mode only -------------------------------------------------
-  /** How `rewrite` reaches a model. Referee mode ignores this. */
-  driver: z.enum(["claude-code", "api"]).default("claude-code"),
   model: z.string().default("claude-opus-5"),
   /** Path or command name for the Claude Code binary. */
   claudePath: z.string().default("claude"),
   /** Hard ceiling for a single generation. */
   wallTimeoutMs: z.number().int().positive().default(300_000),
-  /** API key for the `api` driver. Point at a vault expression, never a literal. */
-  apiKey: z.string().default("").meta({ sensitive: true }),
-  /** OAuth bearer token for the `api` driver. Takes precedence over apiKey. */
-  authToken: z.string().default("").meta({ sensitive: true }),
 });
 type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
@@ -102,7 +96,6 @@ const FindingsSchema = z.object({
 
 const RewriteSchema = z.object({
   source: z.string(),
-  driver: z.string(),
   attempts: z.number(),
   clean: z.boolean(),
   text: z.string(),
@@ -336,13 +329,12 @@ export const model = {
     // --- tool-call mode ----------------------------------------------------
     rewrite: {
       description:
-        "Tool-call mode: rewrite a draft and re-lint after each attempt, feeding findings back into the next prompt. Runs the whole loop in one command via the configured driver.",
+        "Tool-call mode: rewrite a draft and re-lint after each attempt, feeding findings back into the next prompt. Runs the whole loop in one command by spawning `claude -p`.",
       arguments: InputSchema.extend({
         maxAttempts: z.number().int().min(1).max(10).optional(),
-        driver: z.enum(["claude-code", "api"]).optional(),
       }),
       execute: async (
-        args: Input & { maxAttempts?: number; driver?: Driver },
+        args: Input & { maxAttempts?: number },
         ctx: {
           globalArgs: GlobalArgs;
           signal: AbortSignal;
@@ -353,7 +345,6 @@ export const model = {
         const { text: original, source } = await readSource(args);
         const g = ctx.globalArgs;
         const cap = args.maxAttempts ?? g.maxAttempts;
-        const driver = args.driver ?? g.driver;
         const system = buildSystemPrompt(g);
 
         let current = original;
@@ -363,17 +354,14 @@ export const model = {
         while (state.blockingCount > 0 && attempts < cap) {
           attempts++;
           ctx.logger.info(
-            "Simple English attempt {attempt}/{cap} via {driver}: {blocking} blocking finding(s)",
-            { attempt: attempts, cap, driver, blocking: state.blockingCount },
+            "Simple English attempt {attempt}/{cap}: {blocking} blocking finding(s)",
+            { attempt: attempts, cap, blocking: state.blockingCount },
           );
 
           current = await generate({
-            driver,
-            model: g.model,
             claudePath: g.claudePath,
+            model: g.model,
             wallTimeoutMs: g.wallTimeoutMs,
-            apiKey: g.apiKey,
-            authToken: g.authToken,
             system,
             prompt: buildPrompt(current, state.findings, attempts),
             signal: ctx.signal,
@@ -383,7 +371,6 @@ export const model = {
 
         const handle = await ctx.writeResource("rewrite", "rewrite-latest", {
           source,
-          driver,
           attempts,
           clean: state.blockingCount === 0,
           text: current,
