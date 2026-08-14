@@ -84,6 +84,29 @@ still fails. Do not keep trying. By design, `record` refuses on a clean or
 exhausted session. That refusal is the gate working, not an error to route
 around.
 
+## Delegate the rewrite
+
+Step 3 does not have to run in your own context. Spawn a subagent to do the
+rewrite and hand back only the result. Delegate in these cases:
+
+- The draft is long enough that holding it and its findings crowds your context.
+- You want to pin a model for the rewrite that differs from your own.
+- You have several drafts open and want them rewritten at the same time.
+
+For a short snippet, rewrite it yourself. A subagent costs a start-up round trip
+that a two-sentence fix does not repay.
+
+Give the subagent three things: the draft, the findings, and the rules from the
+two sections below. Tell it to return only the rewritten text. Then call
+`record` yourself. The gate belongs to you, not to the subagent. A subagent that
+records its own work can walk past a refusal you needed to read.
+
+**On model choice**. The linter is the oracle, so a weaker writer costs you
+attempts, not correctness. That makes a cheaper model worth trying. One measured
+run is a warning, though. On a 44-line file, Claude Sonnet 5 took longer per
+attempt than Claude Opus 5 and it fixed less. It never found that `**Term**.`
+beats `**Term.**`. Measure before you settle on a model.
+
 ## What the linter checks
 
 Do not spend reasoning on these. Run the tool.
