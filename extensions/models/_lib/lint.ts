@@ -15,7 +15,7 @@ export type TextType = keyof typeof LIMITS;
 export const DEFAULT_TYPE: TextType = "descriptive";
 
 /** A leading definition term keeps its emphasis up to this many words. */
-const EMPHASIS_MAX_WORDS = 5;
+export const EMPHASIS_MAX_WORDS = 5;
 
 /** Longest sentence preview echoed back in a finding. */
 const PREVIEW_CHARS = 60;
@@ -42,13 +42,13 @@ const BLOCKQUOTE = /^\s*>/;
 const TABLE_ROW = /^\s*\|/;
 const SHELL_PROMPT = /^\s*\$\s/;
 const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
-const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
+export const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const INLINE_CODE = /`[^`\n]+`/g;
 const URL = /https?:\/\/\S+/g;
 
 // --- Check patterns ---------------------------------------------------------
 
-const CONTRACTION =
+export const CONTRACTION =
   /\b\w+(?:n['’]t|['’]ll|['’]re|['’]ve|['’]d)\b|\bit['’]s\b|\byou['’]re\b/gi;
 const BANNED_MODAL = /\b(?:should|would|may|might|could)\b/gi;
 const PERFECT = /\b(?:has|have|had)\s+been\b|\b(?:has|have)\s+\w+ed\b/gi;
@@ -59,10 +59,11 @@ const SLOP =
   /\b(?:simply|seamlessly|effortlessly|robust|leverag\w*|utiliz\w*|comprehensive|powerful|blazingly|streamlin\w*|facilitat\w*|performant|plethora|myriad|delve|crucial|pivotal)\b/gi;
 const TRAILING_COND = /\w[^.!?\n]{3,}\s(?:if|when)\b\s/i;
 const STARTS_CONDITION = /^(?:if|when)\b/i;
-const BOLD = /\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)/g;
-const ITALIC =
+export const BOLD =
+  /\*\*(?=\S)(.+?)(?<=\S)\*\*|(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)/g;
+export const ITALIC =
   /(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])|(?<![\w_])_(?=[^\s_])(.+?)(?<=[^\s_])_(?![\w_])/g;
-const SENTENCE_FINAL = /[.!?]/;
+export const SENTENCE_FINAL = /[.!?]/;
 
 /** The eleven check names, in the order the linter reports them. */
 export const CHECKS = [
@@ -285,13 +286,22 @@ export function findSlopWords(text: string): Finding[] {
   );
 }
 
-export function findLatinAbbrevs(text: string): Finding[] {
-  const findings: Finding[] = [];
-  for (const [abbrev, plain] of LATIN_ABBREVS) {
-    const pattern = new RegExp(
+/** The exact matchers findLatinAbbrevs uses, so a fixer cannot drift from it. */
+export function latinPatterns(): Array<[RegExp, string]> {
+  return LATIN_ABBREVS.map((
+    [abbrev, plain],
+  ) => [
+    new RegExp(
       `\\b${escapeRegExp(abbrev.replace(/\.+$/, ""))}\\.?(?=[\\s,.;:)]|$)`,
       "gi",
-    );
+    ),
+    plain,
+  ]);
+}
+
+export function findLatinAbbrevs(text: string): Finding[] {
+  const findings: Finding[] = [];
+  for (const [pattern, plain] of latinPatterns()) {
     for (const match of text.matchAll(pattern)) {
       const found = words(match[0]).join(" ");
       findings.push({

@@ -17,8 +17,9 @@
 // reviewer merge behind one gate.
 
 import { z } from "npm:zod@4";
-import { CHECKS, type Check, type Finding, lint, LIMITS } from "./_lib/lint.ts";
+import { type Check, CHECKS, type Finding, LIMITS, lint } from "./_lib/lint.ts";
 import { generate } from "./_lib/generate.ts";
+import { type Fix, normalize } from "./_lib/normalize.ts";
 
 const SeveritySchema = z.enum(["critical", "high", "medium", "low"]);
 type Severity = z.infer<typeof SeveritySchema>;
@@ -40,7 +41,8 @@ const DEFAULT_SEVERITIES = Object.fromEntries(
 ) as Record<Check, Severity>;
 
 /** The reason-checked half: what the linter cannot decide. */
-const DEFAULT_GUIDANCE = `- Active voice. Name the actor. Write "the worker retries the job", not "the job is retried".
+const DEFAULT_GUIDANCE =
+  `- Active voice. Name the actor. Write "the worker retries the job", not "the job is retried".
 - Verbs, not noun forms. Write "compress the file", not "perform compression of the file".
 - One word, one meaning. Pick one of delete/remove/drop and hold it across the document.
 - One topic per paragraph, about six sentences at most, one new fact per sentence.
@@ -60,11 +62,18 @@ const GlobalArgsSchema = z.object({
   /** Override the sentence word limit from textType. */
   maxWords: z.number().int().positive().optional(),
   /** Per-check severity. Anything in `blocking` must be fixed. */
-  severities: z.record(z.enum(CHECKS), SeveritySchema).default(DEFAULT_SEVERITIES),
+  severities: z.record(z.enum(CHECKS), SeveritySchema).default(
+    DEFAULT_SEVERITIES,
+  ),
   /** Severities that block. */
   blocking: z.array(SeveritySchema).min(1).default(["critical", "high"]),
   /** Rework attempts before the loop gives up and returns its best effort. */
   maxAttempts: z.number().int().min(1).max(10).default(3),
+  /**
+   * Apply mechanical fixes before `rewrite` and `start` do anything else.
+   * On this repository's CLAUDE.md that clears 21 of 35 findings for free.
+   */
+  normalizeFirst: z.boolean().default(true),
   /** Reason-checked guidance appended to the rewrite system prompt. */
   guidance: z.string().default(DEFAULT_GUIDANCE),
   /** Anti-patterns as wrong/right pairs, steering the model off known habits. */
@@ -103,6 +112,18 @@ const RewriteSchema = z.object({
   findings: z.array(FindingSchema),
 });
 
+const FixSchema = z.object({ check: z.string(), detail: z.string() });
+
+const NormalizedSchema = z.object({
+  source: z.string(),
+  fixCount: z.number(),
+  clean: z.boolean(),
+  blockingCount: z.number(),
+  text: z.string(),
+  fixes: z.array(FixSchema),
+  findings: z.array(FindingSchema),
+});
+
 /** Referee-mode state. The driver reads this to learn what to do next. */
 const SessionSchema = z.object({
   session: z.string(),
@@ -124,7 +145,10 @@ type Session = z.infer<typeof SessionSchema>;
 // Linting glue
 // ---------------------------------------------------------------------------
 
-function toContract(f: Finding, severities: Record<Check, Severity>): ContractFinding {
+function toContract(
+  f: Finding,
+  severities: Record<Check, Severity>,
+): ContractFinding {
   return {
     id: `STE-${f.check}-L${f.line}`,
     severity: severities[f.check] ?? "high",
@@ -133,9 +157,13 @@ function toContract(f: Finding, severities: Record<Check, Severity>): ContractFi
   };
 }
 
-function countBlocking(findings: ContractFinding[], blocking: Severity[]): number {
+function countBlocking(
+  findings: ContractFinding[],
+  blocking: Severity[],
+): number {
   const set = new Set<string>(blocking);
-  return findings.filter((f) => f.resolved !== true && set.has(f.severity)).length;
+  return findings.filter((f) => f.resolved !== true && set.has(f.severity))
+    .length;
 }
 
 interface LintResult {
@@ -160,12 +188,18 @@ function runLint(
     id: "STE-0",
     severity: "low",
     category: "recon",
-    description: `Ran ${CHECKS.length} Simple English checks as ${textType} text ` +
+    description:
+      `Ran ${CHECKS.length} Simple English checks as ${textType} text ` +
       `(sentence limit ${limit} words); ${raw.length} finding(s).`,
     resolved: true,
   });
 
-  return { findings, blockingCount: countBlocking(findings, g.blocking), limit, textType };
+  return {
+    findings,
+    blockingCount: countBlocking(findings, g.blocking),
+    limit,
+    textType,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +242,11 @@ function findingList(findings: ContractFinding[]): string {
     .join("\n");
 }
 
-function buildPrompt(text: string, findings: ContractFinding[], attempt: number): string {
+function buildPrompt(
+  text: string,
+  findings: ContractFinding[],
+  attempt: number,
+): string {
   if (attempt <= 1) {
     return `Rewrite the following draft into Simple English.\n\n---\n${text}\n---`;
   }
@@ -283,19 +321,29 @@ export const model = {
   globalArguments: GlobalArgsSchema,
   resources: {
     "findings": {
-      description: "Simple English lint findings, in the software-factory findings contract.",
+      description:
+        "Simple English lint findings, in the software-factory findings contract.",
       schema: FindingsSchema,
       lifetime: "30d",
       garbageCollection: 10,
     },
     "rewrite": {
-      description: "Tool-call mode: the rewritten draft and any findings that survived.",
+      description:
+        "Tool-call mode: the rewritten draft and any findings that survived.",
       schema: RewriteSchema,
       lifetime: "30d",
       garbageCollection: 10,
     },
+    "normalized": {
+      description:
+        "Mechanically fixed text, the fixes applied, and what still needs judgement.",
+      schema: NormalizedSchema,
+      lifetime: "30d",
+      garbageCollection: 10,
+    },
     "session": {
-      description: "Referee mode: rewrite-loop state and the next action for the driver.",
+      description:
+        "Referee mode: rewrite-loop state and the next action for the driver.",
       schema: SessionSchema,
       lifetime: "30d",
       garbageCollection: 20,
@@ -326,6 +374,35 @@ export const model = {
       },
     },
 
+    normalize: {
+      description:
+        "Apply the mechanical fixes a script can make without judgement — emphasis punctuation, Latin abbreviations, and unambiguous contractions — then re-lint. Deterministic, no model call, no credential.",
+      arguments: InputSchema,
+      execute: async (
+        args: Input,
+        ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
+      ) => {
+        const { text, source } = await readSource(args);
+        const { text: fixed, fixes } = normalize(text);
+        const result = runLint(fixed, ctx.globalArgs, args);
+
+        const handle = await ctx.writeResource(
+          "normalized",
+          "normalized-latest",
+          {
+            source,
+            fixCount: fixes.length,
+            clean: result.blockingCount === 0,
+            blockingCount: result.blockingCount,
+            text: fixed,
+            fixes,
+            findings: result.findings,
+          },
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+
     // --- tool-call mode ----------------------------------------------------
     rewrite: {
       description:
@@ -338,7 +415,9 @@ export const model = {
         ctx: {
           globalArgs: GlobalArgs;
           signal: AbortSignal;
-          logger: { info: (msg: string, props?: Record<string, unknown>) => void };
+          logger: {
+            info: (msg: string, props?: Record<string, unknown>) => void;
+          };
           writeResource: WriteResource;
         },
       ) => {
@@ -348,6 +427,18 @@ export const model = {
         const system = buildSystemPrompt(g);
 
         let current = original;
+        let mechanical: Fix[] = [];
+        if (g.normalizeFirst) {
+          const n = normalize(current);
+          current = n.text;
+          mechanical = n.fixes;
+          ctx.logger.info(
+            "Mechanical pass fixed {count} finding(s) before any model call",
+            {
+              count: mechanical.length,
+            },
+          );
+        }
         let state = runLint(current, g, args);
         let attempts = 0;
 
@@ -393,24 +484,33 @@ export const model = {
         args: Input & { session: string; maxAttempts?: number },
         ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
       ) => {
-        const { text, source } = await readSource(args);
+        const { text: raw, source } = await readSource(args);
         const g = ctx.globalArgs;
+        const text = g.normalizeFirst ? normalize(raw).text : raw;
         const result = runLint(text, g, args);
 
-        const packet = sessionPacket({
-          session: args.session,
-          source,
-          textType: result.textType,
-          maxWords: result.limit,
-          clean: result.blockingCount === 0,
-          blockingCount: result.blockingCount,
-          text,
-          findings: result.findings,
-          attempt: 0,
-          maxAttempts: 0,
-        }, 0, args.maxAttempts ?? g.maxAttempts);
+        const packet = sessionPacket(
+          {
+            session: args.session,
+            source,
+            textType: result.textType,
+            maxWords: result.limit,
+            clean: result.blockingCount === 0,
+            blockingCount: result.blockingCount,
+            text,
+            findings: result.findings,
+            attempt: 0,
+            maxAttempts: 0,
+          },
+          0,
+          args.maxAttempts ?? g.maxAttempts,
+        );
 
-        const handle = await ctx.writeResource("session", `session-${args.session}`, packet);
+        const handle = await ctx.writeResource(
+          "session",
+          `session-${args.session}`,
+          packet,
+        );
         return { dataHandles: [handle] };
       },
     },
@@ -457,18 +557,22 @@ export const model = {
         };
         const result = runLint(args.text, g, overrides);
 
-        const packet = sessionPacket({
-          session: prior.session,
-          source: prior.source,
-          textType: result.textType,
-          maxWords: result.limit,
-          clean: result.blockingCount === 0,
-          blockingCount: result.blockingCount,
-          text: args.text,
-          findings: result.findings,
-          attempt: 0,
-          maxAttempts: 0,
-        }, prior.attempt + 1, prior.maxAttempts);
+        const packet = sessionPacket(
+          {
+            session: prior.session,
+            source: prior.source,
+            textType: result.textType,
+            maxWords: result.limit,
+            clean: result.blockingCount === 0,
+            blockingCount: result.blockingCount,
+            text: args.text,
+            findings: result.findings,
+            attempt: 0,
+            maxAttempts: 0,
+          },
+          prior.attempt + 1,
+          prior.maxAttempts,
+        );
 
         const handle = await ctx.writeResource("session", name, packet);
         return { dataHandles: [handle] };
