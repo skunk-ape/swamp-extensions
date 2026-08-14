@@ -1,0 +1,6 @@
+id: 310202df-d5b4-4aac-a4f6-eadd1214e235
+name: stef-secrets
+type: local_encryption
+config:
+  auto_generate: true
+createdAt: '2026-08-14T15:58:48.896Z'

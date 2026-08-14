@@ -1,17 +1,24 @@
 // @skunk-ape/stef — Simple Technical English Flavored.
 //
-// Two methods over one idea: a deterministic linter decides what a script can
-// decide, and an LLM reworks the draft until the linter is clean or the attempt
-// budget runs out. The split is the design — the linter is the oracle, the model
-// is the writer, and neither grades its own work.
+// A deterministic Simple English linter, plus two ways to drive a rewrite loop
+// against it. The linter is always the oracle; only the writer changes.
+//
+//   tool-call mode  `rewrite` runs the whole loop inside one method, reaching a
+//                   model through `claude -p` or the Messages API. One command,
+//                   and the model owns the binary or credential dependency.
+//
+//   referee mode    `start` and `record` hold state and enforce the gates while
+//                   the calling agent does the writing. No credential at all —
+//                   the same shape @swamp/software-factory uses, where the
+//                   engine never executes anything and only refuses to advance.
 //
 // Findings use the `kind: findings` contract @swamp/software-factory's
 // findings-clear gate consumes, so a scripted rule and a judgement-based
 // reviewer merge behind one gate.
 
 import { z } from "npm:zod@4";
-import Anthropic from "npm:@anthropic-ai/sdk@0.117.1";
 import { CHECKS, type Check, type Finding, lint, LIMITS } from "./_lib/lint.ts";
+import { type Driver, generate } from "./_lib/generate.ts";
 
 const SeveritySchema = z.enum(["critical", "high", "medium", "low"]);
 type Severity = z.infer<typeof SeveritySchema>;
@@ -27,10 +34,7 @@ const FindingSchema = z.strictObject({
 });
 type ContractFinding = z.infer<typeof FindingSchema>;
 
-/**
- * Every check blocks by default: the skill says fix every finding. Lower one to
- * `low` to record it without blocking a rewrite.
- */
+/** Every check blocks by default: the skill says fix every finding. */
 const DEFAULT_SEVERITIES = Object.fromEntries(
   CHECKS.map((c) => [c, "high"] as const),
 ) as Record<Check, Severity>;
@@ -59,13 +63,9 @@ const GlobalArgsSchema = z.object({
   severities: z.record(z.enum(CHECKS), SeveritySchema).default(DEFAULT_SEVERITIES),
   /** Severities that block. */
   blocking: z.array(SeveritySchema).min(1).default(["critical", "high"]),
-  /** Rework attempts before `rewrite` returns its best effort. */
+  /** Rework attempts before the loop gives up and returns its best effort. */
   maxAttempts: z.number().int().min(1).max(10).default(3),
-  /**
-   * Reason-checked guidance appended to the rewrite system prompt — the rules
-   * no script can judge (active voice, noun clusters, phrasal verbs, ordering).
-   * Defaults to the Simple English skill's own list.
-   */
+  /** Reason-checked guidance appended to the rewrite system prompt. */
   guidance: z.string().default(DEFAULT_GUIDANCE),
   /** Anti-patterns as wrong/right pairs, steering the model off known habits. */
   antiPatterns: z.array(
@@ -75,9 +75,19 @@ const GlobalArgsSchema = z.object({
       right: z.string().min(1),
     }),
   ).default([]),
+
+  // --- tool-call mode only -------------------------------------------------
+  /** How `rewrite` reaches a model. Referee mode ignores this. */
+  driver: z.enum(["claude-code", "api"]).default("claude-code"),
   model: z.string().default("claude-opus-5"),
-  /** Point this at a vault expression, never a literal. */
+  /** Path or command name for the Claude Code binary. */
+  claudePath: z.string().default("claude"),
+  /** Hard ceiling for a single generation. */
+  wallTimeoutMs: z.number().int().positive().default(300_000),
+  /** API key for the `api` driver. Point at a vault expression, never a literal. */
   apiKey: z.string().default("").meta({ sensitive: true }),
+  /** OAuth bearer token for the `api` driver. Takes precedence over apiKey. */
+  authToken: z.string().default("").meta({ sensitive: true }),
 });
 type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
 
@@ -92,6 +102,7 @@ const FindingsSchema = z.object({
 
 const RewriteSchema = z.object({
   source: z.string(),
+  driver: z.string(),
   attempts: z.number(),
   clean: z.boolean(),
   text: z.string(),
@@ -99,11 +110,77 @@ const RewriteSchema = z.object({
   findings: z.array(FindingSchema),
 });
 
+/** Referee-mode state. The driver reads this to learn what to do next. */
+const SessionSchema = z.object({
+  session: z.string(),
+  source: z.string(),
+  textType: z.string(),
+  maxWords: z.number(),
+  phase: z.enum(["reworking", "clean", "exhausted"]),
+  attempt: z.number(),
+  maxAttempts: z.number(),
+  nextAction: z.string(),
+  clean: z.boolean(),
+  blockingCount: z.number(),
+  text: z.string(),
+  findings: z.array(FindingSchema),
+});
+type Session = z.infer<typeof SessionSchema>;
+
 // ---------------------------------------------------------------------------
-// Prompting
+// Linting glue
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You rewrite drafts into Simple English, the ASD-STE100 Simplified Technical English style.
+function toContract(f: Finding, severities: Record<Check, Severity>): ContractFinding {
+  return {
+    id: `STE-${f.check}-L${f.line}`,
+    severity: severities[f.check] ?? "high",
+    category: f.check,
+    description: `line ${f.line}: ${f.message}`,
+  };
+}
+
+function countBlocking(findings: ContractFinding[], blocking: Severity[]): number {
+  const set = new Set<string>(blocking);
+  return findings.filter((f) => f.resolved !== true && set.has(f.severity)).length;
+}
+
+interface LintResult {
+  findings: ContractFinding[];
+  blockingCount: number;
+  limit: number;
+  textType: "procedural" | "descriptive";
+}
+
+/** Lint once, prefixed with a recon entry so a clean pass states what ran. */
+function runLint(
+  text: string,
+  g: GlobalArgs,
+  overrides: { textType?: "procedural" | "descriptive"; maxWords?: number },
+): LintResult {
+  const textType = overrides.textType ?? g.textType;
+  const limit = overrides.maxWords ?? g.maxWords ?? LIMITS[textType];
+  const raw = lint(text, { maxWords: limit, textType });
+  const findings = raw.map((f) => toContract(f, g.severities));
+
+  findings.unshift({
+    id: "STE-0",
+    severity: "low",
+    category: "recon",
+    description: `Ran ${CHECKS.length} Simple English checks as ${textType} text ` +
+      `(sentence limit ${limit} words); ${raw.length} finding(s).`,
+    resolved: true,
+  });
+
+  return { findings, blockingCount: countBlocking(findings, g.blocking), limit, textType };
+}
+
+// ---------------------------------------------------------------------------
+// Prompting — shared by both modes
+// ---------------------------------------------------------------------------
+
+const SYSTEM_PROMPT =
+  `You rewrite drafts into Simple English, the ASD-STE100 Simplified Technical English style.
 
 A deterministic linter checks eleven mechanical rules and reports what it finds.
 Fix every finding it reports, exactly as reported.
@@ -131,58 +208,25 @@ function buildSystemPrompt(g: GlobalArgs): string {
   return prompt;
 }
 
+/** Findings minus the recon entry, as a prompt-ready list. */
+function findingList(findings: ContractFinding[]): string {
+  return findings.filter((f) => f.category !== "recon")
+    .map((f) => `- ${f.description}`)
+    .join("\n");
+}
+
 function buildPrompt(text: string, findings: ContractFinding[], attempt: number): string {
-  if (attempt === 1) {
+  if (attempt <= 1) {
     return `Rewrite the following draft into Simple English.\n\n---\n${text}\n---`;
   }
-  const list = findings.map((f) => `- ${f.description}`).join("\n");
   return `Your rewrite still fails the linter. Fix every finding below without ` +
-    `changing the meaning.\n\nLINTER FINDINGS:\n${list}\n\nDRAFT TO FIX:\n---\n${text}\n---`;
+    `changing the meaning.\n\nLINTER FINDINGS:\n${findingList(findings)}\n\n` +
+    `DRAFT TO FIX:\n---\n${text}\n---`;
 }
 
 // ---------------------------------------------------------------------------
-// Glue
+// Shared plumbing
 // ---------------------------------------------------------------------------
-
-/** Map a linter finding onto the software-factory findings contract. */
-function toContract(f: Finding, severities: Record<Check, Severity>): ContractFinding {
-  return {
-    id: `STE-${f.check}-L${f.line}`,
-    severity: severities[f.check] ?? "high",
-    category: f.check,
-    description: `line ${f.line}: ${f.message}`,
-  };
-}
-
-function countBlocking(findings: ContractFinding[], blocking: Severity[]): number {
-  const set = new Set<string>(blocking);
-  return findings.filter((f) => f.resolved !== true && set.has(f.severity)).length;
-}
-
-/** Lint once and return contract findings, prefixed with a recon entry. */
-function runLint(
-  text: string,
-  g: GlobalArgs,
-  overrides: { textType?: "procedural" | "descriptive"; maxWords?: number },
-): { findings: ContractFinding[]; blockingCount: number; limit: number } {
-  const textType = overrides.textType ?? g.textType;
-  const limit = overrides.maxWords ?? g.maxWords ?? LIMITS[textType];
-  const raw = lint(text, { maxWords: limit, textType });
-  const findings = raw.map((f) => toContract(f, g.severities));
-
-  // Recon entry first, so a clean pass states what ran instead of returning [].
-  findings.unshift({
-    id: "STE-0",
-    severity: "low",
-    category: "recon",
-    description:
-      `Ran ${CHECKS.length} Simple English checks as ${textType} text ` +
-      `(sentence limit ${limit} words); ${raw.length} finding(s).`,
-    resolved: true,
-  });
-
-  return { findings, blockingCount: countBlocking(findings, g.blocking), limit };
-}
 
 async function readSource(
   args: { text?: string; path?: string },
@@ -202,6 +246,10 @@ type WriteResource = (
   name: string,
   data: Record<string, unknown>,
 ) => Promise<{ name: string }>;
+type ReadResource = (
+  instanceName: string,
+  version?: number,
+) => Promise<Record<string, unknown> | null>;
 
 const InputSchema = z.object({
   text: z.string().optional(),
@@ -211,9 +259,34 @@ const InputSchema = z.object({
 });
 type Input = z.infer<typeof InputSchema>;
 
+/** Build the packet a referee-mode driver reads to learn what to do next. */
+function sessionPacket(
+  base: Omit<Session, "phase" | "nextAction">,
+  attempt: number,
+  maxAttempts: number,
+): Session {
+  const phase: Session["phase"] = base.blockingCount === 0
+    ? "clean"
+    : attempt >= maxAttempts
+    ? "exhausted"
+    : "reworking";
+
+  const nextAction = phase === "clean"
+    ? "Done. The draft passes every blocking check. Use the `text` field."
+    : phase === "exhausted"
+    ? `Stop. ${attempt} of ${maxAttempts} attempts used and ${base.blockingCount} ` +
+      `blocking finding(s) remain. Raise maxAttempts or fix them by hand.`
+    : `Rewrite the \`text\` field to fix the ${base.blockingCount} blocking finding(s), ` +
+      `then submit it with: swamp model method run <model> record ` +
+      `--input session=${base.session} --input text="<your rewrite>". ` +
+      `Attempt ${attempt + 1} of ${maxAttempts}.`;
+
+  return { ...base, phase, attempt, maxAttempts, nextAction };
+}
+
 export const model = {
   type: "@skunk-ape/stef",
-  version: "2026.08.14.1",
+  version: "2026.08.14.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     "findings": {
@@ -223,44 +296,53 @@ export const model = {
       garbageCollection: 10,
     },
     "rewrite": {
-      description: "The rewritten draft plus the findings that survived the loop.",
+      description: "Tool-call mode: the rewritten draft and any findings that survived.",
       schema: RewriteSchema,
       lifetime: "30d",
       garbageCollection: 10,
     },
+    "session": {
+      description: "Referee mode: rewrite-loop state and the next action for the driver.",
+      schema: SessionSchema,
+      lifetime: "30d",
+      garbageCollection: 20,
+    },
   },
   methods: {
+    // --- shared ------------------------------------------------------------
     lint: {
       description:
-        "Lint a draft against the eleven mechanical Simple English checks and emit kind: findings. Deterministic — no model call, no API key needed.",
+        "Lint a draft against the eleven mechanical Simple English checks and emit kind: findings. Deterministic — no model call, no credential.",
       arguments: InputSchema,
       execute: async (
         args: Input,
         ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
       ) => {
         const { text, source } = await readSource(args);
-        const { findings, blockingCount, limit } = runLint(text, ctx.globalArgs, args);
+        const result = runLint(text, ctx.globalArgs, args);
 
         const handle = await ctx.writeResource("findings", "findings-latest", {
           source,
-          textType: args.textType ?? ctx.globalArgs.textType,
-          maxWords: limit,
-          clean: blockingCount === 0,
-          blockingCount,
-          findings,
+          textType: result.textType,
+          maxWords: result.limit,
+          clean: result.blockingCount === 0,
+          blockingCount: result.blockingCount,
+          findings: result.findings,
         });
         return { dataHandles: [handle] };
       },
     },
 
+    // --- tool-call mode ----------------------------------------------------
     rewrite: {
       description:
-        "Rewrite a draft into Simple English, re-linting after each attempt and feeding the findings back into the next prompt. Stops when the lint is clean or maxAttempts is reached.",
+        "Tool-call mode: rewrite a draft and re-lint after each attempt, feeding findings back into the next prompt. Runs the whole loop in one command via the configured driver.",
       arguments: InputSchema.extend({
         maxAttempts: z.number().int().min(1).max(10).optional(),
+        driver: z.enum(["claude-code", "api"]).optional(),
       }),
       execute: async (
-        args: Input & { maxAttempts?: number },
+        args: Input & { maxAttempts?: number; driver?: Driver },
         ctx: {
           globalArgs: GlobalArgs;
           signal: AbortSignal;
@@ -270,63 +352,138 @@ export const model = {
       ) => {
         const { text: original, source } = await readSource(args);
         const g = ctx.globalArgs;
-        const limit = args.maxAttempts ?? g.maxAttempts;
-
-        if (g.apiKey === "") {
-          throw new Error(
-            "apiKey is empty — set it to a vault expression before running rewrite.",
-          );
-        }
-
-        const client = new Anthropic({ apiKey: g.apiKey });
+        const cap = args.maxAttempts ?? g.maxAttempts;
+        const driver = args.driver ?? g.driver;
         const system = buildSystemPrompt(g);
+
         let current = original;
         let state = runLint(current, g, args);
         let attempts = 0;
 
-        while (state.blockingCount > 0 && attempts < limit) {
+        while (state.blockingCount > 0 && attempts < cap) {
           attempts++;
           ctx.logger.info(
-            "Simple English attempt {attempt} of {limit}: {blocking} blocking finding(s)",
-            { attempt: attempts, limit, blocking: state.blockingCount },
+            "Simple English attempt {attempt}/{cap} via {driver}: {blocking} blocking finding(s)",
+            { attempt: attempts, cap, driver, blocking: state.blockingCount },
           );
 
-          const message = await client.messages.create({
+          current = await generate({
+            driver,
             model: g.model,
-            max_tokens: 16000,
+            claudePath: g.claudePath,
+            wallTimeoutMs: g.wallTimeoutMs,
+            apiKey: g.apiKey,
+            authToken: g.authToken,
             system,
-            messages: [{
-              role: "user",
-              content: buildPrompt(current, state.findings.slice(1), attempts),
-            }],
-          }, { signal: ctx.signal });
-
-          if (message.stop_reason === "refusal") {
-            throw new Error(`Rewrite refused on attempt ${attempts}.`);
-          }
-
-          const rewritten = message.content
-            .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
-            .map((b) => b.text)
-            .join("")
-            .trim();
-
-          if (rewritten === "") {
-            throw new Error(`Model returned no text on attempt ${attempts}.`);
-          }
-
-          current = rewritten;
+            prompt: buildPrompt(current, state.findings, attempts),
+            signal: ctx.signal,
+          });
           state = runLint(current, g, args);
         }
 
         const handle = await ctx.writeResource("rewrite", "rewrite-latest", {
           source,
+          driver,
           attempts,
           clean: state.blockingCount === 0,
           text: current,
           blockingCount: state.blockingCount,
           findings: state.findings,
         });
+        return { dataHandles: [handle] };
+      },
+    },
+
+    // --- referee mode ------------------------------------------------------
+    start: {
+      description:
+        "Referee mode: open a rewrite session. Lints the draft and records what the driving agent must fix. Executes nothing — no model call, no credential.",
+      arguments: InputSchema.extend({
+        session: z.string().min(1).default("default"),
+        maxAttempts: z.number().int().min(1).max(10).optional(),
+      }),
+      execute: async (
+        args: Input & { session: string; maxAttempts?: number },
+        ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
+      ) => {
+        const { text, source } = await readSource(args);
+        const g = ctx.globalArgs;
+        const result = runLint(text, g, args);
+
+        const packet = sessionPacket({
+          session: args.session,
+          source,
+          textType: result.textType,
+          maxWords: result.limit,
+          clean: result.blockingCount === 0,
+          blockingCount: result.blockingCount,
+          text,
+          findings: result.findings,
+          attempt: 0,
+          maxAttempts: 0,
+        }, 0, args.maxAttempts ?? g.maxAttempts);
+
+        const handle = await ctx.writeResource("session", `session-${args.session}`, packet);
+        return { dataHandles: [handle] };
+      },
+    },
+
+    record: {
+      description:
+        "Referee mode: submit the driving agent's rewrite. Re-lints it, counts the attempt against the cap, and refuses once the session is clean or exhausted.",
+      arguments: z.object({
+        session: z.string().min(1).default("default"),
+        text: z.string().min(1),
+      }),
+      execute: async (
+        args: { session: string; text: string },
+        ctx: {
+          globalArgs: GlobalArgs;
+          readResource: ReadResource;
+          writeResource: WriteResource;
+        },
+      ) => {
+        const g = ctx.globalArgs;
+        const name = `session-${args.session}`;
+        const prior = await ctx.readResource(name) as Session | null;
+        if (prior === null) {
+          throw new Error(`No session "${args.session}" — run start first.`);
+        }
+
+        // The gate. The engine cannot make the agent write, but it can refuse
+        // to accept another attempt.
+        if (prior.phase === "clean") {
+          throw new Error(
+            `Session "${args.session}" is already clean — nothing to rework.`,
+          );
+        }
+        if (prior.phase === "exhausted") {
+          throw new Error(
+            `Session "${args.session}" is exhausted at ${prior.attempt}/${prior.maxAttempts} ` +
+              `attempts. Raise maxAttempts and run start again to reopen it.`,
+          );
+        }
+
+        const overrides = {
+          textType: prior.textType as "procedural" | "descriptive",
+          maxWords: prior.maxWords,
+        };
+        const result = runLint(args.text, g, overrides);
+
+        const packet = sessionPacket({
+          session: prior.session,
+          source: prior.source,
+          textType: result.textType,
+          maxWords: result.limit,
+          clean: result.blockingCount === 0,
+          blockingCount: result.blockingCount,
+          text: args.text,
+          findings: result.findings,
+          attempt: 0,
+          maxAttempts: 0,
+        }, prior.attempt + 1, prior.maxAttempts);
+
+        const handle = await ctx.writeResource("session", name, packet);
         return { dataHandles: [handle] };
       },
     },

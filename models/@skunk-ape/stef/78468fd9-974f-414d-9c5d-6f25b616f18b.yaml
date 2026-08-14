@@ -1,8 +1,10 @@
 type: '@skunk-ape/stef'
-typeVersion: 2026.08.14.1
+typeVersion: 2026.08.14.2
 id: 78468fd9-974f-414d-9c5d-6f25b616f18b
 name: ste
 version: 1
 tags: {}
-globalArguments: {}
+globalArguments:
+  driver: claude-code
+  maxAttempts: 3
 methods: {}
