@@ -24,30 +24,56 @@ Deno.test("lint: each mechanical check fires on its own trigger", () => {
   ];
   for (const [check, text] of cases) {
     const fired = checks(text);
-    assertEquals(fired.includes(check), true, `${check} did not fire on: ${text}`);
+    assertEquals(
+      fired.includes(check),
+      true,
+      `${check} did not fire on: ${text}`,
+    );
   }
 });
 
 Deno.test("lint: sentence limit follows the text type", () => {
   const sentence = "word ".repeat(22).trim() + ".";
   assertEquals(lint(sentence, { textType: "descriptive" }).length, 0);
-  assertEquals(lint(sentence, { textType: "procedural" })[0].check, "long-sentence");
+  assertEquals(
+    lint(sentence, { textType: "procedural" })[0].check,
+    "long-sentence",
+  );
 });
 
 Deno.test("lint: a leading condition is not a trailing condition", () => {
-  assertEquals(checks("If it stalls, restart the node.").includes("trailing-condition"), false);
-  assertEquals(checks("Restart the node if it stalls.").includes("trailing-condition"), true);
+  assertEquals(
+    checks("If it stalls, restart the node.").includes("trailing-condition"),
+    false,
+  );
+  assertEquals(
+    checks("Restart the node if it stalls.").includes("trailing-condition"),
+    true,
+  );
 });
 
 Deno.test("lint: synonym rotation fires only across a set", () => {
-  assertEquals(checks("We check the value. We verify the other.").includes("synonym-rotation"), true);
-  assertEquals(checks("We check the value. We check the other.").includes("synonym-rotation"), false);
+  assertEquals(
+    checks("We check the value. We verify the other.").includes(
+      "synonym-rotation",
+    ),
+    true,
+  );
+  assertEquals(
+    checks("We check the value. We check the other.").includes(
+      "synonym-rotation",
+    ),
+    false,
+  );
 });
 
 Deno.test("lint: a short leading definition term keeps its emphasis", () => {
   assertEquals(lint("**Leading term** carries the rule."), []);
   assertEquals(lint("- **List term** carries the rule."), []);
-  assertEquals(checks("**A leading term well over the five word limit** fires."), ["emphasis"]);
+  assertEquals(
+    checks("**A leading term well over the five word limit** fires."),
+    ["emphasis"],
+  );
   assertEquals(checks("**Ends with punctuation.** fires."), ["emphasis"]);
 });
 
@@ -85,10 +111,44 @@ Deno.test("stripNonProse: non-prose structure is blanked but line numbers hold",
 });
 
 Deno.test("stripNonProse: inline code and URLs become placeholders", () => {
-  assertEquals(lint("Run `it's a should` and see https://x.com/should now."), []);
+  assertEquals(
+    lint("Run `it's a should` and see https://x.com/should now."),
+    [],
+  );
 });
 
 Deno.test("splitSentences: decimals do not split, list items do", () => {
   assertEquals(splitSentences("The value is 3.5 volts here.").length, 1);
-  assertEquals(splitSentences("- first item here\n- second item here").length, 2);
+  assertEquals(
+    splitSentences("- first item here\n- second item here").length,
+    2,
+  );
+});
+
+Deno.test("lint: leading YAML frontmatter is metadata, not prose", () => {
+  const doc = [
+    "---",
+    "name: x",
+    "description: It's utilizing the robust cache.",
+    "---",
+    "",
+    "Real prose here.",
+  ].join("\n");
+  assertEquals(lint(doc), []);
+  // Python parity mode keeps it in scope.
+  assertEquals(lint(doc, { frontmatter: false }).length > 0, true);
+});
+
+Deno.test("lint: frontmatter strip preserves line numbers", () => {
+  const doc = ["---", "name: x", "---", "", "It's here."].join("\n");
+  assertEquals(lint(doc)[0].line, 5);
+});
+
+Deno.test("lint: a mid-document --- is a thematic break, not frontmatter", () => {
+  const doc = ["It's first.", "", "---", "", "It's second."].join("\n");
+  assertEquals(lint(doc).length, 2);
+});
+
+Deno.test("lint: an unterminated leading --- strips nothing", () => {
+  assertEquals(lint(["---", "It's unterminated."].join("\n")).length, 1);
 });

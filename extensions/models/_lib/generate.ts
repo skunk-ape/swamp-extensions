@@ -71,7 +71,9 @@ export async function generate(o: GenerateOptions): Promise<string> {
       throw new Error(`claude exceeded the ${o.wallTimeoutMs}ms wall timeout.`);
     }
     if (o.signal.aborted) throw new Error("Generation cancelled.");
-    if (code !== 0) throw new Error(`claude exited ${code}${err ? `: ${err}` : ""}`);
+    if (code !== 0) {
+      throw new Error(`claude exited ${code}${err ? `: ${err}` : ""}`);
+    }
     if (out === "") throw new Error("claude returned no text.");
 
     return out;

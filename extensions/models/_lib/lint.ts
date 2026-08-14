@@ -34,7 +34,8 @@ const ROTATION_SETS: Array<[string, RegExp]> = [
 
 // --- Preprocessing patterns -------------------------------------------------
 
-const SENTENCE_BOUNDARY = /(?<=[.!?:])\s+|\n[ \t]*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])/g;
+const SENTENCE_BOUNDARY =
+  /(?<=[.!?:])\s+|\n[ \t]*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])/g;
 const FENCE = /^\s*(?:```|~~~)/;
 const HEADING = /^\s*#{1,6}\s/;
 const BLOCKQUOTE = /^\s*>/;
@@ -47,7 +48,8 @@ const URL = /https?:\/\/\S+/g;
 
 // --- Check patterns ---------------------------------------------------------
 
-const CONTRACTION = /\b\w+(?:n['’]t|['’]ll|['’]re|['’]ve|['’]d)\b|\bit['’]s\b|\byou['’]re\b/gi;
+const CONTRACTION =
+  /\b\w+(?:n['’]t|['’]ll|['’]re|['’]ve|['’]d)\b|\bit['’]s\b|\byou['’]re\b/gi;
 const BANNED_MODAL = /\b(?:should|would|may|might|could)\b/gi;
 const PERFECT = /\b(?:has|have|had)\s+been\b|\b(?:has|have)\s+\w+ed\b/gi;
 const ING_CLAUSE =
@@ -111,17 +113,49 @@ function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Opening or closing delimiter of a YAML frontmatter block. */
+const FRONTMATTER_FENCE = /^---\s*$/;
+
+/**
+ * Blank a leading YAML frontmatter block, preserving line count.
+ *
+ * Frontmatter is metadata, not prose: a `description:` field is read by a tool,
+ * not by a person reading sentences, so holding it to a sentence-length limit
+ * reports findings nobody can act on. The `---` delimiters already blank out as
+ * thematic breaks; this removes the YAML between them.
+ *
+ * Only a block starting on line 1 counts. An unterminated block is left alone,
+ * because a lone `---` mid-document is a thematic break, not an open fence.
+ */
+function stripFrontmatterBlock(lines: string[]): string[] {
+  if (lines.length === 0 || !FRONTMATTER_FENCE.test(lines[0])) return lines;
+  const close = lines.findIndex((line, i) =>
+    i > 0 && FRONTMATTER_FENCE.test(line)
+  );
+  if (close === -1) return lines;
+  return lines.map((line, i) => (i <= close ? "" : line));
+}
+
 /**
  * Remove everything that is not prose the author wrote, keeping line numbers.
  *
  * Whole-line structure becomes an empty line; inline code and URLs become
  * placeholder words. No newline is added or removed, so a reported line number
  * still points at the original text.
+ *
+ * `frontmatter: false` keeps a leading YAML block in scope, which is what the
+ * Python original does — used to diff the two implementations for parity.
  */
-export function stripNonProse(text: string): string {
+export function stripNonProse(
+  text: string,
+  options: { frontmatter?: boolean } = {},
+): string {
   const out: string[] = [];
   let inFence = false;
-  for (const raw of text.split("\n")) {
+  const lines = options.frontmatter === false
+    ? text.split("\n")
+    : stripFrontmatterBlock(text.split("\n"));
+  for (const raw of lines) {
     if (FENCE.test(raw)) {
       inFence = !inFence;
       out.push("");
@@ -169,7 +203,11 @@ function findAll(
   const findings: Finding[] = [];
   for (const match of text.matchAll(pattern)) {
     const found = words(match[0]).join(" ");
-    findings.push({ line: lineOf(text, match.index), check, message: message(found) });
+    findings.push({
+      line: lineOf(text, match.index),
+      check,
+      message: message(found),
+    });
   }
   return findings;
 }
@@ -184,7 +222,9 @@ export function findLongSentences(text: string, maxWords: number): Finding[] {
       findings.push({
         line: lineOf(text, start),
         check: "long-sentence",
-        message: `${count} words (limit ${maxWords}) — split it: "${preview(sentence)}"`,
+        message: `${count} words (limit ${maxWords}) — split it: "${
+          preview(sentence)
+        }"`,
       });
     }
   }
@@ -192,7 +232,12 @@ export function findLongSentences(text: string, maxWords: number): Finding[] {
 }
 
 export function findContractions(text: string): Finding[] {
-  return findAll(text, CONTRACTION, "contraction", (f) => `"${f}" — spell it out`);
+  return findAll(
+    text,
+    CONTRACTION,
+    "contraction",
+    (f) => `"${f}" — spell it out`,
+  );
 }
 
 export function findBannedModals(text: string): Finding[] {
@@ -223,11 +268,21 @@ export function findIngClauses(text: string): Finding[] {
 }
 
 export function findSemicolons(text: string): Finding[] {
-  return findAll(text, SEMICOLON, "semicolon", () => "semicolon — use two sentences");
+  return findAll(
+    text,
+    SEMICOLON,
+    "semicolon",
+    () => "semicolon — use two sentences",
+  );
 }
 
 export function findSlopWords(text: string): Finding[] {
-  return findAll(text, SLOP, "slop-word", (f) => `"${f}" — cut it or use a plain word`);
+  return findAll(
+    text,
+    SLOP,
+    "slop-word",
+    (f) => `"${f}" — cut it or use a plain word`,
+  );
 }
 
 export function findLatinAbbrevs(text: string): Finding[] {
@@ -270,18 +325,25 @@ function emphasisText(match: RegExpExecArray | RegExpMatchArray): string {
   return match[1] !== undefined ? match[1] : match[2];
 }
 
-export function findEmphasis(text: string, maxWords = EMPHASIS_MAX_WORDS): Finding[] {
+export function findEmphasis(
+  text: string,
+  maxWords = EMPHASIS_MAX_WORDS,
+): Finding[] {
   const findings: Finding[] = [];
   let prevBlank = true;
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const marker = LIST_MARKER.exec(line);
-    const contentStart = marker ? marker[0].length : line.length - line.trimStart().length;
+    const contentStart = marker
+      ? marker[0].length
+      : line.length - line.trimStart().length;
     const blockStart = prevBlank || marker !== null;
 
     const spans: Array<[number, string]> = [];
-    for (const match of line.matchAll(BOLD)) spans.push([match.index, emphasisText(match)]);
+    for (const match of line.matchAll(BOLD)) {
+      spans.push([match.index, emphasisText(match)]);
+    }
     const withoutBold = line.replace(BOLD, (m) => " ".repeat(m.length));
     for (const match of withoutBold.matchAll(ITALIC)) {
       spans.push([match.index, emphasisText(match)]);
@@ -291,12 +353,15 @@ export function findEmphasis(text: string, maxWords = EMPHASIS_MAX_WORDS): Findi
     for (const [startCol, content] of spans) {
       const leading = startCol === contentStart && blockStart;
       const count = words(content).length;
-      if (leading && count <= maxWords && !SENTENCE_FINAL.test(content)) continue;
+      if (leading && count <= maxWords && !SENTENCE_FINAL.test(content)) {
+        continue;
+      }
       let reason: string;
       if (!leading) {
         reason = "not at the start of its paragraph or list item";
       } else if (count > maxWords) {
-        reason = `${count} words, over the ${maxWords}-word limit for a leading term`;
+        reason =
+          `${count} words, over the ${maxWords}-word limit for a leading term`;
       } else {
         reason = "carries sentence-final punctuation";
       }
@@ -326,7 +391,8 @@ export function findSynonymRotation(text: string): Finding[] {
         findings.push({
           line: lineOf(text, firstSeen.get(stem)!),
           check: "synonym-rotation",
-          message: `"${stem}" and "${base}" are used for one idea — pick one term`,
+          message:
+            `"${stem}" and "${base}" are used for one idea — pick one term`,
         });
       }
     }
@@ -334,13 +400,18 @@ export function findSynonymRotation(text: string): Finding[] {
   return findings;
 }
 
-/** Run every check over `text` and return findings sorted by (line, check). */
+/**
+ * Run every check over `text` and return findings sorted by (line, check).
+ *
+ * `frontmatter: false` opts out of the leading-YAML strip for Python parity.
+ */
 export function lint(
   text: string,
-  options: { maxWords?: number; textType?: TextType } = {},
+  options: { maxWords?: number; textType?: TextType; frontmatter?: boolean } =
+    {},
 ): Finding[] {
   const limit = options.maxWords ?? LIMITS[options.textType ?? DEFAULT_TYPE];
-  const prose = stripNonProse(text);
+  const prose = stripNonProse(text, { frontmatter: options.frontmatter });
   const findings = [
     ...findLongSentences(prose, limit),
     ...findContractions(prose),
@@ -355,7 +426,13 @@ export function lint(
     ...findEmphasis(prose),
   ];
   return findings.sort((a, b) =>
-    a.line !== b.line ? a.line - b.line : a.check < b.check ? -1 : a.check > b.check ? 1 : 0
+    a.line !== b.line
+      ? a.line - b.line
+      : a.check < b.check
+      ? -1
+      : a.check > b.check
+      ? 1
+      : 0
   );
 }
 
