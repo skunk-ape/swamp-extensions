@@ -315,6 +315,15 @@ function sessionPacket(
   return { ...base, phase, attempt, maxAttempts, nextAction };
 }
 
+/**
+ * Simple Technical English Flavored — a deterministic Simple English linter and
+ * two ways to drive a rewrite loop against it.
+ *
+ * `lint` and `normalize` are deterministic and need no credential. `rewrite`
+ * runs the loop in one command by spawning `claude -p`. `start` and `record`
+ * hold state and enforce the attempt cap while a calling agent does the
+ * writing.
+ */
 export const model = {
   type: "@skunk-ape/stef",
   version: "2026.08.14.2",

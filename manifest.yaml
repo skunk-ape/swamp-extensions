@@ -59,6 +59,7 @@ skills:
   - simple-english
 additionalFiles:
   - LICENSE
+  - README.md
 labels:
   - writing
   - linter
