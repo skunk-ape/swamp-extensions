@@ -16,7 +16,7 @@ swamp model create @skunk-ape/stef ste
 ```
 
 `lint` and `normalize` need nothing else. `rewrite` needs Claude Code on
-`PATH`, and it runs on whatever credential Claude Code already holds — a
+`PATH`. It runs on whatever credential Claude Code already holds. A
 subscription token from `claude setup-token` works, so no API key is stored in
 a vault.
 
@@ -66,8 +66,8 @@ The result is data, not a file write, so you diff it before it lands.
 
 ## Rewrite with a calling agent
 
-Referee mode splits the work: the agent writes and the model gates. Use it when
-the draft is already in the agent's context.
+Referee mode splits the work: the agent writes and the model gates. When the
+draft is already in the agent's context, use this mode.
 
 ```bash
 swamp model method run ste start --input path=DRAFT.md
@@ -95,15 +95,15 @@ loop and carries the rules the linter cannot check.
 | synonym-rotation | one term per idea |
 | emphasis | no bold or italics, except a short leading term |
 
-Code blocks, inline code, headings, tables, URLs, blockquotes, shell-prompt
-lines, and YAML frontmatter are removed before any check runs, so a command or
-a quoted log line is never rewritten.
+The linter removes code blocks, inline code, headings, tables, URLs,
+blockquotes, shell-prompt lines, and YAML frontmatter before any check runs. A
+command or a quoted log line is never rewritten.
 
 ## Configuration
 
 The style guide is data. Per-check severities, the blocking severity list, the
 sentence limit, the guidance block given to the model, and wrong/right
-anti-pattern examples all live in `globalArguments`, so a writer tunes the style
+anti-pattern examples all live in `globalArguments`. A writer tunes the style
 without republishing.
 
 ```yaml
