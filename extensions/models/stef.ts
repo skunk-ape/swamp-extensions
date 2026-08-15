@@ -15,6 +15,12 @@
 // Findings use the `kind: findings` contract @swamp/software-factory's
 // findings-clear gate consumes, so a scripted rule and a judgement-based
 // reviewer merge behind one gate.
+//
+// Every method takes the same two argument shapes, so a caller never has to
+// remember which method is different. `text` or `path` says what to read.
+// `session` names the state slot to write, and defaults to "latest" — so
+// `lint --input session=readme` writes findings-readme, and two drafts in
+// flight never overwrite each other.
 
 import { z } from "npm:zod@4";
 import { type Check, CHECKS, type Finding, LIMITS, lint } from "./_lib/lint.ts";
@@ -282,11 +288,15 @@ type ReadResource = (
   version?: number,
 ) => Promise<Record<string, unknown> | null>;
 
+/** Names the state slot a run writes. Same name, same default, every method. */
+const SessionArg = z.string().min(1).default("latest");
+
 const InputSchema = z.object({
   text: z.string().optional(),
   path: z.string().optional(),
   textType: z.enum(["procedural", "descriptive"]).optional(),
   maxWords: z.number().int().positive().optional(),
+  session: SessionArg,
 });
 type Input = z.infer<typeof InputSchema>;
 
@@ -326,7 +336,7 @@ function sessionPacket(
  */
 export const model = {
   type: "@skunk-ape/stef",
-  version: "2026.08.14.2",
+  version: "2026.08.15.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "findings": {
@@ -371,14 +381,18 @@ export const model = {
         const { text, source } = await readSource(args);
         const result = runLint(text, ctx.globalArgs, args);
 
-        const handle = await ctx.writeResource("findings", "findings-latest", {
-          source,
-          textType: result.textType,
-          maxWords: result.limit,
-          clean: result.blockingCount === 0,
-          blockingCount: result.blockingCount,
-          findings: result.findings,
-        });
+        const handle = await ctx.writeResource(
+          "findings",
+          `findings-${args.session}`,
+          {
+            source,
+            textType: result.textType,
+            maxWords: result.limit,
+            clean: result.blockingCount === 0,
+            blockingCount: result.blockingCount,
+            findings: result.findings,
+          },
+        );
         return { dataHandles: [handle] };
       },
     },
@@ -397,7 +411,7 @@ export const model = {
 
         const handle = await ctx.writeResource(
           "normalized",
-          "normalized-latest",
+          `normalized-${args.session}`,
           {
             source,
             fixCount: fixes.length,
@@ -469,14 +483,18 @@ export const model = {
           state = runLint(current, g, args);
         }
 
-        const handle = await ctx.writeResource("rewrite", "rewrite-latest", {
-          source,
-          attempts,
-          clean: state.blockingCount === 0,
-          text: current,
-          blockingCount: state.blockingCount,
-          findings: state.findings,
-        });
+        const handle = await ctx.writeResource(
+          "rewrite",
+          `rewrite-${args.session}`,
+          {
+            source,
+            attempts,
+            clean: state.blockingCount === 0,
+            text: current,
+            blockingCount: state.blockingCount,
+            findings: state.findings,
+          },
+        );
         return { dataHandles: [handle] };
       },
     },
@@ -486,11 +504,10 @@ export const model = {
       description:
         "Referee mode: open a rewrite session. Lints the draft and records what the driving agent must fix. Executes nothing — no model call, no credential.",
       arguments: InputSchema.extend({
-        session: z.string().min(1).default("default"),
         maxAttempts: z.number().int().min(1).max(10).optional(),
       }),
       execute: async (
-        args: Input & { session: string; maxAttempts?: number },
+        args: Input & { maxAttempts?: number },
         ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
       ) => {
         const { text: raw, source } = await readSource(args);
@@ -528,11 +545,12 @@ export const model = {
       description:
         "Referee mode: submit the driving agent's rewrite. Re-lints it, counts the attempt against the cap, and refuses once the session is clean or exhausted.",
       arguments: z.object({
-        session: z.string().min(1).default("default"),
-        text: z.string().min(1),
+        session: SessionArg,
+        text: z.string().min(1).optional(),
+        path: z.string().optional(),
       }),
       execute: async (
-        args: { session: string; text: string },
+        args: { session: string; text?: string; path?: string },
         ctx: {
           globalArgs: GlobalArgs;
           readResource: ReadResource;
@@ -560,11 +578,15 @@ export const model = {
           );
         }
 
+        // text or path, the same pair every other method takes. The session
+        // owns `source`, so a rewrite read from a file does not rename it.
+        const { text } = await readSource(args);
+
         const overrides = {
           textType: prior.textType as "procedural" | "descriptive",
           maxWords: prior.maxWords,
         };
-        const result = runLint(args.text, g, overrides);
+        const result = runLint(text, g, overrides);
 
         const packet = sessionPacket(
           {
@@ -574,7 +596,7 @@ export const model = {
             maxWords: result.limit,
             clean: result.blockingCount === 0,
             blockingCount: result.blockingCount,
-            text: args.text,
+            text,
             findings: result.findings,
             attempt: 0,
             maxAttempts: 0,

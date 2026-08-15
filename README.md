@@ -29,6 +29,11 @@ a vault.
 | `rewrite` | yes | Run the whole loop in one command |
 | `start` / `record` | no | Hold state and gate while a calling agent writes |
 
+Every method takes the same arguments. Pass `text` or `path` to say what to
+read. Pass `session` to name the state slot to write. `session` defaults to
+`latest`, so `lint --input session=readme` writes `findings-readme` and two
+drafts never overwrite each other.
+
 ## Lint a draft
 
 ```bash
@@ -71,8 +76,8 @@ draft is already in the agent's context, use this mode.
 
 ```bash
 swamp model method run ste start --input path=DRAFT.md
-swamp data get ste session-default --json | jq -r '.content.nextAction'
-swamp model method run ste record --input text="<the rewrite>"
+swamp data get ste session-latest --json | jq -r '.content.nextAction'
+swamp model method run ste record --input path=REWRITE.md
 ```
 
 `record` re-lints, counts the attempt against the cap, and refuses once the

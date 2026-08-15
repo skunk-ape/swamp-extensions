@@ -41,8 +41,9 @@ Run these in order. Do not skip the lint step and do not hand-wave the result.
 
 ### Step 1 — Open a session
 
-Use `--input text=` for a snippet or `--input path=` for a file. Add
-`--input session=<name>` to run several drafts at once.
+Use `--input text=` for a snippet or `--input path=` for a file. Every method
+takes both. Add `--input session=<name>` to run several drafts at once — it
+names the state slot, and defaults to `latest`.
 
 ```
 swamp model method run <model> start --input path=DRAFT.md
@@ -53,7 +54,7 @@ swamp model method run <model> start --input path=DRAFT.md
 `nextAction` states exactly what to do next.
 
 ```
-swamp data get <model> session-default --json | jq -r '.content |
+swamp data get <model> session-latest --json | jq -r '.content |
   "\(.phase) \(.attempt)/\(.maxAttempts)\n\(.nextAction)"'
 ```
 
@@ -63,7 +64,7 @@ Fix every finding in `findings`, and apply the judgement rules below. Read the
 findings with:
 
 ```
-swamp data get <model> session-default --json |
+swamp data get <model> session-latest --json |
   jq -r '.content.findings[] | select(.category != "recon") | .description'
 ```
 
@@ -73,6 +74,8 @@ The model re-lints your rewrite and advances the attempt count.
 
 ```
 swamp model method run <model> record --input text="<your rewrite>"
+# or, for a file you edited in place:
+swamp model method run <model> record --input path=DRAFT.md
 ```
 
 ### Step 5 — Repeat
