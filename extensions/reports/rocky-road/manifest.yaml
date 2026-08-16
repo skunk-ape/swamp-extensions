@@ -1,0 +1,77 @@
+manifestVersion: 1
+name: '@skunk-ape/rocky-road'
+version: 2026.08.16.1
+description: |
+  Chunked implementation for @swamp/software-factory. Replaces "produce a plan,
+  approve it, implement it in one go" with "break the work into small chunks,
+  execute them one at a time, and adapt the breakdown when it turns out to be
+  wrong."
+
+  Ships no model code — the machine is a factory definition (stages and gates
+  as data), plus a board report.
+
+  ## What it adds
+
+  - A `breakdown` artifact that is reviewed and human-approved, split from a
+    `progress` artifact that is not. Progress moves constantly while the
+    breakdown sits still, so the human is pulled in only when the
+    decomposition itself changes.
+  - An `adapt` edge back to `breakdown`. Because artifacts can only be
+    recorded from the stage that declares them, adding a chunk mid-flight
+    cannot be done in place — it has to route through review, where the
+    subject-version pin stales the old review and cycle scope resets the
+    approval.
+  - A per-chunk review loop with `findings-clear` as the kickback: an
+    unresolved critical or high finding leaves `rework` as the only way out.
+  - A per-chunk circuit breaker. `maxCycles` counts stage entries, which once
+    work is chunked conflates progress with thrash; the real guard is a
+    `reviewRounds` counter per chunk, checked by a `cel` gate. A stranded
+    chunk gets three named exits — escalate, force_rework, adapt.
+
+  ## Contents
+
+  - `factory.yaml` — the stage graph. Paste under `globalArguments` on a
+    `@swamp/software-factory` instance.
+  - `@skunk-ape/rocky-road/breakdown-board` — a report that joins the agreed
+    breakdown with recorded progress and renders the chunk board: derived
+    ready/blocked state, a Mermaid dependency graph, chunks added after the
+    fact, and any chunk stalled at its rework ceiling.
+  - `DESIGN.md` — the design record, including what the dry runs verified.
+
+  ## Use
+
+  ```
+  swamp extension pull @skunk-ape/rocky-road
+  swamp model create @swamp/software-factory my-factory
+  swamp model edit my-factory     # paste factory.yaml under globalArguments
+  swamp model method run my-factory validate
+  swamp model method run my-factory start --input workItem=<ref>
+  ```
+
+  Scope the board in the definition so it fires on `status` and nowhere else:
+
+  ```yaml
+  reports:
+    require:
+      - { name: "@skunk-ape/rocky-road/breakdown-board", methods: [status] }
+  ```
+repository: 'https://github.com/skunk-ape/swamp-extensions'
+
+# Everything for this extension lives beside this manifest, so typed entries
+# and additionalFiles both resolve from here rather than from extensions/reports/.
+paths:
+  base: manifest
+
+reports:
+  - breakdown_board.ts
+additionalFiles:
+  - DESIGN.md
+  - factory.yaml
+  - LICENSE
+dependencies:
+  - '@swamp/software-factory'
+labels:
+  - software-factory
+  - rocky-road
+  - chunked-implementation
+  - decomposition

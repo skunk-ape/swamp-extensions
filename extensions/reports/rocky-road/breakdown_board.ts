@@ -262,12 +262,16 @@ export const report = {
     if (context.executionStatus !== "succeeded") {
       const error = context.errorMessage ?? "unknown error";
       return {
-        markdown: `# Breakdown board — ${workItem}\n\n_Not rendered: ${error}_\n`,
+        markdown:
+          `# Breakdown board — ${workItem}\n\n_Not rendered: ${error}_\n`,
         json: { workItem, error },
       };
     }
 
-    const progressEnv = await readEnvelope(context, `artifact-${slug}-progress`);
+    const progressEnv = await readEnvelope(
+      context,
+      `artifact-${slug}-progress`,
+    );
     const stateEnv = await readEnvelope(context, `state-${slug}`);
 
     const chunks = (breakdownEnv.payload?.chunks ?? []) as Chunk[];
