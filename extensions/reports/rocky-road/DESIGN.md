@@ -514,3 +514,58 @@ Left:
 
 1. We need to try implementing a sample project to see how the DX is for the human. It may be enough to run a report periodically to assess status. But we may want to have a "live" view of status. Which could be a locally running web server and html view or a set of md files kept in sync (viewed in Obsidian?) or maybe a cute terminal based TUI with live update (?)
 2. We need to explore and define the specific swamp calls that are needed for the implementing and reviewing agents to function. I want to run the agent or agents in a sandbox and then turn permission checking off. The sandbox will not have open network egress, will run as a different user or in a container with a different filesystem. So we need to explore how to either poke holes in the sandbox just for the required swamp actions or drive the sandboxed agents from the outside providing them with a simple input/output interface of some files. The sandboxing is the key unlock to get efficient work. Without it, you cannot safely run with no perm checking. And perm checking is a huge efficiency and focus killer for the human in the loop.
+
+### What the access probe found (2026-08-16)
+
+Swamp is repo-local, so a sandboxed agent with its own clone gets its own
+`.swamp/` and its own divergent run. The factory needs one shared store. The
+route that keeps that true, without a shared writable directory, is
+`swamp serve` on the host plus one loopback hole per sandbox:
+
+```
+swamp serve --auth-mode token --host 127.0.0.1 --port 8899 --admins user:<you>
+swamp model method run <factory> status --input workItem=<ref> \
+  --server ws://127.0.0.1:8899 --token <name>.<secret>
+```
+
+Probed against a live server in this repo. What holds:
+
+- **Default deny works.** With no grant, `user:dev1` got
+  `Access denied: user:dev1 does not have 'run' on model:rocky-road`.
+- **A token identifies the caller.** The server logs
+  `Authenticated token "probe-dev1" as "user:dev1"`, and every method run
+  lands in run history with `initiatedBy: user:dev1`.
+- **Reports come through.** The board rendered in the client's `status`
+  output over the socket, so a sandboxed agent sees the same board.
+
+What does not hold, and this is the crux:
+
+- **Grants cannot separate one method from another.** Resource kinds are
+  `workflow`, `model`, `data`, and `access` only — `method:` is rejected, and
+  `model:rocky-road:approve` parses as a model named `rocky-road:approve`,
+  which matches nothing. The condition environment declares `tags`,
+  `principal`, and `name`. Every attempt at the requested method
+  (`method`, `methodName`, `action`) fails with
+  `CEL type error: Unknown variable`.
+- **So `run` on a model is `run` on all of its methods.** With one grant of
+  `run` on `model:rocky-road`, `user:dev1` ran `status` and reached the
+  business-logic pre-flight of `approve`. Authorization let `approve` through.
+  Only the missing work item stopped it.
+- **`actor` is self-declared.** `approve` writes
+  `actor: decision.actor` straight from the input
+  (`software_factory.ts:2062`). An agent can call `approve` with
+  `actor=seth`, and the approval record cannot tell.
+
+So the human-approval gate is **detectable, not preventable**, over serve
+today. The prevention story needs one of:
+
+1. Method-scoped grants upstream — a `methodName` variable in the condition
+   environment would be enough, and it is a small ask.
+2. The factory stamping `actor` from the authenticated principal rather than
+   from the input, when a run arrives through a server.
+
+Until then the honest arrangement is: sandboxed agents hold a token with
+`run` on the factory model, the human approves from the host, and forged
+approvals are caught by cross-checking each `approval-*` record against the
+`initiatedBy` on the run that wrote it. Worth filing both upstream asks
+before the first real run.
