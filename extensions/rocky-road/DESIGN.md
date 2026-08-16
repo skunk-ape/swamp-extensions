@@ -258,17 +258,82 @@ No human is involved in this loop. `chunk-review` carries no `human-approval`
 gate, so execution stays agent-autonomous — consistent with the human being
 pulled in only when the decomposition itself changes.
 
-**Cost:** cycle budget. Each chunk costs at least one `executing` entry, and a
-kicked-back chunk costs two or more. Seven chunks with a couple of rework rounds
-is 16+ entries, so `maxCycles` on `executing` and `chunk-review` has to be set
-in the tens, not the current 8. That also weakens `maxCycles` as a runaway
-guard for this stage — `maxDispatchesPerCycle` becomes the tighter bound.
+## The cycle budget, and why `maxCycles` is the wrong guard here
 
-**Open:** whether `rework` should be reachable only when findings are unresolved
-(currently it is always available, so a driver could route around review by
-taking `rework` and then re-submitting). A `cel` gate over `chunk-review`
-findings would close that, at the cost of trapping the run when a chunk genuinely
-needs abandoning.
+`maxCycles` exists to stop non-convergence: review kicks back, the fix does not
+land, review kicks back again, forever. Unbounded, that burns money quietly.
+The engine's enforcement is `entries < limit + overrides`, and each human
+override grants exactly **one** more entry — so hitting the limit parks the run
+and makes a human the reset.
+
+Chunking breaks the measurement. `maxCycles` counts **entries into a stage, per
+work item**. With a single monolithic implement stage, "entered 8 times" means
+"reworked this change 8 times" — a real smell. Once work is chunked,
+`executing` is entered once per chunk *when everything is going well*. Seven
+chunks, no problems, seven entries. The counter now conflates:
+
+- **progress** — moving to the next chunk (healthy)
+- **thrash** — the same chunk bouncing (unhealthy)
+
+Raising the limit does not fix this, it switches the breaker off: one chunk
+could bounce thirty times without tripping it, while a healthy forty-chunk run
+trips for no reason.
+
+**So the guard moves into the data.** The engine cannot count per chunk —
+chunks are payload inside an artifact, invisible to stage counters — but a `cel`
+gate reads payload. `reviewRounds` on each chunk, checked on the `rework` edge,
+bounds the thing that actually matters. `maxCycles` on `executing` is then set
+generously (40) on purpose: it is a crude backstop against whole-run thrash,
+which is all it can honestly be once chunks exist.
+
+### The stranded chunk and its three exits
+
+When the breaker trips, `accept` is already blocked by `findings-clear` and
+`rework` is now blocked too. The chunk is stranded, which is the desired
+outcome — but a stranded run needs named ways out, all involving a human:
+
+| Exit           | Gate                                  | When                                    |
+| -------------- | ------------------------------------- | --------------------------------------- |
+| `escalate`     | none — lands in `breakdown`            | The chunk was wrong, not the code        |
+| `force_rework` | `human-approval: chunk-rework-override` | Nearly there, grant one more round      |
+| `adapt`        | none — lands in `breakdown`            | Drop the chunk entirely                 |
+
+`escalate` and `adapt` are deliberately ungated. They do not let the agent skip
+the human — both land in `breakdown`, and leaving `breakdown-review` requires a
+fresh adversarial review and a fresh `human-approval`. An agent that recognises
+its chunk is wrong should not need permission to *say so*; it still needs
+permission to *proceed*.
+
+**Verified** (`workItem=dry-run-2`): three reworks succeeded, the fourth was
+refused with the authored message, `status` showed `accept`/`rework`/
+`force_rework` all unsatisfied with `escalate` the only open door, and a human
+`approve` on `chunk-rework-override` released the chunk back to `executing`.
+
+## Cancelling a chunk
+
+Real work gets abandoned mid-flight, so the graph should say what that means.
+It is already half-modelled: `progress.chunks[].status` includes `dropped`, and
+the `complete` gate accepts `done || dropped`, so a cancelled chunk does not
+block the run.
+
+The failure mode to design against is **silent self-cancellation** — an agent
+that cannot finish a chunk drops it and reports success. That is how scope
+quietly evaporates.
+
+The position taken here: **cancelling goes through the breakdown, not through
+progress.** Removing work is a change to what was agreed, and the breakdown gate
+is exactly where changes to what was agreed get reviewed. It costs a re-review
+and a human approval, and the version diff is the audit trail. This keeps the
+line the whole design already draws — *progress records what happened,
+breakdown records what we agreed to do.*
+
+A `cel` gate on `complete` backs this up by refusing any dropped chunk without a
+`droppedReason`, so a drop that does slip into progress cannot reach conformance
+review unexplained.
+
+Still worth separating: "not needed after all", "deferred to its own issue", and
+"could not do it" are different outcomes that `dropped` currently flattens into
+one. The third is a failure, and probably should never be self-service.
 
 ## What to borrow from `@swamp/issue-lifecycle`
 

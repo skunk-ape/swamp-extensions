@@ -116,11 +116,15 @@ stages:
 
   - id: executing
     description: >
-      Work the chunks. Agent-autonomous — the human is not involved here.
-      Progress is re-recorded after each chunk, so `progress` moves
+      Work one chunk at a time. Agent-autonomous — the human is not involved
+      here. Progress is re-recorded after each chunk, so `progress` moves
       constantly while `breakdown` stays still.
-    maxCycles: 8
-    maxDispatchesPerCycle: 12
+    # Generous on purpose. Once work is chunked, entries into this stage count
+    # progress (next chunk) as well as thrash (same chunk bouncing), so this
+    # number cannot distinguish the two. The real runaway guard is the
+    # per-chunk `reviewRounds` gate on chunk-review's rework edge.
+    maxCycles: 40
+    maxDispatchesPerCycle: 3
     work:
       mode: interactive
       skills: [implementation]
@@ -129,8 +133,14 @@ stages:
       - name: progress
         schema:
           type: object
-          required: [chunks]
+          required: [currentChunk, chunks]
           properties:
+            currentChunk:
+              type: string
+              minLength: 1
+              description: >
+                The chunk just worked. Binds into the chunk-review prompt so
+                the review is focused on one chunk rather than the whole diff.
             chunks:
               type: array
               minItems: 1
@@ -142,9 +152,22 @@ stages:
                   status:
                     type: string
                     enum: [pending, in_progress, done, dropped]
+                  reviewRounds:
+                    type: integer
+                    minimum: 0
+                    description: >
+                      Times this chunk has come back from review. Incremented
+                      when recording progress at the start of a rework round.
                   actualChanges: { type: string }
+                  droppedReason: { type: string }
                   note: { type: string }
     transitions:
+      - name: submit_chunk
+        to: chunk-review
+        gates:
+          - type: artifact-exists
+            config: { artifact: progress }
+
       # Material adaptation: new work discovered, a chunk must be dropped, or
       # scope changed. Goes back through review and human approval on purpose.
       - name: adapt
@@ -161,6 +184,72 @@ stages:
               message: >
                 Every chunk must be done or explicitly dropped before the
                 change can go to conformance review.
+          - type: cel
+            config:
+              expr: >
+                artifacts.progress.chunks.all(c,
+                  c.status != "dropped" ||
+                  (has(c.droppedReason) && c.droppedReason != ""))
+              message: >
+                Every dropped chunk needs a droppedReason. Cancelling work is
+                a scope change and has to say why.
+
+  - id: chunk-review
+    description: >
+      Review the chunk just finished, against its description in the approved
+      breakdown. No human here — findings-clear is the kickback.
+    maxCycles: 40
+    work:
+      mode: dispatch
+      skills: [code-review]
+      systemPrompt: |
+        Review only this chunk, against its description in the approved
+        breakdown. Ignore changes belonging to other chunks.
+
+        Chunk: ${{ data.latest(self.name, "artifact-progress").payload.currentChunk }}
+
+        Record findings with severities. A critical or high finding sends the
+        chunk back for rework, so be precise about severity.
+    artifacts:
+      - name: chunk-review
+        kind: findings
+        reviews: progress
+    transitions:
+      - name: accept
+        to: executing
+        gates:
+          - type: artifact-fresh
+            config: { artifact: chunk-review, recordedThisCycle: true }
+          - type: findings-clear
+            config: { artifact: chunk-review, blocking: [critical, high] }
+
+      # The per-chunk circuit breaker. Goes unavailable on the 4th round,
+      # which strands the chunk — accept is blocked by findings-clear and
+      # rework is blocked here, so a human must pick one of the exits below.
+      - name: rework
+        to: executing
+        gates:
+          - type: cel
+            config:
+              expr: >
+                artifacts.progress.chunks.exists(c,
+                  c.id == artifacts.progress.currentChunk &&
+                  c.reviewRounds < 3)
+              message: >
+                This chunk has failed review 3 times. A human must choose:
+                escalate to re-slice it, force_rework to grant another round,
+                or adapt to drop it.
+
+      # Human grants one more round, mirroring the engine's cycle-override.
+      - name: force_rework
+        to: executing
+        gates:
+          - type: human-approval
+            config: { id: chunk-rework-override }
+
+      # The chunk was wrong, not the implementation. Re-slice it.
+      - name: escalate
+        to: breakdown
 
   - id: conformance-review
     description: >
