@@ -183,23 +183,58 @@ A `reject` blocks the `human-approval` gate, which pushes the run back through
 thing — every change goes through `record_artifact` so it is versioned,
 schema-validated, and re-reviewed.
 
-### The gap: there is no board
+### The board
 
-`status` is stage-level. `summary` is history-level. Neither renders *the chunk
-list as a board* — "7 chunks: 3 done, 1 in progress, 2 blocked on c3, 1 added in
-v2 and not yet started."
+`status` is stage-level. `summary` is history-level. Neither renders the chunk
+list as a board, which is the question a human actually asks mid-run.
 
-**This is the one thing that has to be built.** A swamp report
-(`design/reports.md` in the swamp repo) scoped to this factory:
+`@skunk-ape/rocky-road/breakdown-board` (in `extensions/reports/`) fills that
+in. It joins the agreed `breakdown` with the recorded `progress`, resolves
+`dependsOn` against what is finished, and renders a table, a Mermaid dependency
+graph, and two conditional sections. Pure projection — no LLM, no model state
+touched, so the same run data always renders the same board.
+
+Scoped in the definition so it fires on `status` and nowhere else:
+
+```yaml
+reports:
+  require:
+    - { name: "@skunk-ape/rocky-road/breakdown-board", methods: [status] }
+```
+
+Sample output, from `dry-run-2` at the moment the circuit breaker tripped:
 
 ```
-@skunk-ape/rocky-road/breakdown-board
+**2 chunks** — 1 in progress · 1 blocked
+
+| | Chunk | State | Rounds | Depends on | Description |
+| --- | --- | --- | --- | --- | --- |
+| `>` | c1 | in progress | **3** | — | Tokenizer |
+| `.` | c2 | blocked | — | **c1** | Renderer |
+
+## Needs a human
+- **c1** has failed review 3 times — escalate to re-slice, force_rework to
+  grant a round, or adapt to drop it.
 ```
 
-It joins the latest `breakdown` and `progress` artifacts, resolves `dependsOn`
-into ready/blocked, and renders a table plus a Mermaid graph of the chunk
-dependency structure. Pure projection — no LLM, no model state touched. It is
-the artifact a human actually looks at when asked "how is this going."
+Three things it does that the raw artifacts do not:
+
+- **Derives state rather than echoing it.** The recorded status is only
+  `pending`/`in_progress`/`done`/`dropped`. The board resolves `pending` into
+  **ready** or **blocked** by checking each chunk's dependencies, and reports a
+  chunk present in the breakdown but absent from progress as **not started**.
+  Blocking dependencies are bolded, so the thing to fix next is visible without
+  reading the graph.
+- **Surfaces the stalled chunk without being asked.** Any chunk at
+  `reviewRounds >= 3` gets a "Needs a human" section naming the three exits.
+  The board is where a stranded run announces itself.
+- **Names what was added after the fact.** Chunks with `origin` other than
+  `initial` are marked in the table and listed with their `addedReason`, so
+  scope growth is legible without diffing breakdown versions.
+
+It stays silent — empty markdown, empty json — on any `@swamp/software-factory`
+instance with no `breakdown` artifact, so it is safe to leave registered
+alongside other factories.
 
 ## Per-chunk review and kickback
 
