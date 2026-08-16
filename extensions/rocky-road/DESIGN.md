@@ -6,30 +6,24 @@ Chunks, and a bumpy path — the work is broken into chunks, and the route throu
 them is expected to change under you.
 
 A `@swamp/software-factory` stage graph that replaces "produce a plan, approve
-it, implement it in one go" with "break the work into small sub-tickets, execute
-them incrementally, and adapt the breakdown when it turns out to be wrong."
+it, implement it in one go" with "break the work into small chunks
+(sub-tickets), execute them incrementally, and adapt the breakdown when it
+turns out to be wrong."
 
-Built **on** `@swamp/software-factory`, borrowing details from
-`@swamp/issue-lifecycle`. Not a change to either.
+Built on `@swamp/software-factory` as a factory definition (no model code). It
+borrowing shape from `@swamp/issue-lifecycle`.
 
-## Why the engine choice matters
+Here is how the design maps to the software-factory primitives:
 
-`@swamp/software-factory` is a generic state machine whose stages, gates, and
-artifacts live in `globalArguments` as data. Nearly everything this idea needs is
-already a primitive:
-
-| Need                                       | Engine primitive                                        |
-| ------------------------------------------ | ------------------------------------------------------- |
-| Breakdown is reviewable                    | `kind: findings` artifact with `reviews: breakdown`     |
-| Human approves the breakdown               | `human-approval` gate, cycle-scoped                     |
-| Adding a sub-ticket forces re-review        | `artifact-fresh` + the `reviews:` subject-version pin   |
-| Adaptation is a real, recorded act         | Loop-back transition; re-entry increments the cycle     |
+| Need                                        | Engine primitive                                        |
+| ------------------------------------------  | ------------------------------------------------------- |
+| Breakdown is reviewable                     | `kind: findings` artifact with `reviews: breakdown`     |
+| Human approves the breakdown                | `human-approval` gate, cycle-scoped                     |
+| Adding a chunk forces re-review             | `artifact-fresh` + the `reviews:` subject-version pin   |
+| Adaptation is a real, recorded act          | Loop-back transition; re-entry increments the cycle     |
 | "All chunks done" is enforced, not asserted | `cel` gate over the progress artifact                   |
-| History is inspectable                     | Versioned immutable artifacts + `summary`               |
-| Runaway agent is bounded                   | `maxCycles` × `maxDispatchesPerCycle`                   |
-
-So this extension ships **no model code**. It is a factory definition, a driving
-skill, and one report.
+| History is inspectable                      | Versioned immutable artifacts + `summary`               |
+| Runaway agent is bounded                    | `maxCycles` × `maxDispatchesPerCycle`                   |
 
 ## The central decision: chunks are artifact entries, not work items
 
@@ -62,7 +56,7 @@ Splitting them is what makes the review economics work. If chunk status lived in
 the `breakdown` artifact, every completed chunk would bump its version, stale the
 `reviews:` link, and drag the human back for another approval. With them split,
 `breakdown` sits still while `progress` moves, and the human is pulled in
-**only** when the decomposition itself changes.
+only when the decomposition itself changes.
 
 If a chunk later turns out to warrant its own full lifecycle, nothing stops it
 from being started as its own work item in the same factory. That stays
@@ -82,7 +76,7 @@ triage ──> breakdown ──> breakdown-review ──> executing ──> conf
 
 The `adapt` edge from `executing` back to `breakdown` is the whole point. It is
 an ordinary transition, and because re-entry increments the stage cycle and
-`human-approval` is cycle-scoped, adapting the breakdown **automatically**
+`human-approval` is cycle-scoped, adapting the breakdown automatically
 invalidates the previous sign-off and routes back through review. Nobody has to
 remember to ask.
 
@@ -100,7 +94,7 @@ add their own.
 `human-approval` gate, so execution cannot begin until a human runs:
 
 ```
-swamp model method run chunked approve --input workItem=issue-42 \
+swamp model method run rocky-road approve --input workItem=issue-42 \
   --input gateId=breakdown-approval
 ```
 
@@ -108,19 +102,19 @@ Before approving, the human reads the breakdown. Three ways, increasing detail:
 
 ```bash
 # What is this work item waiting on right now, and which gates are unmet?
-swamp model method run chunked status --input workItem=issue-42
+swamp model method run rocky-road status --input workItem=issue-42
 
 # Just the chunk list, without pulling the whole envelope
 swamp data query --select attributes.payload.chunks \
   --name artifact-issue-42-breakdown
 
 # Everything, as markdown — statically rendered, no LLM
-swamp model method run chunked summary --input workItem=issue-42
+swamp model method run rocky-road summary --input workItem=issue-42
 ```
 
 ### Watch it evolve
 
-Artifacts are versioned and immutable, so **every** breakdown revision is
+Artifacts are versioned and immutable, so every breakdown revision is
 retained. The version history is the evolution:
 
 ```bash
@@ -135,31 +129,52 @@ three times still names the chunk it came from.
 `summary` renders the whole run history including every stage entry and cycle,
 so "we went back to breakdown twice" is visible without querying anything.
 
-### Review newly-added sub-tickets
+### Enforced review of newly-added chunks
 
-This one is enforced rather than remembered, and it is worth being precise about
-the mechanism:
+**Verified in a dry run** (`workItem=dry-run-1`, 2026-08-16). Three independent
+mechanisms stack, and the first is stronger than originally assumed:
 
-1. The agent records a new `breakdown` version (adding a chunk).
-2. The `breakdown-review` artifact declares `reviews: breakdown`, which pins the
-   subject version it reviewed.
-3. `artifact-fresh` now fails — the pinned version is no longer current.
-4. `human-approval` is scoped to (stage, cycle), so the previous approval does
-   not count for the new entry.
+1. **An artifact can only be recorded from the stage that declares it.**
+   Attempting `record_artifact name=breakdown` from `breakdown-review` or
+   `executing` is refused outright:
 
-The result: **an added sub-ticket cannot reach execution without a fresh
-adversarial review and a fresh human approval.** Not a convention in a skill —
-a gate the engine evaluates in pre-flight checks and re-validates inside
-`advance`.
+   ```
+   Error: Artifact 'breakdown' is not declared on stage 'executing'.
+          Declared: progress
+   ```
 
-### Add sub-tickets yourself
+   So a chunk cannot be added in place at all. The `adapt` edge back to
+   `breakdown` is the only route, which makes re-review structural rather than
+   something a gate has to catch after the fact.
+
+2. **The subject-version pin stales the review.** `breakdown-review` declares
+   `reviews: breakdown`, so `artifact-fresh` fails once the breakdown moves:
+
+   ```
+   'breakdown-review' reviews 'breakdown' v1 but the current version is v2
+   — re-record 'breakdown-review' against the current version
+   ```
+
+3. **Cycle scope resets the approval.** Re-entering the stage increments its
+   cycle, and a cycle-1 approval does not satisfy cycle 2:
+
+   ```
+   awaiting human approval 'breakdown-approval' (0/1) for stage
+   'breakdown-review' cycle 2
+   ```
+
+An added chunk cannot reach execution without a fresh adversarial review and a
+fresh human approval — enforced in pre-flight checks and re-validated inside
+`advance`, not by convention in a skill.
+
+### Add your own chunks
 
 The human says what they want added; the agent records the new breakdown
 version. Two ways to reject instead:
 
 ```bash
 # Refuse the current breakdown outright — blocks the gate for this cycle
-swamp model method run chunked reject --input workItem=issue-42 \
+swamp model method run rocky-road reject --input workItem=issue-42 \
   --input gateId=breakdown-approval --input reason="missing the migration step"
 ```
 
@@ -185,6 +200,75 @@ It joins the latest `breakdown` and `progress` artifacts, resolves `dependsOn`
 into ready/blocked, and renders a table plus a Mermaid graph of the chunk
 dependency structure. Pure projection — no LLM, no model state touched. It is
 the artifact a human actually looks at when asked "how is this going."
+
+## Per-chunk review and kickback
+
+The graph as drafted has one `executing` stage and reviews only at the end. That
+loses the main advantage of chunking: a chunk is small enough to review while
+the reasoning behind it is still fresh, and cheap enough to redo.
+
+The fix is a review stage in the chunk loop, with both exits returning to
+`executing`:
+
+```
+executing --submit_chunk--> chunk-review --accept--> executing   (next chunk)
+                                         --rework--> executing   (same chunk)
+```
+
+```yaml
+- id: chunk-review
+  description: Review the chunk just finished, not the whole change.
+  work:
+    mode: dispatch
+    skills: [code-review]
+    systemPrompt: |
+      Review only the chunk named below, against its description in the
+      approved breakdown. Ignore unrelated changes.
+      Chunk: ${{ data.latest(self.name, "artifact-progress").payload.currentChunk }}
+  artifacts:
+    - name: chunk-review
+      kind: findings
+      reviews: progress
+  transitions:
+    - name: accept
+      to: executing
+      gates:
+        - type: artifact-fresh
+          config: { artifact: chunk-review, recordedThisCycle: true }
+        - type: findings-clear
+          config: { artifact: chunk-review, blocking: [critical, high] }
+    - name: rework
+      to: executing
+```
+
+Three things make this work:
+
+- **`findings-clear` is the kickback.** An unresolved critical or high finding
+  makes `accept` unsatisfiable, so `rework` is the only way out. The reviewer
+  does not ask the implementer to redo the chunk; it records a finding, and the
+  graph leaves no other route.
+- **`reviews: progress` focuses each round.** Finishing a chunk bumps
+  `progress`, which stales the previous `chunk-review` — so every chunk gets its
+  own review rather than one review covering whatever has accumulated.
+- **`currentChunk` on the progress payload** is what makes the review focused
+  rather than whole-diff. It needs adding to the `progress` schema; the system
+  prompt binds to it so the subagent is told exactly which chunk to look at.
+
+No human is involved in this loop. `chunk-review` carries no `human-approval`
+gate, so execution stays agent-autonomous — consistent with the human being
+pulled in only when the decomposition itself changes.
+
+**Cost:** cycle budget. Each chunk costs at least one `executing` entry, and a
+kicked-back chunk costs two or more. Seven chunks with a couple of rework rounds
+is 16+ entries, so `maxCycles` on `executing` and `chunk-review` has to be set
+in the tens, not the current 8. That also weakens `maxCycles` as a runaway
+guard for this stage — `maxDispatchesPerCycle` becomes the tighter bound.
+
+**Open:** whether `rework` should be reachable only when findings are unresolved
+(currently it is always available, so a driver could route around review by
+taking `rework` and then re-submitting). A `cel` gate over `chunk-review`
+findings would close that, at the cost of trapping the run when a chunk genuinely
+needs abandoning.
 
 ## What to borrow from `@swamp/issue-lifecycle`
 
