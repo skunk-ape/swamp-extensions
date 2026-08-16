@@ -72,6 +72,8 @@ interface Row {
   state: BoardState;
   reviewRounds: number;
   blockedBy: string[];
+  /** In the wave under review right now. */
+  inWave: boolean;
   note?: string;
 }
 
@@ -139,10 +141,26 @@ const STATE_MARK: Record<BoardState, string> = {
 };
 
 /**
+ * The chunk ids under review right now. `currentChunks` is a wave of chunks
+ * worked in parallel; `currentChunk` is the single-chunk form earlier runs
+ * recorded, kept readable rather than rendered as an empty wave.
+ */
+function readWave(payload: Record<string, unknown> | undefined): string[] {
+  const many = payload?.currentChunks;
+  if (Array.isArray(many)) return many.filter((id) => typeof id === "string");
+  const one = payload?.currentChunk;
+  return typeof one === "string" && one.length > 0 ? [one] : [];
+}
+
+/**
  * Derive board state. A recorded status wins where it is decisive; `pending`
  * is refined into ready/blocked by resolving dependsOn against what is done.
  */
-function deriveRows(chunks: Chunk[], progress: ChunkProgress[]): Row[] {
+function deriveRows(
+  chunks: Chunk[],
+  progress: ChunkProgress[],
+  wave: string[],
+): Row[] {
   const byId = new Map(progress.map((p) => [p.id, p]));
   const done = new Set(
     progress.filter((p) => p.status === "done" || p.status === "dropped").map(
@@ -173,6 +191,7 @@ function deriveRows(chunks: Chunk[], progress: ChunkProgress[]): Row[] {
       state,
       reviewRounds,
       blockedBy,
+      inWave: wave.includes(chunk.id),
       note: p?.droppedReason ?? p?.note,
     };
   });
@@ -200,8 +219,11 @@ function renderTable(rows: Row[]): string {
     const added = r.chunk.origin && r.chunk.origin !== "initial"
       ? ` _(${r.chunk.origin})_`
       : "";
+    // A wave is several chunks under one review. Bolding its members says
+    // which chunks that review covers, which the state column cannot.
+    const id = r.inWave ? `**${r.chunk.id}**` : r.chunk.id;
     lines.push(
-      `| \`${STATE_MARK[r.state]}\` | ${r.chunk.id} | ${
+      `| \`${STATE_MARK[r.state]}\` | ${id} | ${
         STATE_LABEL[r.state]
       } | ${rounds} | ${deps} | ${desc}${added} |`,
     );
@@ -276,11 +298,9 @@ export const report = {
 
     const chunks = (breakdownEnv.payload?.chunks ?? []) as Chunk[];
     const progress = (progressEnv?.payload?.chunks ?? []) as ChunkProgress[];
-    const currentChunk = progressEnv?.payload?.currentChunk as
-      | string
-      | undefined;
+    const wave = readWave(progressEnv?.payload);
 
-    const rows = deriveRows(chunks, progress);
+    const rows = deriveRows(chunks, progress, wave);
     const count = (s: BoardState) => rows.filter((r) => r.state === s).length;
 
     const tally = (
@@ -303,7 +323,11 @@ export const report = {
       "",
       [
         stage ? `**Stage:** ${stage}` : null,
-        currentChunk ? `**Current chunk:** ${currentChunk}` : null,
+        wave.length > 0
+          ? `**${wave.length === 1 ? "Current chunk" : "Wave"}:** ${
+            wave.join(", ")
+          }`
+          : null,
         breakdownEnv.recordedAt
           ? `**Breakdown recorded:** ${breakdownEnv.recordedAt}`
           : null,
@@ -352,7 +376,7 @@ export const report = {
       json: {
         workItem,
         stage,
-        currentChunk,
+        currentChunks: wave,
         total: rows.length,
         counts: {
           done: count("done"),
@@ -366,6 +390,7 @@ export const report = {
           id: r.chunk.id,
           state: r.state,
           reviewRounds: r.reviewRounds,
+          inWave: r.inWave,
           blockedBy: r.blockedBy,
           dependsOn: r.chunk.dependsOn ?? [],
           origin: r.chunk.origin ?? "initial",

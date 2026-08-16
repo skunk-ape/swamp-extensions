@@ -1,14 +1,14 @@
 manifestVersion: 1
 name: '@skunk-ape/rocky-road'
-version: 2026.08.16.1
+version: 2026.08.16.2
 description: |
   Chunked implementation for @swamp/software-factory. Replaces "produce a plan,
   approve it, implement it in one go" with "break the work into small chunks,
-  execute them one at a time, and adapt the breakdown when it turns out to be
-  wrong."
+  execute them a wave at a time, and adapt the breakdown when it turns out to
+  be wrong."
 
   Ships no model code — the machine is a factory definition (stages and gates
-  as data), plus a board report.
+  as data), plus a board report and the skill that drives it.
 
   ## What it adds
 
@@ -21,8 +21,12 @@ description: |
     cannot be done in place — it has to route through review, where the
     subject-version pin stales the old review and cycle scope resets the
     approval.
-  - A per-chunk review loop with `findings-clear` as the kickback: an
+  - A per-wave review loop with `findings-clear` as the kickback: an
     unresolved critical or high finding leaves `rework` as the only way out.
+    A wave is one chunk, or several chunks that do not depend on each other —
+    `cel` gates on `submit_chunk` refuse a wave with an unfinished dependency
+    or with two chunks that depend on each other, so parallel execution is
+    checked rather than trusted.
   - A per-chunk circuit breaker. `maxCycles` counts stage entries, which once
     work is chunked conflates progress with thrash; the real guard is a
     `reviewRounds` counter per chunk, checked by a `cel` gate. A stranded
@@ -36,6 +40,11 @@ description: |
     breakdown with recorded progress and renders the chunk board: derived
     ready/blocked state, a Mermaid dependency graph, chunks added after the
     fact, and any chunk stalled at its rework ceiling.
+  - The `rocky-road` skill — the driving rules the graph cannot enforce:
+    how to choose a wave, where `currentChunks` and `reviewRounds` come from,
+    and what to put to the human when a chunk strands.
+  - `agent-constraints/` — triage, decomposition, and implementation
+    conventions. Copy them into your own repository and edit them.
   - `DESIGN.md` — the design record, including what the dry runs verified.
 
   ## Use
@@ -64,10 +73,15 @@ paths:
 
 reports:
   - breakdown_board.ts
+skills:
+  - rocky-road
 additionalFiles:
   - DESIGN.md
   - factory.yaml
   - LICENSE
+  - agent-constraints/triage-conventions.md
+  - agent-constraints/decomposition-conventions.md
+  - agent-constraints/implementation-conventions.md
 dependencies:
   - '@swamp/software-factory'
 labels:

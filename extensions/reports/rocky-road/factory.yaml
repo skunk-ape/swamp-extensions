@@ -1,8 +1,8 @@
-# Rocky Road — DRAFT, not yet validated.
+# Rocky Road
 #
 # A @swamp/software-factory stage graph. The plan step is replaced by a
-# breakdown into small sub-tickets ("chunks"); execution walks the chunks
-# incrementally and can adapt the breakdown mid-flight.
+# breakdown into small sub-tickets ("chunks"). Execution walks the chunks a
+# wave at a time and can adapt the breakdown mid-flight.
 #
 # Usage:
 #   swamp model create @swamp/software-factory chunked
@@ -15,6 +15,7 @@
 #   reports:
 #     require:
 #       - { name: "@swamp/software-factory/work-item-summary", methods: [summary] }
+#       - { name: "@skunk-ape/rocky-road/breakdown-board", methods: [status] }
 
 stages:
   - id: triage
@@ -116,11 +117,13 @@ stages:
 
   - id: executing
     description: >
-      Work one chunk at a time. Agent-autonomous — the human is not involved
-      here. Progress is re-recorded after each chunk, so `progress` moves
-      constantly while `breakdown` stays still.
+      Work one wave of chunks. A wave is one chunk, or several chunks that do
+      not depend on each other and do not touch the same files.
+      Agent-autonomous — the human is not involved here. Progress is
+      re-recorded after each wave, so `progress` moves constantly while
+      `breakdown` stays still.
     # Generous on purpose. Once work is chunked, entries into this stage count
-    # progress (next chunk) as well as thrash (same chunk bouncing), so this
+    # progress (next wave) as well as thrash (the same chunk bouncing), so this
     # number cannot distinguish the two. The real runaway guard is the
     # per-chunk `reviewRounds` gate on chunk-review's rework edge.
     maxCycles: 40
@@ -133,14 +136,16 @@ stages:
       - name: progress
         schema:
           type: object
-          required: [currentChunk, chunks]
+          required: [currentChunks, chunks]
           properties:
-            currentChunk:
-              type: string
-              minLength: 1
+            currentChunks:
+              type: array
+              minItems: 1
+              items: { type: string, minLength: 1 }
               description: >
-                The chunk just worked. Binds into the chunk-review prompt so
-                the review is focused on one chunk rather than the whole diff.
+                The wave just worked — the chunk ids under review right now.
+                Binds into the chunk-review prompt, so the review covers this
+                wave rather than the whole diff. One entry is the normal case.
             chunks:
               type: array
               minItems: 1
@@ -167,6 +172,32 @@ stages:
         gates:
           - type: artifact-exists
             config: { artifact: progress }
+          # Ordering is enforced here rather than trusted to the driving
+          # agent: nothing in the wave may depend on work that is still open.
+          - type: cel
+            config:
+              expr: >
+                artifacts.progress.currentChunks.all(id,
+                  artifacts.breakdown.chunks.exists(c, c.id == id &&
+                    (!has(c.dependsOn) || c.dependsOn.all(d,
+                      artifacts.progress.chunks.exists(p, p.id == d &&
+                        (p.status == "done" || p.status == "dropped"))))))
+              message: >
+                Every chunk in the wave needs its dependsOn chunks done or
+                dropped first. Finish the blocking chunks, or send a smaller
+                wave.
+          # A wave is a set of peers. Two chunks that depend on each other are
+          # sequential by definition and cannot be reviewed as one wave.
+          - type: cel
+            config:
+              expr: >
+                artifacts.progress.currentChunks.all(id,
+                  artifacts.breakdown.chunks.exists(c, c.id == id &&
+                    (!has(c.dependsOn) || c.dependsOn.all(d,
+                      !(d in artifacts.progress.currentChunks)))))
+              message: >
+                A wave cannot contain a chunk that depends on another chunk in
+                the same wave. Split the wave and submit the dependency first.
 
       # Material adaptation: new work discovered, a chunk must be dropped, or
       # scope changed. Goes back through review and human approval on purpose.
@@ -196,20 +227,27 @@ stages:
 
   - id: chunk-review
     description: >
-      Review the chunk just finished, against its description in the approved
+      Review the wave just finished, against its description in the approved
       breakdown. No human here — findings-clear is the kickback.
     maxCycles: 40
     work:
       mode: dispatch
       skills: [code-review]
       systemPrompt: |
-        Review only this chunk, against its description in the approved
+        Review only these chunks, against their descriptions in the approved
         breakdown. Ignore changes belonging to other chunks.
 
-        Chunk: ${{ data.latest(self.name, "artifact-progress").payload.currentChunk }}
+        Wave: ${{ data.latest(self.name, "artifact-progress").payload.currentChunks }}
 
-        Record findings with severities. A critical or high finding sends the
-        chunk back for rework, so be precise about severity.
+        The chunks in a wave were implemented in parallel and are meant to be
+        independent. Two extra questions apply because of that: does one chunk
+        change a file another chunk in the wave also changed, and does one
+        chunk assume behaviour another chunk in the wave introduced?
+
+        Name the chunk id in every finding, so rework can shrink the wave to
+        the chunks that failed. Record findings with severities. A critical or
+        high finding sends the wave back for rework, so be precise about
+        severity.
     artifacts:
       - name: chunk-review
         kind: findings
@@ -224,21 +262,27 @@ stages:
             config: { artifact: chunk-review, blocking: [critical, high] }
 
       # The per-chunk circuit breaker. Goes unavailable on the 4th round,
-      # which strands the chunk — accept is blocked by findings-clear and
+      # which strands the wave — accept is blocked by findings-clear and
       # rework is blocked here, so a human must pick one of the exits below.
+      # The count is per chunk, not per wave, so one bad chunk trips it while
+      # a wide healthy wave never does.
       - name: rework
         to: executing
         gates:
           - type: cel
             config:
+              # An absent count reads as zero rounds. Direct field access on a
+              # missing key aborts CEL evaluation, which would fail the gate
+              # for the wrong reason on a chunk's first rework.
               expr: >
-                artifacts.progress.chunks.exists(c,
-                  c.id == artifacts.progress.currentChunk &&
-                  c.reviewRounds < 3)
+                artifacts.progress.currentChunks.all(id,
+                  artifacts.progress.chunks.exists(c,
+                    c.id == id &&
+                    (!has(c.reviewRounds) || c.reviewRounds < 3)))
               message: >
-                This chunk has failed review 3 times. A human must choose:
-                escalate to re-slice it, force_rework to grant another round,
-                or adapt to drop it.
+                A chunk in this wave has failed review 3 times. A human must
+                choose: escalate to re-slice it, force_rework to grant another
+                round, or adapt to drop it.
 
       # Human grants one more round, mirroring the engine's cycle-override.
       - name: force_rework

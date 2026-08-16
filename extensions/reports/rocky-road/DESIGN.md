@@ -1,6 +1,8 @@
 # Rocky Road
 
-**Status:** design draft. `factory.yaml` is written but not yet validated.
+**Status:** the definition validates (9 stages), the gates are verified
+against the engine, and the board report and driving skill ship with it. No
+real work item has run through it end to end yet.
 
 Chunks, and a bumpy path — the work is broken into chunks, and the route through
 them is expected to change under you.
@@ -209,7 +211,7 @@ Sample output, from `dry-run-2` at the moment the circuit breaker tripped:
 
 | | Chunk | State | Rounds | Depends on | Description |
 | --- | --- | --- | --- | --- | --- |
-| `>` | c1 | in progress | **3** | — | Tokenizer |
+| `>` | **c1** | in progress | **3** | — | Tokenizer |
 | `.` | c2 | blocked | — | **c1** | Renderer |
 
 ## Needs a human
@@ -231,6 +233,9 @@ Three things it does that the raw artifacts do not:
 - **Names what was added after the fact.** Chunks with `origin` other than
   `initial` are marked in the table and listed with their `addedReason`, so
   scope growth is legible without diffing breakdown versions.
+- **Shows the wave.** Chunk ids in `currentChunks` are bolded, so a reader
+  sees which chunks the current review covers. The state column cannot say
+  that: at review time every chunk in the wave reads `done`.
 
 It stays silent — empty markdown, empty json — on any `@swamp/software-factory`
 instance with no `breakdown` artifact, so it is safe to leave registered
@@ -246,20 +251,20 @@ The fix is a review stage in the chunk loop, with both exits returning to
 `executing`:
 
 ```
-executing --submit_chunk--> chunk-review --accept--> executing   (next chunk)
-                                         --rework--> executing   (same chunk)
+executing --submit_chunk--> chunk-review --accept--> executing   (next wave)
+                                         --rework--> executing   (same chunks)
 ```
 
 ```yaml
 - id: chunk-review
-  description: Review the chunk just finished, not the whole change.
+  description: Review the wave just finished, not the whole change.
   work:
     mode: dispatch
     skills: [code-review]
     systemPrompt: |
-      Review only the chunk named below, against its description in the
+      Review only the chunks named below, against their descriptions in the
       approved breakdown. Ignore unrelated changes.
-      Chunk: ${{ data.latest(self.name, "artifact-progress").payload.currentChunk }}
+      Wave: ${{ data.latest(self.name, "artifact-progress").payload.currentChunks }}
   artifacts:
     - name: chunk-review
       kind: findings
@@ -285,9 +290,57 @@ Three things make this work:
 - **`reviews: progress` focuses each round.** Finishing a chunk bumps
   `progress`, which stales the previous `chunk-review` — so every chunk gets its
   own review rather than one review covering whatever has accumulated.
-- **`currentChunk` on the progress payload** is what makes the review focused
-  rather than whole-diff. It needs adding to the `progress` schema; the system
-  prompt binds to it so the subagent is told exactly which chunk to look at.
+- **`currentChunks` on the progress payload** is what makes the review focused
+  rather than whole-diff. The system prompt binds to it, so the subagent is
+  told exactly which chunks to look at.
+
+## Parallel chunks: the wave
+
+The reason to chunk at all is partly that independent chunks can run at the
+same time. The graph models that as a **wave** — the set of chunks under one
+review. One chunk is the normal case. Several chunks form a wave when they do
+not depend on each other, when everything they depend on is finished, and when
+they touch disjoint files.
+
+The first two conditions are `cel` gates on `submit_chunk`, so the engine
+refuses a bad wave rather than trusting the driving agent:
+
+```
+DEPS_NOT_DONE    a chunk in the wave waits on work that is not done or dropped
+INTRA_WAVE_DEP   one chunk in the wave depends on another chunk in the wave
+```
+
+That also closes the older worry that `dependsOn` was recorded but never
+enforced. Ordering is now checked at every submission, not left to the skill.
+
+The third condition — disjoint files — stays a convention, in
+`decomposition-conventions.md` and in the `chunk-review` prompt. A gate cannot
+see the diff, and comparing declared `files` lists would enforce a promise
+rather than a fact. The review is the enforcement: the reviewer is told the
+chunks ran in parallel and asked whether one touched another's files, or
+assumed behaviour another introduced.
+
+`reviewRounds` stays per chunk while the breaker is checked across the wave.
+One chunk that keeps failing strands the wave. A wide healthy wave never trips
+it. On rework the wave shrinks to the chunks that actually failed, so a
+five-chunk wave with one bad chunk becomes a one-chunk wave, and the passing
+work stays `done`.
+
+**Verified against the engine** (throwaway factory, 2026-08-16). A wave of two
+independent finished chunks advanced. A wave whose dependency was still
+`in_progress` failed with `DEPS_NOT_DONE`. A wave holding both a chunk and its
+dependent failed with `INTRA_WAVE_DEP`. The breaker allowed a wave at two
+rounds and refused the same wave at three.
+
+That last test found a real defect in the first draft of the breaker.
+`c.reviewRounds < 3` aborts CEL evaluation with `No such key: reviewRounds`
+when the field is absent, which is exactly the state of a chunk on its first
+rework. The gate then failed for the wrong reason, with a message about
+missing keys rather than the authored one. The expression now reads
+`!has(c.reviewRounds) || c.reviewRounds < 3`, so an absent count means zero
+rounds. Worth remembering as a general rule for `cel` gates over optional
+payload fields: reach for `has()` before every optional field, because the
+failure is an evaluation error rather than a false.
 
 No human is involved in this loop. `chunk-review` carries no `human-approval`
 gate, so execution stays agent-autonomous — consistent with the human being
@@ -425,25 +478,39 @@ cycle-scoped, but nothing proves who produced them. Enforcing that needs
    `progress` (what was actually done). The counter-argument is that the
    approved breakdown is the contract, and reviewing against progress lets the
    agent grade its own homework.
-5. **Chunk-level parallelism is unmodelled.** `dependsOn` is recorded but nothing
-   enforces ordering — the executing stage is one interactive stage, so the
-   skill decides what to run concurrently. A `cel` gate could enforce it, but
-   only at stage boundaries, not per chunk. Probably fine; worth confirming.
-6. **Where does this get published?** The repo has a root `manifest.yaml` for
-   `@skunk-ape/stef`. A second extension needs either its own subdirectory
-   manifest under `extensions/<kind>/` (per-subdirectory identity, see
-   `design/extension.md` "Per-Subdirectory Extension Identity") or a separate
-   repo. Unresolved — this directory is deliberately outside `extensions/models/`
-   so it is not yet claimed by discovery.
+5. ~~**Chunk-level parallelism is unmodelled.**~~ Answered by the wave: two
+   `cel` gates on `submit_chunk` enforce `dependsOn` at every submission, and
+   the wave is the unit of review. What stays unenforced is file disjointness
+   inside a wave, which the review is asked about instead.
+6. ~~**Where does this get published?**~~ Answered: a per-subdirectory manifest
+   at `extensions/reports/rocky-road/manifest.yaml` with `paths.base: manifest`.
+   `swamp extension quality` packages it on its own.
+7. **How wide should a wave get?** Nothing bounds the wave size. Five parallel
+   chunks means five agents in one working tree, and one review reading five
+   diffs. The honest limit is probably about three, but that wants a real run
+   rather than a number picked here.
 
 ## Next steps
 
-1. `swamp model create @swamp/software-factory chunked`, paste `factory.yaml`
-   under `globalArguments`, run `validate` until clean.
-2. Run `describe` and check the Mermaid against the graph above.
-3. Dry-run one real issue through `triage → breakdown → breakdown-review` and
-   stop at the approval gate. That exercises the riskiest part — whether the
-   `reviews:`/`artifact-fresh` pairing actually behaves as described when the
-   breakdown changes.
-4. Build the `breakdown-board` report.
-5. Write the driving skill last, once the graph has survived a real run.
+Done: the definition validates and is loaded as the `rocky-road` instance, the
+`reviews:`/`artifact-fresh` pairing and the circuit breaker are verified in dry
+runs, the wave gates are verified against the engine, the `breakdown-board`
+report ships, and the `rocky-road` skill plus the three constraints files ship
+with it.
+
+Left:
+
+1. Run one real work item end to end, including a wave of two chunks in
+   parallel. Nothing has exercised `conformance-review` or `pull-request` yet.
+2. Calibrate from that run: `maxCycles` on `breakdown`, the rework ceiling of
+   three, and how wide a wave can honestly get.
+3. Decide what `swamp` surface a sandboxed implementing agent needs, and
+   whether it calls the CLI directly or gets driven from outside. See the
+   notes below.
+4. Publish with `swamp extension push extensions/reports/rocky-road/manifest.yaml`
+   once a real run has been through it.
+
+## Notes
+
+1. We need to try implementing a sample project to see how the DX is for the human. It may be enough to run a report periodically to assess status. But we may want to have a "live" view of status. Which could be a locally running web server and html view or a set of md files kept in sync (viewed in Obsidian?) or maybe a cute terminal based TUI with live update (?)
+2. We need to explore and define the specific swamp calls that are needed for the implementing and reviewing agents to function. I want to run the agent or agents in a sandbox and then turn permission checking off. The sandbox will not have open network egress, will run as a different user or in a container with a different filesystem. So we need to explore how to either poke holes in the sandbox just for the required swamp actions or drive the sandboxed agents from the outside providing them with a simple input/output interface of some files. The sandboxing is the key unlock to get efficient work. Without it, you cannot safely run with no perm checking. And perm checking is a huge efficiency and focus killer for the human in the loop.
