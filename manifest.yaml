@@ -1,9 +1,9 @@
 manifestVersion: 1
 name: '@skunk-ape/stef'
-version: 2026.08.14.2
+version: 2026.08.16.1
 description: |
-  Simple Technical English Flavored — a deterministic prose linter plus a
-  bounded LLM rewrite loop.
+  Simple Technical English Flavored — a deterministic prose linter, a mechanical
+  fixer, and a bounded LLM rewrite loop.
 
   The design is a split, not a pipeline. A linter decides the eleven mechanical
   ASD-STE100 rules a script can decide. An LLM handles the rules no script can
@@ -15,12 +15,25 @@ description: |
 
   - `lint` — run the eleven checks and emit `kind: findings`. Deterministic,
     no model call, no API key.
+  - `normalize` — apply the fixes a script can make without judgement, then
+    re-lint. Deterministic, no model call, no API key.
   - `rewrite` — tool-call mode: run the whole loop in one command by spawning
     `claude -p`. Runs on whatever credential Claude Code already holds, so no
     API key is stored in a vault.
   - `start` / `record` — referee mode: hold state and enforce the attempt cap
     while a driving agent does the writing. Executes nothing, needs no
     credential. The bundled `simple-english` skill drives this loop.
+
+  Every method takes the same arguments. Pass `text` or `path` to say what to
+  read. Pass `session` to name the state slot to write, so two drafts in flight
+  never overwrite each other.
+
+  ## Mechanical fixes
+
+  Three checks have deterministic repairs: emphasis punctuation, Latin
+  abbreviations, and unambiguous contractions. `rewrite` and `start` both apply
+  them first, which spends no model call on work a script can do. Set
+  `normalizeFirst: false` in `globalArguments` to turn this off.
 
   ## Checks
 
