@@ -278,6 +278,9 @@ async function readSource(
   throw new Error("One of text or path is required.");
 }
 
+type Logger = {
+  info: (msg: string, props?: Record<string, unknown>) => void;
+};
 type WriteResource = (
   specName: string,
   name: string,
@@ -336,7 +339,7 @@ function sessionPacket(
  */
 export const model = {
   type: "@skunk-ape/stef",
-  version: "2026.08.15.1",
+  version: "2026.08.16.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "findings": {
@@ -376,10 +379,26 @@ export const model = {
       arguments: InputSchema,
       execute: async (
         args: Input,
-        ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
+        ctx: {
+          globalArgs: GlobalArgs;
+          logger: Logger;
+          writeResource: WriteResource;
+        },
       ) => {
         const { text, source } = await readSource(args);
+        ctx.logger.info("Linting {source} into session {session}", {
+          source,
+          session: args.session,
+        });
         const result = runLint(text, ctx.globalArgs, args);
+        ctx.logger.info(
+          "Linted {source}: {blocking} blocking of {total} finding(s)",
+          {
+            source,
+            blocking: result.blockingCount,
+            total: result.findings.length - 1,
+          },
+        );
 
         const handle = await ctx.writeResource(
           "findings",
@@ -403,11 +422,27 @@ export const model = {
       arguments: InputSchema,
       execute: async (
         args: Input,
-        ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
+        ctx: {
+          globalArgs: GlobalArgs;
+          logger: Logger;
+          writeResource: WriteResource;
+        },
       ) => {
         const { text, source } = await readSource(args);
+        ctx.logger.info("Normalizing {source} into session {session}", {
+          source,
+          session: args.session,
+        });
         const { text: fixed, fixes } = normalize(text);
         const result = runLint(fixed, ctx.globalArgs, args);
+        ctx.logger.info(
+          "Normalized {source}: {fixes} mechanical fix(es), {blocking} blocking finding(s) left",
+          {
+            source,
+            fixes: fixes.length,
+            blocking: result.blockingCount,
+          },
+        );
 
         const handle = await ctx.writeResource(
           "normalized",
@@ -508,10 +543,18 @@ export const model = {
       }),
       execute: async (
         args: Input & { maxAttempts?: number },
-        ctx: { globalArgs: GlobalArgs; writeResource: WriteResource },
+        ctx: {
+          globalArgs: GlobalArgs;
+          logger: Logger;
+          writeResource: WriteResource;
+        },
       ) => {
         const { text: raw, source } = await readSource(args);
         const g = ctx.globalArgs;
+        ctx.logger.info("Opening rewrite session {session} on {source}", {
+          session: args.session,
+          source,
+        });
         const text = g.normalizeFirst ? normalize(raw).text : raw;
         const result = runLint(text, g, args);
 
@@ -530,6 +573,14 @@ export const model = {
           },
           0,
           args.maxAttempts ?? g.maxAttempts,
+        );
+        ctx.logger.info(
+          "Session {session} opened {phase} with {blocking} blocking finding(s)",
+          {
+            session: args.session,
+            phase: packet.phase,
+            blocking: packet.blockingCount,
+          },
         );
 
         const handle = await ctx.writeResource(
@@ -553,12 +604,16 @@ export const model = {
         args: { session: string; text?: string; path?: string },
         ctx: {
           globalArgs: GlobalArgs;
+          logger: Logger;
           readResource: ReadResource;
           writeResource: WriteResource;
         },
       ) => {
         const g = ctx.globalArgs;
         const name = `session-${args.session}`;
+        ctx.logger.info("Recording a rewrite for session {session}", {
+          session: args.session,
+        });
         const prior = await ctx.readResource(name) as Session | null;
         if (prior === null) {
           throw new Error(`No session "${args.session}" — run start first.`);
@@ -603,6 +658,16 @@ export const model = {
           },
           prior.attempt + 1,
           prior.maxAttempts,
+        );
+        ctx.logger.info(
+          "Session {session} is {phase} after attempt {attempt}/{cap}: {blocking} blocking finding(s)",
+          {
+            session: prior.session,
+            phase: packet.phase,
+            attempt: packet.attempt,
+            cap: packet.maxAttempts,
+            blocking: packet.blockingCount,
+          },
         );
 
         const handle = await ctx.writeResource("session", name, packet);

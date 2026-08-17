@@ -58,12 +58,14 @@ export async function generate(o: GenerateOptions): Promise<string> {
   const timer = setTimeout(onTimeout, o.wallTimeoutMs);
   o.signal.addEventListener("abort", kill, { once: true });
 
+  let reaped = false;
   try {
     const writer = child.stdin.getWriter();
     await writer.write(new TextEncoder().encode(o.prompt));
     await writer.close();
 
     const { code, stdout, stderr } = await child.output();
+    reaped = true;
     const out = new TextDecoder().decode(stdout).trim();
     const err = new TextDecoder().decode(stderr).trim();
 
@@ -80,5 +82,12 @@ export async function generate(o: GenerateOptions): Promise<string> {
   } finally {
     clearTimeout(timer);
     o.signal.removeEventListener("abort", kill);
+    // A throw before `output()` resolves — a broken stdin pipe, most likely —
+    // leaves the child running with nobody waiting on it. Signal it and drain
+    // the pipes so the process is reaped rather than orphaned.
+    if (!reaped) {
+      kill();
+      await child.output().catch(() => {});
+    }
   }
 }
