@@ -508,12 +508,18 @@ with it.
 Left:
 
 1. `rr-publish-ready` is that real work item, in progress. The breakdown was
-   reviewed, kicked back once (DEC-3), rewritten, and human-approved; wave 1
-   (c1, c2, c3, c6) is executing in parallel now — the first real multi-chunk
-   wave this factory has run. Still ahead: c4, c5, `conformance-review`, and
+   reviewed, kicked back twice on real findings, rewritten, and human-approved
+   on the third pass. Wave 1 (c1, c2, c3, c6) executed four chunks in parallel
+   — the first real multi-chunk wave this factory has run — and cleared review
+   with no blocking findings. Wave 2 (c4, plus c6 re-entered to close a review
+   finding) followed. Still ahead: c5, `conformance-review`, and
    `pull-request` — none of those have run yet.
-2. Calibrate from that run: `maxCycles` on `breakdown`, the rework ceiling of
-   three, and how wide a wave can honestly get.
+2. Calibrate from that run. Answered so far: a four-chunk wave is workable, so
+   the "about three" ceiling in open question 7 was pessimistic. Still open:
+   `maxCycles` on `breakdown`, and the rework ceiling of three. The sharper
+   question the run surfaced is not how *wide* a wave can be but how *small* a
+   chunk should be — below roughly an hour of work, the dispatch and review
+   overhead exceeds the chunk it protects.
 3. What `swamp` surface a sandboxed implementing agent needs is answered by
    "What the access probe found" below — `swamp serve` plus a per-sandbox
    token, with the two upstream asks it surfaced (method-scoped grants, actor
