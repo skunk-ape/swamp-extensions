@@ -29,3 +29,16 @@ grants:
     effect: allow
     actions: [read]
     resource: data:*
+
+  # Reviewing agents. Separate principal from the implementer on purpose: the
+  # grants are identical today, but run history records `initiatedBy`, so
+  # "a different agent reviewed this" becomes checkable rather than assumed.
+  - subject: user:reviewer1
+    effect: allow
+    actions: [run]
+    resource: model:rocky-road
+
+  - subject: user:reviewer1
+    effect: allow
+    actions: [read]
+    resource: data:*
