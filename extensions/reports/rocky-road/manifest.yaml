@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: '@skunk-ape/rocky-road'
-version: 2026.08.16.2
+version: 2026.08.18.1
 description: |
   Chunked implementation for @swamp/software-factory. Replaces "produce a plan,
   approve it, implement it in one go" with "break the work into small chunks,

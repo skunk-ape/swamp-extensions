@@ -3,10 +3,11 @@
 **Status:** the definition validates (9 stages), the gates are verified
 against the engine, and the board report and driving skill ship with it.
 `rr-publish-ready` is now running through the factory as a real work item: the
-breakdown was reviewed, kicked back once on a real finding (DEC-3 — a chunk
+breakdown was reviewed, kicked back twice on real findings, rewritten, and
+human-approved on the third pass. The second kickback was DEC-3 — a chunk
 description falsely claimed a colocated `_test.ts` file would be auto-packaged
-and shipped), rewritten, and human-approved. Execution is underway, with the
-first real multi-chunk wave now running chunks in parallel. Conformance-review,
+and shipped, which swamp's own docs contradict. A four-chunk wave then executed
+in parallel and cleared review with no blocking findings. Conformance-review,
 pull-request, and the remaining chunks (the manifest version bump, the
 adversarial quality review) are still ahead — this run is not finished.
 
