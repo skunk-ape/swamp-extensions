@@ -81,6 +81,10 @@ interface Row {
  * Mirror of the engine's work-item slug. Duplicated rather than imported:
  * this report must not reach into another extension's internals, and the
  * rule (sanitize, FNV-1a suffix when lossy) is stable.
+ *
+ * @param workItem The raw work-item identifier as passed to the factory.
+ * @returns The sanitized slug used to namespace this work item's data
+ * (`artifact-<slug>-breakdown`, `artifact-<slug>-progress`, `state-<slug>`).
  */
 function workItemSlug(workItem: string): string {
   const sanitized = workItem
@@ -105,6 +109,15 @@ interface Envelope {
   recordedAt?: string;
 }
 
+/**
+ * Fetch and parse one named data item from the model's data repository.
+ *
+ * @param context The report's method context, used for its `dataRepository`,
+ * `modelType`, and `modelId`.
+ * @param dataName The data item's name (e.g. `artifact-<slug>-breakdown`).
+ * @returns The parsed envelope, or `null` if the data does not exist or does
+ * not parse as JSON. Never throws.
+ */
 async function readEnvelope(
   context: ReportContext,
   dataName: string,
@@ -144,6 +157,10 @@ const STATE_MARK: Record<BoardState, string> = {
  * The chunk ids under review right now. `currentChunks` is a wave of chunks
  * worked in parallel; `currentChunk` is the single-chunk form earlier runs
  * recorded, kept readable rather than rendered as an empty wave.
+ *
+ * @param payload The progress envelope's payload, if any.
+ * @returns The ids of the chunks in the current wave, or an empty array if
+ * neither `currentChunks` nor `currentChunk` is present.
  */
 function readWave(payload: Record<string, unknown> | undefined): string[] {
   const many = payload?.currentChunks;
@@ -155,6 +172,12 @@ function readWave(payload: Record<string, unknown> | undefined): string[] {
 /**
  * Derive board state. A recorded status wins where it is decisive; `pending`
  * is refined into ready/blocked by resolving dependsOn against what is done.
+ *
+ * @param chunks The agreed chunk breakdown, in breakdown order.
+ * @param progress Per-chunk progress records, keyed by chunk id.
+ * @param wave The chunk ids in the wave currently under review.
+ * @returns One row per chunk, in the same order as `chunks`, each with a
+ * derived {@link BoardState}, resolved blockers, and review-round count.
  */
 function deriveRows(
   chunks: Chunk[],
@@ -197,6 +220,13 @@ function deriveRows(
   });
 }
 
+/**
+ * Render the chunk board as a Markdown table, one row per chunk.
+ *
+ * @param rows The derived board rows, in display order.
+ * @returns The table as a Markdown string (header, separator, and one line
+ * per row) — no leading or trailing blank lines.
+ */
 function renderTable(rows: Row[]): string {
   const lines = [
     "| | Chunk | State | Rounds | Depends on | Description |",
@@ -231,6 +261,14 @@ function renderTable(rows: Row[]): string {
   return lines.join("\n");
 }
 
+/**
+ * Render the chunk dependency graph as a Mermaid flowchart, colored by
+ * board state.
+ *
+ * @param rows The derived board rows; each becomes a node, and each
+ * `dependsOn` edge becomes an arrow into the dependent chunk.
+ * @returns A fenced ```mermaid code block, ready to embed in Markdown.
+ */
 function renderMermaid(rows: Row[]): string {
   const lines = ["```mermaid", "flowchart LR"];
   for (const r of rows) {
@@ -254,12 +292,39 @@ function renderMermaid(rows: Row[]): string {
   return lines.join("\n");
 }
 
+/**
+ * The `@skunk-ape/rocky-road/breakdown-board` report.
+ *
+ * Registers as a method-scoped report on the `@swamp/software-factory`
+ * model. On each qualifying method run it joins the recorded chunk
+ * breakdown with recorded per-chunk progress and renders both a Markdown
+ * table and a Mermaid dependency graph — see the module doc above for why.
+ *
+ * All properties are plain data except `execute`, which does the actual
+ * projection; see its own doc comment for its early-return behavior.
+ */
 export const report = {
   name: "@skunk-ape/rocky-road/breakdown-board",
   description:
     "Chunk board for a Rocky Road work item — the agreed breakdown joined with actual per-chunk progress, as a table and a dependency graph",
   scope: "method",
   labels: ["rocky-road", "software-factory", "board"],
+  /**
+   * Build the breakdown board for one method run.
+   *
+   * Renders nothing (empty markdown and json) when: the run's model type
+   * isn't `@swamp/software-factory`; the method args have no `workItem`
+   * (the fleet-wide `status` call); or no breakdown envelope has been
+   * recorded for that work item (not a Rocky Road run). When the method
+   * itself failed, renders a short "not rendered" placeholder instead of a
+   * board, since chunk/progress data from a failed run isn't trustworthy.
+   *
+   * @param context The method report context: model identity, execution
+   * status/error, method args, and the data repository used to read the
+   * breakdown, progress, and state envelopes.
+   * @returns `markdown` — the rendered board (or `""` when not applicable);
+   * `json` — the same data in structured form (or `{}` when not applicable).
+   */
   execute: async (
     context: ReportContext,
   ): Promise<{ markdown: string; json: Record<string, unknown> }> => {

@@ -1,8 +1,14 @@
 # Rocky Road
 
 **Status:** the definition validates (9 stages), the gates are verified
-against the engine, and the board report and driving skill ship with it. No
-real work item has run through it end to end yet.
+against the engine, and the board report and driving skill ship with it.
+`rr-publish-ready` is now running through the factory as a real work item: the
+breakdown was reviewed, kicked back once on a real finding (DEC-3 — a chunk
+description falsely claimed a colocated `_test.ts` file would be auto-packaged
+and shipped), rewritten, and human-approved. Execution is underway, with the
+first real multi-chunk wave now running chunks in parallel. Conformance-review,
+pull-request, and the remaining chunks (the manifest version bump, the
+adversarial quality review) are still ahead — this run is not finished.
 
 Chunks, and a bumpy path — the work is broken into chunks, and the route through
 them is expected to change under you.
@@ -500,15 +506,19 @@ with it.
 
 Left:
 
-1. Run one real work item end to end, including a wave of two chunks in
-   parallel. Nothing has exercised `conformance-review` or `pull-request` yet.
+1. `rr-publish-ready` is that real work item, in progress. The breakdown was
+   reviewed, kicked back once (DEC-3), rewritten, and human-approved; wave 1
+   (c1, c2, c3, c6) is executing in parallel now — the first real multi-chunk
+   wave this factory has run. Still ahead: c4, c5, `conformance-review`, and
+   `pull-request` — none of those have run yet.
 2. Calibrate from that run: `maxCycles` on `breakdown`, the rework ceiling of
    three, and how wide a wave can honestly get.
-3. Decide what `swamp` surface a sandboxed implementing agent needs, and
-   whether it calls the CLI directly or gets driven from outside. See the
-   notes below.
+3. What `swamp` surface a sandboxed implementing agent needs is answered by
+   "What the access probe found" below — `swamp serve` plus a per-sandbox
+   token, with the two upstream asks it surfaced (method-scoped grants, actor
+   stamped from the authenticated principal) still unfiled.
 4. Publish with `swamp extension push extensions/reports/rocky-road/manifest.yaml`
-   once a real run has been through it.
+   once this run has been through it.
 
 ## Notes
 
