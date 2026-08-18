@@ -76,6 +76,7 @@ reports:
 skills:
   - rocky-road
 additionalFiles:
+  - README.md
   - DESIGN.md
   - factory.yaml
   - LICENSE
