@@ -57,6 +57,55 @@ There is no list of messaging platforms to enable, because upstream has no such
 switch: the gateway turns a platform on when it finds that platform's token in
 the environment. Putting a token in `env` is how you enable it.
 
+### Optional keys worth knowing about
+
+`env` is an open map, so any variable Hermes reads works here — these are just
+the ones people actually reach for. Upstream's `.env.example` is *not* a
+complete index, incidentally: `TAVILY_API_KEY`, `DISCORD_BOT_TOKEN`, and
+`OPENAI_API_KEY` are all live in the code and absent from that file, so the
+source is the authority.
+
+| Key | What it unlocks |
+| --- | --- |
+| `GITHUB_TOKEN` | Skills Hub search and install. Without it you get GitHub's 60 requests/hour anonymous limit |
+| `TELEGRAM_BOT_TOKEN` | Telegram gateway. From @BotFather |
+| `TELEGRAM_ALLOWED_USERS` | **Required in practice** — see below |
+| `TELEGRAM_HOME_CHANNEL` | Default chat for scheduled/cron delivery |
+| `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` | Slack gateway. Both are needed |
+| `DISCORD_BOT_TOKEN` | Discord gateway |
+| `EMAIL_ADDRESS` + `EMAIL_PASSWORD` | Email gateway, plus `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` |
+| `EXA_API_KEY` | AI-native web search |
+| `TAVILY_API_KEY` | Web search |
+| `FIRECRAWL_API_KEY` | Web search, extract, and crawl |
+| `PARALLEL_API_KEY` | Web search and extract |
+| `FAL_KEY` | Image generation |
+| `HONCHO_API_KEY` | Cross-session user modelling |
+
+Upstream supports twenty-two messaging platforms in total, along with about
+fifteen alternative LLM providers. The rest are configured the same way — put
+the variable in `env` — they are simply not listed here.
+
+### The messaging allowlist, which preflight enforces
+
+A platform token **on its own gives you a bot that ignores you.** The gateway
+denies unknown senders by default, so it connects, reports itself healthy, and
+silently drops every message. The only trace is one warning line in the
+gateway's own startup log.
+
+So `preflight` and `configure` both fail when a platform token has no
+allowlist:
+
+```yaml
+env:
+  TELEGRAM_BOT_TOKEN: '${{ vault.get("hermes-secrets", "telegram-token") }}'
+  TELEGRAM_ALLOWED_USERS: "8675309" # your numeric Telegram user id
+```
+
+`GATEWAY_ALLOWED_USERS` satisfies it for every platform at once, and
+`GATEWAY_ALLOW_ALL_USERS: "true"` is the deliberate opt-out — open access is
+fine as a decision, and the point of the check is that it should not happen by
+omission.
+
 Then run the methods in order:
 
 ```bash

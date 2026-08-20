@@ -29,6 +29,7 @@ import {
   resolveInstallDir,
   USER_BUS_FRAGMENT,
   validateEnv,
+  validatePlatformAllowlists,
 } from "./hermes.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -275,6 +276,99 @@ Deno.test("validateEnv rejects keys that are not shell identifiers", () => {
 
 Deno.test("validateEnv passes a normal environment", () => {
   assertEquals(validateEnv({ TELEGRAM_BOT_TOKEN: "123:abc", TZ: "UTC" }), []);
+});
+
+// --- messaging allowlists ------------------------------------------------
+
+Deno.test("a platform token with no allowlist is a failure", () => {
+  const problems = validatePlatformAllowlists({
+    TELEGRAM_BOT_TOKEN: "123:abc",
+  });
+  assertEquals(problems.length, 1);
+  assertStringIncludes(problems[0], "Telegram");
+  assertStringIncludes(problems[0], "TELEGRAM_ALLOWED_USERS");
+});
+
+Deno.test("a per-platform allowlist satisfies the check", () => {
+  assertEquals(
+    validatePlatformAllowlists({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      TELEGRAM_ALLOWED_USERS: "8675309",
+    }),
+    [],
+  );
+  // The group allowlist counts too — a bot that only serves a group is a
+  // deliberate configuration, not an oversight.
+  assertEquals(
+    validatePlatformAllowlists({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      TELEGRAM_GROUP_ALLOWED_USERS: "-100123",
+    }),
+    [],
+  );
+});
+
+Deno.test("the gateway-wide allowlist satisfies every platform", () => {
+  assertEquals(
+    validatePlatformAllowlists({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      DISCORD_BOT_TOKEN: "xyz",
+      GATEWAY_ALLOWED_USERS: "me",
+    }),
+    [],
+  );
+});
+
+Deno.test("GATEWAY_ALLOW_ALL_USERS is a deliberate opt-out", () => {
+  assertEquals(
+    validatePlatformAllowlists({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      GATEWAY_ALLOW_ALL_USERS: "true",
+    }),
+    [],
+  );
+  // Only an explicit truthy string opts out. "false" must not.
+  assertEquals(
+    validatePlatformAllowlists({
+      TELEGRAM_BOT_TOKEN: "123:abc",
+      GATEWAY_ALLOW_ALL_USERS: "false",
+    }).length,
+    1,
+  );
+});
+
+Deno.test("WHATSAPP_ENABLED is a flag, not a token", () => {
+  // Present-but-false must not count as enabled, or every install that
+  // explicitly disables WhatsApp would demand an allowlist for it.
+  assertEquals(
+    validatePlatformAllowlists({ WHATSAPP_ENABLED: "false" }),
+    [],
+  );
+  assertEquals(
+    validatePlatformAllowlists({ WHATSAPP_ENABLED: "true" }).length,
+    1,
+  );
+});
+
+Deno.test("each misconfigured platform is reported separately", () => {
+  const problems = validatePlatformAllowlists({
+    TELEGRAM_BOT_TOKEN: "a",
+    DISCORD_BOT_TOKEN: "b",
+    SLACK_BOT_TOKEN: "c",
+  });
+  assertEquals(problems.length, 3);
+});
+
+Deno.test("an empty or whitespace token is not a configured platform", () => {
+  assertEquals(validatePlatformAllowlists({ TELEGRAM_BOT_TOKEN: "" }), []);
+  assertEquals(validatePlatformAllowlists({ TELEGRAM_BOT_TOKEN: "   " }), []);
+});
+
+Deno.test("no messaging configured is not a problem", () => {
+  assertEquals(
+    validatePlatformAllowlists({ ANTHROPIC_API_KEY: "x", GITHUB_TOKEN: "y" }),
+    [],
+  );
 });
 
 // --- .env rendering ------------------------------------------------------

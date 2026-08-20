@@ -251,6 +251,103 @@ export function parseHermesVersion(raw: string): string {
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Messaging platforms, keyed by the environment variable that turns each on.
+ *
+ * The gateway has no list of platforms to enable — it looks for these tokens
+ * and starts whatever it finds, which is why this model has no `gatewayPlatforms`
+ * field. Each entry names the per-platform allowlist that decides who is allowed
+ * to talk to it.
+ *
+ * Only the platforms with a first-class token variable are listed. Upstream
+ * supports twenty-two, but the rest are configured through `config.yaml` rather
+ * than a single env var, so a token check would not find them.
+ */
+const PLATFORM_TOKENS: Array<
+  { token: string; allowlists: string[]; label: string }
+> = [
+  {
+    token: "TELEGRAM_BOT_TOKEN",
+    allowlists: ["TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS"],
+    label: "Telegram",
+  },
+  {
+    token: "DISCORD_BOT_TOKEN",
+    allowlists: ["DISCORD_ALLOWED_USERS"],
+    label: "Discord",
+  },
+  {
+    token: "SLACK_BOT_TOKEN",
+    allowlists: ["SLACK_ALLOWED_USERS"],
+    label: "Slack",
+  },
+  {
+    token: "WHATSAPP_ENABLED",
+    allowlists: ["WHATSAPP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOWED_USERS"],
+    label: "WhatsApp",
+  },
+  {
+    token: "EMAIL_ADDRESS",
+    allowlists: ["EMAIL_ALLOWED_USERS"],
+    label: "Email",
+  },
+];
+
+/** Allowlists that apply across every platform rather than to one. */
+const GATEWAY_WIDE_ALLOWLISTS = ["GATEWAY_ALLOWED_USERS"];
+
+/** Truthy in the sense the gateway means: an explicit opt-in string. */
+function isTruthy(value: string | undefined): boolean {
+  return ["true", "1", "yes", "on"].includes(
+    (value ?? "").trim().toLowerCase(),
+  );
+}
+
+/**
+ * Catch a messaging platform that would start up and then ignore you.
+ *
+ * A platform token on its own is not enough. The gateway defaults to deny for
+ * unknown senders, so a token with no allowlist produces a bot that connects,
+ * reports itself healthy, and silently drops every message you send it. There
+ * is no error anywhere except one warning line in the gateway's own log at
+ * startup:
+ *
+ *     No env user allowlists configured. Messaging platforms default to
+ *     pairing/allowlist policies and will deny unknown senders …
+ *
+ * That is a miserable thing to debug from the outside — everything looks
+ * correct — so it is a preflight failure here rather than a surprise later.
+ * `GATEWAY_ALLOW_ALL_USERS=true` is the deliberate opt-out and satisfies the
+ * check, because choosing open access explicitly is a decision rather than an
+ * oversight.
+ */
+export function validatePlatformAllowlists(
+  env: Record<string, string>,
+): string[] {
+  if (isTruthy(env.GATEWAY_ALLOW_ALL_USERS)) return [];
+
+  const hasValue = (key: string) => (env[key] ?? "").trim().length > 0;
+  const gatewayWide = GATEWAY_WIDE_ALLOWLISTS.some(hasValue);
+  if (gatewayWide) return [];
+
+  const problems: string[] = [];
+  for (const platform of PLATFORM_TOKENS) {
+    // WHATSAPP_ENABLED is a flag rather than a token, so "present" means "on".
+    const enabled = platform.token === "WHATSAPP_ENABLED"
+      ? isTruthy(env[platform.token])
+      : hasValue(platform.token);
+    if (!enabled) continue;
+    if (platform.allowlists.some(hasValue)) continue;
+
+    problems.push(
+      `${platform.label} is configured via ${platform.token}, but none of ${
+        platform.allowlists.join(", ")
+      } is set. The gateway denies unknown senders by default, so it would start, look healthy, and ignore every message. Set an allowlist, or set GATEWAY_ALLOW_ALL_USERS=true to open it deliberately.`,
+    );
+  }
+  return problems;
+}
+
+/**
  * Check every configured value before any of it reaches the host.
  *
  * The key check is the one that earns its keep: `.env` keys become environment
@@ -553,6 +650,9 @@ echo "COMMIT=\${COMMIT:-}"
           );
         }
         failures.push(...validateEnv(g.env));
+        if (g.installGatewayService) {
+          failures.push(...validatePlatformAllowlists(g.env));
+        }
 
         const handle = await ctx.writeResource("preflight", "preflight", {
           ok: failures.length === 0,
@@ -772,7 +872,13 @@ echo "INSTALL_DIR=$INSTALL_DIR"
       execute: async (_args: unknown, ctx: Ctx) => {
         const g = ctx.globalArgs as GlobalArgs;
 
-        const problems = validateEnv(g.env);
+        // Also checked here, not only in preflight: rotating a token through
+        // `configure` alone is the common path, and adding a platform that way
+        // must not skip the allowlist check just because it bypassed preflight.
+        const problems = [
+          ...validateEnv(g.env),
+          ...(g.installGatewayService ? validatePlatformAllowlists(g.env) : []),
+        ];
         if (problems.length > 0) {
           throw new Error(
             `configure refused ${problems.length} environment problem(s):\n- ${
