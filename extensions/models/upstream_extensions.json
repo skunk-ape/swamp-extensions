@@ -24,5 +24,21 @@
     "checksum": "29622d1cb0a3bffabf82f68b3d6cbe7e18efcac2c38458b7231e436eb91ab55f",
     "filesChecksum": "b67885110295b63236743cdc42522703b2c5b18fae873892420b72e662c6c9d7",
     "serverUrl": "https://swamp-club.com"
+  },
+  "@keeb/ssh": {
+    "version": "2026.07.18.1",
+    "pulledAt": "2026-08-20T02:14:32.843Z",
+    "files": [
+      ".claude/skills/ssh",
+      ".swamp/bundles/5dc85285/ssh_host.js",
+      ".swamp/pulled-extensions/@keeb/ssh/files/LICENSE.txt",
+      ".swamp/pulled-extensions/@keeb/ssh/files/README.md",
+      ".swamp/pulled-extensions/@keeb/ssh/manifest.yaml",
+      ".swamp/pulled-extensions/@keeb/ssh/models/lib/ssh.ts",
+      ".swamp/pulled-extensions/@keeb/ssh/models/ssh_host.ts"
+    ],
+    "checksum": "461dae56d43038505f2bfa63d5cd0243c0709d419032a51f9d6c2f78404fa85d",
+    "filesChecksum": "1da4f63dec9380aa864a91936cc6304f62070f22de749b1ae1e45806f81b544a",
+    "serverUrl": "https://swamp-club.com"
   }
 }
