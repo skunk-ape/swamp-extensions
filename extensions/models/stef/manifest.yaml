@@ -61,6 +61,12 @@ description: |
   - swamp initialized in the repository (`swamp repo init`)
   - Claude Code on PATH, for `rewrite` only (referee mode needs nothing)
 repository: 'https://github.com/skunk-ape/swamp-extensions'
+
+# Everything for this extension lives beside this manifest, so typed entries
+# and additionalFiles both resolve from here rather than from extensions/models/.
+paths:
+  base: manifest
+
 models:
   - stef.ts
 workflows: []
