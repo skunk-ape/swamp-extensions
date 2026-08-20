@@ -1,11 +1,13 @@
 # @skunk-ape/hermes — design
 
-Status: design. No code yet.
+Status: all five methods implemented; `preflight` verified end to end, the
+install path not yet run against a Linux host. The transport seam is currently
+the local implementation that shape C calls for. See "What the upstream source
+changed" at the end, which is the part of this record written after the code.
 
 Install and configure the [Hermes agent](https://hermes-agent.org/) on a Linux
-host reached over SSH. Hermes is an autonomous agent from Nous Research that
-runs on a host you own, keeps memory across sessions, and writes its own skills
-as it works.
+host. Hermes is an autonomous agent from Nous Research that runs on a host you
+own, keeps memory across sessions, and writes its own skills as it works.
 
 ## The problem with the upstream install
 
@@ -346,9 +348,12 @@ type and every transport shape looks identical to the install logic.
 
 ### Rules the method split has to honor
 
-- **Validate before touching the host.** A mistyped vault reference must fail in
-  `preflight`, not after Chromium has downloaded. This is cheap to build and it
-  is most of the felt quality difference.
+- **Validate before touching the host.** A mistyped ref or a malformed
+  environment key must fail in `preflight`, not after Chromium has downloaded.
+  This is cheap to build and it is most of the felt quality difference. Note
+  that swamp gets there first for the specific case this rule was written
+  about: a vault reference naming a missing vault or key fails the run before
+  the method executes at all, which was verified rather than assumed.
 - **Never assume a TTY, and fail rather than hang.** The upstream prompts block
   on a non-TTY SSH pipe. `BatchMode=yes` turns a block into an immediate error,
   which is the safety net. Drive with `--skip-setup` and answer the package
@@ -372,20 +377,35 @@ type and every transport shape looks identical to the install logic.
 
 ## Open questions
 
-1. **Playwright and Chromium on arm64 Linux under Lima `vz`.** The installer
-   pulls them unconditionally and it is the heaviest step. Verify rather than
-   assume.
+1. **Playwright and Chromium on arm64 Linux under Lima `vz`.** Partly answered:
+   the installer does *not* pull them unconditionally — `--skip-browser` exists
+   and is now the `installBrowser` field. Whether they work on arm64 still needs
+   a real run.
 2. **QR pairing for WhatsApp and Signal on a headless host.** Pairing is
    normally an ASCII QR in the terminal, which SSH carries, but confirm it.
+   Note that the installer's own pairing prompt is skipped under
+   `--non-interactive`, and it says so, so pairing is a deliberate later step
+   rather than something this model can drive.
 3. **Egress policy for the VM.** Hermes needs outbound to model APIs and to
    messaging platforms. Decide what else, if anything.
 4. **Gateway inbound.** Most messaging platforms are outbound-only. Anything
    webhook-based needs a Lima `portForwards` entry.
-5. **`@mgreten/hermes-env` reuse**, per the open decision above.
-6. **Resource floor.** Chromium, Python, and Node in one VM. The Lima default is
-   4 CPU and 4 GiB. Confirm that is enough.
+5. **`@mgreten/hermes-env` reuse**, per the open decision above. Now partly
+   answered from the other side: `hermes_cli/env_loader.py` clears known keys
+   that are absent from `.env`, so `configure` writing the file whole is what
+   makes the definition authoritative. Any day-two tool that merges into `.env`
+   instead is fighting that, and would be undone by the next `configure`.
+6. **Resource floor.** Chromium, Python, and Node in one VM. The template asks
+   for 4 CPU and 8 GiB. Confirm that is enough.
 7. ~~Shape C, worker enrollment.~~ **Settled on 2026-08-19. C is viable.** See
    "Shape C is viable" below.
+8. **Does the installer's `maybe_start_gateway` fight `service`?** It runs even
+   under `--skip-setup`, and starts the gateway whenever it finds a messaging
+   token in `.env`. On a first install there is no `.env` yet, so it does
+   nothing. On a re-run after `configure`, `install` will install and start the
+   gateway as a side effect. `service` is idempotent and authoritative, so this
+   is believed harmless — but it means `install` is not purely an install, and
+   that should be confirmed rather than assumed.
 
 ## Rejected
 
@@ -402,3 +422,124 @@ type and every transport shape looks identical to the install logic.
   Hermes this way. It was not chosen because the persistent-state story needs
   volumes to be designed up front, and because a VM makes the runtime sudo
   question easy.
+
+## What the upstream source changed
+
+Everything above this section was written before the code. This section was
+written after reading `scripts/install.sh` (3541 lines),
+`scripts/hermes-gateway`, and `hermes_cli/env_loader.py` at tag `v2026.8.18`,
+and it records where the design above was wrong. It is kept rather than folded
+in, because the corrections are more useful than a document that looks like it
+was right the first time.
+
+### The gateway is a user unit, not a system unit
+
+This is the correction with the widest blast radius. `scripts/hermes-gateway`
+writes `~/.config/systemd/user/hermes-gateway.service` with
+`WantedBy=default.target` and drives it with `systemctl --user`. The design
+above says "install and enable the systemd unit" throughout, and that phrasing
+hides three real requirements:
+
+- **A user bus must exist.** `systemctl --user` talks to the caller's own
+  session bus. A non-login shell — every SSH command, and every dispatched
+  worker step — arrives with neither `XDG_RUNTIME_DIR` nor
+  `DBUS_SESSION_BUS_ADDRESS` set, and fails with "Failed to connect to bus"
+  however healthy the unit is. `service` sets both explicitly.
+- **Lingering must be on**, or the unit does not start at boot and does not
+  survive logout. Upstream prints `sudo loginctl enable-linger $USER` as a hint
+  at the end of `install_systemd` and then leaves it to the reader. That is
+  exactly the kind of runtime decision this model exists to make once, so it is
+  the `enableLinger` field, and `lima-hermes.yaml` now enables it at provision
+  time so the VM comes up ready.
+- **`preflight` cannot simply require a bus.** On a fresh host there is no user
+  bus precisely because lingering has not been enabled yet, and enabling it is
+  what creates one. Failing on a missing bus would reject every host that
+  `service` would have fixed one step later, so the check only fires when
+  nothing later will create one.
+
+The model reuses `hermes gateway install` rather than writing its own unit
+file. Carrying a second copy of a unit that upstream also generates is a
+guaranteed future drift for no gain.
+
+### The installer is better than its reputation, in specific ways
+
+The design above describes an installer that "prompts about system packages,
+about PATH edits, and about what to do with an existing install". The prompts
+are real, but there is more machinery to drive them than assumed:
+
+| Assumed | Actually |
+| --- | --- |
+| Only `--skip-setup` to work with | `--non-interactive` also exists, and makes every remaining `prompt_yes_no` take its default instead of reading `/dev/tty` |
+| Tracks `main` | `--commit <sha>` pins the checkout, and `--force-commit` makes the pin authoritative even when it moves an install backwards |
+| Chromium is unconditional | `--skip-browser` and `--skip-computer-use` exist |
+| Bundled skills are unconditional | `--no-skills` exists, and is a one-way door: it writes `<dataDir>/.no-bundled-skills`, which later runs honour |
+
+Two of these matter beyond convenience. `--non-interactive` is a stronger
+guarantee than `BatchMode=yes`, because it removes the prompt rather than
+turning a hang into an error — the design above treats `BatchMode` as the
+safety net, and it still is, but the net is now much less likely to be needed.
+And `--force-commit` is load-bearing: without it, the installer *silently
+ignores* a pin that would move an existing checkout backwards, so a rollback
+would appear to succeed and change nothing.
+
+### `--commit` takes a SHA, so a tag has to be peeled
+
+`--commit` rejects anything that is not 7-40 hex characters, so the model
+resolves `ref` with `git ls-remote` first. An annotated tag resolves to a *tag
+object*, not a commit, and `v2026.8.18` is annotated. Recording the tag object
+SHA would make `verify`'s comparison against `git rev-parse HEAD` fail forever,
+so the peeled `refs/tags/<ref>^{}` line is preferred over the bare one.
+
+Resolving up front has a second benefit the design above asks for by name: a
+typo'd ref now fails in `preflight`, against the remote, before anything is
+downloaded.
+
+### The installer itself is now pinned, not just the code
+
+The design objects to `curl … | bash` for tracking `main`, and then proposes
+pinning the *repository* ref. That pins the smaller half. The script that does
+the installing is still whatever was published a moment ago.
+
+So `install` resolves the commit first and then fetches
+`raw.githubusercontent.com/NousResearch/hermes-agent/<sha>/scripts/install.sh`
+— a URL whose path *is* the git commit, and therefore an immutable object. The
+installer and the code it installs are the same reviewed revision.
+`scripts/install.sh` sources nothing, so one file is the whole installer.
+
+### Two configured fields could not mean what they said
+
+- **`gatewayPlatforms` was a fiction, and is removed.** There is no
+  platform list anywhere upstream. `gateway/config.py` enables a platform when
+  it finds that platform's token in the environment. A field that silently did
+  nothing is worse than no field, so putting a token in `env` is now the whole
+  mechanism.
+- **`installSystemPackages: false` became an assertion.** There is no flag to
+  decline. The installer decides by `command -v` and installs ripgrep and
+  ffmpeg through sudo when they are missing. The only honest enforcement is to
+  require that it finds nothing to do, so `preflight` fails unless both are
+  already present. The alternative — accepting the field and letting sudo run
+  anyway — would be a lie in a security-relevant direction.
+
+### `.env` is authoritative, which is better than expected
+
+`hermes_cli/env_loader.py` loads `<dataDir>/.env` with `override=True` and then
+calls `_clear_known_keys_missing_from_dotenv`, which removes known Hermes keys
+that the file does not mention. So writing the file whole — rather than merging
+into it — means removing a key from the model definition really does remove it
+from the running agent. That is the property that makes a declarative
+environment worth having, and it happens to be what upstream already does.
+
+Values are double-quoted and escaped for `\\`, `"`, `\n`, and `\r`, which is
+the subset python-dotenv unescapes inside double quotes. A single quote needs
+no escaping there, which the tests are careful to distinguish from bash's
+`$'...'`.
+
+### `hermes doctor` cannot be the verdict
+
+`cmd_doctor` calls `run_doctor(args)` and does not exit on its result, so
+`hermes doctor` exits 0 whether it found nothing or twenty things. Using it as
+the pass/fail signal would be precisely the "the installer exited 0" claim this
+model exists to avoid. `verify` therefore makes its own checks — the command
+answers, the checkout is at the pinned commit, `.env` exists at mode 0600, the
+unit is enabled and active — and records doctor's issue count, scraped from its
+summary line, as diagnosis rather than judgement.

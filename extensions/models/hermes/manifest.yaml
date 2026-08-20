@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: '@skunk-ape/hermes'
-version: 2026.08.19.1
+version: 2026.08.20.1
 description: |
   Install and configure the Hermes agent (https://hermes-agent.org/) on a Linux
   host, from a declaration rather than an interactive wizard.
@@ -14,22 +14,39 @@ description: |
 
   ## Status
 
-  In development. `preflight` is implemented; `install`, `configure`,
-  `service`, and `verify` are declared and stubbed. `DESIGN.md` is the design
-  record and is the thing worth reading first.
+  In development. All five methods are implemented against the upstream
+  installer's real flags and paths. `preflight` is verified end to end; the
+  install path has not yet been run against a Linux host. `DESIGN.md` is the
+  design record and is the thing worth reading first.
 
   ## Methods
 
-  - `preflight` — assert OS and arch, systemd, passwordless sudo, free space,
-    and egress, and validate the configuration. Changes nothing, so a mistyped
-    vault reference fails here rather than after Chromium has downloaded.
-  - `install` — clone at the pinned ref and drive the upstream installer
-    non-interactively. Idempotent.
-  - `configure` — render the Hermes `.env`. Written 0600 through a base64
-    payload inside a stdin-fed script, so no secret reaches a command argument
-    or a local temporary file.
-  - `service` — install and enable the systemd unit for the messaging gateway.
+  - `preflight` — assert OS and arch, systemd and its user bus, passwordless
+    sudo, free space, egress, and the tools the installer assumes. Resolves the
+    configured ref against the remote and validates every environment value.
+    Changes nothing, so a bad ref or a malformed environment key fails here
+    rather than after Chromium has downloaded.
+  - `install` — resolve the ref to a commit, fetch the upstream installer at
+    that same commit, and drive it non-interactively under a wall-clock cap.
+    Idempotent.
+  - `configure` — render the Hermes `.env`, whole, at mode 0600, through a
+    base64 payload inside a stdin-fed script, so no secret reaches a command
+    argument or a local temporary file.
+  - `service` — install, enable, and start the systemd user unit for the
+    messaging gateway, with lingering so it survives logout and comes back at
+    boot.
   - `verify` — confirm Hermes answers, rather than that the installer exited 0.
+
+  ## Two things worth knowing before configuring it
+
+  The gateway is a systemd **user** unit, not a system one, so it needs a user
+  bus and it needs lingering to start at boot. `service` handles both, and
+  `lima-hermes.yaml` enables lingering at provision time so the VM comes up
+  ready.
+
+  There is no messaging-platform list, because upstream has no such switch: the
+  gateway enables a platform when it finds that platform's token in the
+  environment. Putting the token in `env` is how you turn it on.
 
   ## Target
 
@@ -45,8 +62,10 @@ description: |
 
   ## Prerequisites
 
-  - A Linux host with systemd.
-  - Passwordless sudo, unless `installSystemPackages` is false.
+  - A Linux host with systemd, plus `git` and `curl`.
+  - Passwordless sudo. Needed for the system packages, and for `loginctl
+    enable-linger`. `installSystemPackages: false` avoids the first only when
+    ripgrep and ffmpeg are already installed, which `preflight` checks.
   - A vault holding whatever API keys Hermes needs.
 repository: 'https://github.com/skunk-ape/swamp-extensions'
 

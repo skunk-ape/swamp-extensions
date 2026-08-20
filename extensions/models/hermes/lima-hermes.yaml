@@ -93,6 +93,16 @@ provision:
       # so the worker re-enrolls on the same identity after a restart.
       install -d -o "$LIMA_USER" -g "$LIMA_USER" -m 0755 /var/lib/swamp-worker
 
+      # The Hermes gateway is a systemd USER unit, and the worker below is a
+      # system service with User=, which has no login session and therefore no
+      # user bus. Without lingering, `systemctl --user` fails with "Failed to
+      # connect to bus" no matter how healthy the unit is, and the gateway would
+      # also not survive a reboot. Enabling it here starts user@$UID.service at
+      # boot, which is what gives the dispatched `service` method a bus to talk
+      # to. The model enables this too; doing it here means the VM comes up
+      # ready rather than needing a second sudo grant at install time.
+      loginctl enable-linger "$LIMA_USER"
+
       # A plain `swamp worker connect` under systemd, deliberately not
       # `swamp worker daemon`, which is EXPERIMENTAL. HOME must be set
       # explicitly or pulled extension types fail to resolve.

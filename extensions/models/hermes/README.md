@@ -3,9 +3,11 @@
 Install and configure the [Hermes agent](https://hermes-agent.org/) on a Linux
 host, from a declaration rather than an interactive wizard.
 
-**Status: in development.** `preflight` works. `install`, `configure`,
-`service`, and `verify` are declared and stubbed. [`DESIGN.md`](./DESIGN.md) is
-the design record, and it is the thing worth reading first.
+**Status: in development.** All five methods are implemented against the
+upstream installer's real flags and paths, and `preflight` is verified end to
+end. The install path itself has not yet been run against a Linux host — see
+"What is not yet proven" below. [`DESIGN.md`](./DESIGN.md) is the design record,
+and it is the thing worth reading first.
 
 ## Why this exists
 
@@ -37,29 +39,63 @@ Configure it, sourcing every secret from a vault:
 
 ```yaml
 globalArguments:
-  ref: v0.4.2               # required, with no default — tracking main is the
+  ref: v2026.8.18           # required, with no default — tracking main is the
                             # upstream behaviour this model replaces
   dataDir: ~/.hermes
   installSystemPackages: true
+  installBrowser: true      # Playwright and Chromium; most of minDiskGb
   onExisting: update
   installGatewayService: true
-  gatewayPlatforms: [telegram]
+  enableLinger: true
   env:
     ANTHROPIC_API_KEY: '${{ vault.get("hermes", "anthropic-key") }}'
+    TELEGRAM_BOT_TOKEN: '${{ vault.get("hermes", "telegram-token") }}'
 ```
 
-Then check the host before changing it:
+There is no list of messaging platforms to enable, because upstream has no such
+switch: the gateway turns a platform on when it finds that platform's token in
+the environment. Putting a token in `env` is how you enable it.
+
+Then run the methods in order:
 
 ```bash
-swamp model method run hermes preflight --json
+swamp model @skunk-ape/hermes method run preflight hermes
+swamp model @skunk-ape/hermes method run install   hermes
+swamp model @skunk-ape/hermes method run configure hermes
+swamp model @skunk-ape/hermes method run service   hermes
+swamp model @skunk-ape/hermes method run verify    hermes
 ```
 
-`preflight` writes what it found and fails with every reason the host is not
-ready, rather than the first one.
+Each one stands alone and re-runs cleanly, so rotating a key is `configure` plus
+`service` rather than a rebuild. `preflight` writes what it found and fails with
+every reason the host is not ready rather than the first one, and it resolves
+`ref` against the remote, so a typo fails before anything is downloaded. A
+vault reference that names a missing vault or key fails earlier still — swamp
+resolves those before the method runs at all.
 
 > Keep every vault reference static and literal. A dynamically constructed
 > reference forfeits the per-step secret allowlist that swamp applies to
 > dispatched methods. See `DESIGN.md`.
+
+### Two fields that do not mean what they look like
+
+- **`installSystemPackages: false` is an assertion, not a switch.** The upstream
+  installer has no flag to decline ripgrep and ffmpeg; it decides by `command
+  -v` and installs them through sudo when they are missing. The only honest way
+  to hold it to this choice is to require that it finds nothing to do, so
+  `preflight` fails unless both are already present.
+- **`ref` should be a tag or a commit, not a branch.** A branch resolves to a
+  different commit on each run, which is the upstream behaviour this model
+  exists to replace, and it makes `install` and `verify` disagree legitimately.
+
+## What is not yet proven
+
+`preflight` has been run end to end. The remaining four have been written
+against the upstream source — `scripts/install.sh`, `scripts/hermes-gateway`,
+and `hermes_cli/env_loader.py` — and unit-tested at the escaping and parsing
+layer, but not yet executed against a Linux host. The open questions in
+`DESIGN.md` that a first real run should settle are Playwright and Chromium on
+arm64 under Lima `vz`, and whether 4 CPU and 8 GiB is enough.
 
 ## Target
 

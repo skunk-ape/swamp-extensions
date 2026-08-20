@@ -1,0 +1,21 @@
+type: '@skunk-ape/hermes'
+typeVersion: 2026.08.20.1
+id: 64b355db-b572-4bc6-bd30-d9a00a9e82ad
+name: hermes-probe
+version: 1
+tags: {}
+globalArguments:
+  ref: v2026.8.18
+  dataDir: ~/.hermes
+  installDir: ''
+  installSystemPackages: true
+  installBrowser: true
+  installComputerUse: true
+  seedBundledSkills: true
+  onExisting: update
+  installGatewayService: true
+  enableLinger: true
+  env: {}
+  minDiskGb: 20
+  installTimeoutSeconds: 3600
+methods: {}
