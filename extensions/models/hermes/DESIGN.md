@@ -207,8 +207,78 @@ scripts, the idempotency guards, and the `KEY=value` parsing are identical
 across all three shapes, so the architecture can change without touching the
 install.
 
-**Build on A first.** It works today and depends on nothing experimental. See
-open question 7 for C, which is the better destination if it checks out.
+**Build on A first**, because it depends on nothing experimental. **Move to C**,
+which was the open question and is now settled.
+
+### Shape C is viable — tested 2026-08-19
+
+The question was where vault resolution happens. If the worker resolves vault
+references itself, C collapses into B and inherits B's credential problem.
+
+It does not. Swamp's own design record for remote execution
+(`design/remote-execution.md` in the swamp source, via `swamp source fetch`)
+states it directly:
+
+> A worker holds no credentials, no repository, no datastore config, and no
+> pre-installed extensions, and can touch nothing it was not handed.
+
+Every side-effecting capability, including secret resolution, is proxied back to
+the orchestrator. Two paths exist, and neither puts the vault on the worker:
+
+1. A `${{ vault.get(...) }}` reference in a step's inputs is resolved
+   orchestrator-side, and only that value ships with the dispatch.
+2. A runtime `vaultService.get()` from inside model code is an RPC home,
+   authorized per dispatch.
+
+**Confirmed by running it, not only by reading it.** A worker was enrolled with
+an isolated `HOME`, a working directory outside the repository, and therefore no
+access to `.swamp/secrets/local_encryption/stef-secrets/.key`. A workflow step
+placed on that worker by label ran `@skunk-ape/stef.lint` over text sourced from
+a vault reference, and succeeded:
+
+```
+Dispatch 322be8f0: @skunk-ape/stef.lint (probe-c-vault › lint-the-secret) succeeded in 501ms
+```
+
+`swamp worker verify` also passed against the same worker, covering enrollment,
+scheduling, capability RPC, and the data plane.
+
+**So C keeps the vault, the repository, and the swamp-club auth token off the
+VM, while running the work locally on it.** That is the goal shape. Four
+findings qualify it, and all four are design constraints rather than blockers:
+
+- **The orchestrator ships its entire process environment with every dispatch.**
+  It overlays the worker's environment, minus a fixed denylist that protects
+  the worker's own `HOME`, `PATH`, `SHELL`, `TMPDIR`, `XDG_*`, `DENO_*`, and
+  `SWAMP_*`. The design record names this as the deliberate injection path for
+  ambient credentials, and records per-label environment scoping as unbuilt.
+  **Consequence: whatever shell runs `swamp serve` becomes ambient credentials
+  inside the agent's VM.** Run the orchestrator from a deliberately minimal
+  environment, never from an interactive shell holding `AWS_*`, `GITHUB_TOKEN`,
+  or similar. This is the earlier escape-path concern arriving through a
+  different door.
+- **The per-step secret allowlist has a bypass.** `resolveSecret` enforces an
+  allowlist built from the vault references in the dispatched step's arguments,
+  but `capability_service.ts` returns early when
+  `allowedSecrets.hasDynamicRefs` is true. A dynamically constructed vault
+  reference therefore forfeits the allowlist for that dispatch. **Keep every
+  vault reference in this model static and literal.**
+- **`putSecret` has no allowlist at all**, only the infrastructure-key denylist.
+  A dispatched method can overwrite any non-infrastructure secret. Worth knowing
+  before granting anything write access.
+- **No vault read audit entry appeared** for the probe. `swamp vault
+  audit-trail` reported none afterwards. Expected, most likely, because
+  expression-based resolution happens orchestrator-side and never becomes a
+  `resolveSecret` capability call, which is what the trail appears to record.
+  Do not rely on the audit trail to see secrets consumed by dispatched steps
+  without confirming what it covers.
+
+Infrastructure keys are denied to dispatched methods outright, `server-token-*`
+and `worker-token-*` among them, so the specific chain that ruled out shape B —
+agent, root, registry token, publish — is closed under C.
+
+Remaining caveat: `swamp worker daemon` is marked EXPERIMENTAL, which is why A
+is still the first build target rather than skipping straight to C.
 
 ### Why not `@keeb/ssh` for the SSH implementation
 
@@ -314,27 +384,8 @@ type and every transport shape looks identical to the install logic.
 5. **`@mgreten/hermes-env` reuse**, per the open decision above.
 6. **Resource floor.** Chromium, Python, and Node in one VM. The Lima default is
    4 CPU and 4 GiB. Confirm that is enough.
-7. **Shape C, worker enrollment — the open experiment.** This is the better
-   destination if it checks out, because it deletes the SSH transport while
-   keeping the control plane off the VM.
-
-   `swamp worker connect` takes an enrollment token shaped `<name>.<secret>`,
-   dials an orchestrator, and receives bundles. The repo and the definitions
-   stay on the Mac and the work runs locally on the VM.
-
-   **The decisive unknown is where vault resolution happens.** If the
-   orchestrator resolves vault references and the worker never holds the vault,
-   C is strictly better than A and B together. If the worker resolves them, C
-   collapses into B and inherits B's credential problem.
-
-   The probe is `swamp worker verify`, which exercises enrollment, scheduling,
-   capability RPC, and data plane connectivity. Run it against a throwaway
-   instance with a vault-referencing method and observe which side reads the
-   vault. Do not infer this from documentation.
-
-   Caveat: `swamp worker daemon` is marked EXPERIMENTAL. C is an elegant answer
-   on a surface that still moves, which is the reason to build A first rather
-   than wait for this.
+7. ~~Shape C, worker enrollment.~~ **Settled on 2026-08-19. C is viable.** See
+   "Shape C is viable" below.
 
 ## Rejected
 
