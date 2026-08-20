@@ -728,3 +728,96 @@ had not been computed yet. There is only one "Found N issue(s)" line in the
 output, so this is not a parsing error — the number genuinely moves in the
 minutes after an install. It is recorded as diagnosis, never as the verdict, and
 that is the right weight to give it.
+
+## The Playwright failure is not the distro
+
+Recorded after the 24.04 rebuild, because it corrects a confident prediction made
+one section above and acted on.
+
+The theory was: Ubuntu 26.04 is newer than any Playwright build, so pinning the
+Lima base image to 24.04 — which Playwright supports natively — would make
+browser tools work. The pin was made, the VM rebuilt, and the install run again.
+
+**The pin did not fix it.** No `#35166` line and no
+`PLAYWRIGHT_HOST_PLATFORM_OVERRIDE` appeared in the log, which confirms 24.04 is
+natively recognised and the override path never triggered. Playwright failed
+anyway, in the same place and for the same duration.
+
+What it actually is, established by installing one small component in isolation:
+
+```
+$ playwright install ffmpeg      # 1.6 MiB
+… 100% of 1.6 MiB
+rc=124                           # killed by a 120s timeout
+$ ls ~/.cache/ms-playwright/
+__dirlock  ffmpeg-1011           # the component IS installed
+```
+
+**Playwright downloads and installs a component correctly, and then never
+exits.** The work succeeds; the process does not terminate. It is killed by
+whatever timeout wraps it, and it leaves `__dirlock` — its cache directory lock
+— behind.
+
+That stale lock is what makes the second symptom, and it is why this looked like
+a download problem for so long. Every later `playwright install` blocks on the
+lock immediately, producing no output at all, and times out. So the first run
+looks like "the download hung" and every run after looks identical while never
+reaching the network.
+
+Both symptoms are one bug, and neither is about Ubuntu:
+
+| Observed | Actual |
+| --- | --- |
+| "Hangs during `--with-deps`" | Hangs *after* a successful component install, in any mode |
+| "Re-downloads Chromium every run" | The completion marker is never written, because the process never exits cleanly |
+| "Fixed by a newer/older distro" | Identical on 26.04 and 24.04 |
+| "Second run hangs on the download" | Second run never downloads; it blocks on the stale `__dirlock` |
+
+The install completes regardless, because upstream treats the browser step as
+non-fatal. The cost is about ten minutes per install buying a component set that
+is never finished — Chromium arrives, `chromium_headless_shell` and `ffmpeg` do
+not, so browser tools do not work.
+
+**Consequence: `installBrowser: false` is the right default here**, and the ops
+repo sets it. It removes ten minutes from every install, removes the largest
+single reason a dispatched install approaches the fifteen-minute credential
+ceiling, and loses only a capability that was not working anyway.
+
+A manual recipe does exist for anyone who wants the browser: remove
+`~/.cache/ms-playwright/__dirlock`, run `playwright install chromium` under a
+timeout, kill it when it stalls after the download, remove the lock again, and
+repeat until all three components are present. That is not something to
+automate blindly, and it is not something this model should pretend to do.
+
+### On the distro question more generally
+
+Neither failure this project hit was really Ubuntu's fault. 26.04 was too new
+for Playwright's build matrix; 24.04's minimal cloud image omitted `libatomic1`
+and `unzip`. Both are the same class — **prebuilt glibc binaries meeting a
+minimal base image** — because the installer compiles nothing. It fetches a
+prebuilt Node, a uv-managed Python, and Playwright's Chromium.
+
+That argues for a boring, widely-targeted glibc distro rather than a different
+one:
+
+- **Arch** is supported by the installer (`pacman -S --noconfirm`), but rolling,
+  so it sits permanently where 26.04 sat — always ahead of Playwright's builds.
+  Its `--with-deps` support is also absent, since that path is apt-only, and
+  `playwright_host_unrecognized` only handles ubuntu and debian, so it would not
+  even get the override retry.
+- **NixOS** is the worst fit for this installer and the best fit for a different
+  approach. It will not run unpatched prebuilt dynamic binaries, so Node, uv's
+  Python, and Chromium would each need patchelf or nix-ld. Upstream ships
+  `flake.nix` and `services.hermes-agent.enable`, which is a genuinely better
+  path *if* NixOS is the target — and it would make this extension redundant
+  there, because that module already is the declaration this extension exists to
+  produce. Tellingly, upstream's own NixOS module offers `container.enable`,
+  documented as "OCI container mode (**Ubuntu base**, full self-modification
+  support)": even the Nix path reaches for Ubuntu once the agent needs to modify
+  itself, which is the entire premise here.
+- **Debian 12/13** is the one real alternative — apt-based, conservative, and in
+  Playwright's build matrix. Roughly equivalent to 24.04.
+
+The durable fix was never the distro. It was declaring the dependencies, which
+the template now installs and `preflight` now enforces by name — including
+`libatomic.so.1`, which is not a command and therefore needs its own probe.

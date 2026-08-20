@@ -17,8 +17,20 @@ minimumLimaVersion: 2.0.0
 # mounts, and an autonomous agent with shell access and the host home directory
 # mounted is not isolated. The empty `mounts` below is the whole security model
 # for this VM, so it is pinned here rather than inherited.
+#
+# The image is pinned to 24.04 rather than `_images/ubuntu`, which floats to the
+# newest release. That float cost the first working install its browser tools:
+# it landed on Ubuntu 26.04, Playwright 1.58.2 has no build for it, and
+# `playwright install` then downloads Chromium and hangs instead of failing —
+# upstream tracks this as #35166 and works around it with
+# PLAYWRIGHT_HOST_PLATFORM_OVERRIDE, which still hangs. 24.04 is the newest
+# release Playwright supports natively, so the workaround is not needed at all.
+#
+# The general rule is the same one `mounts: []` is an instance of: do not
+# inherit a base that moves. A floating image means the VM's toolchain
+# compatibility changes without anything in this file changing.
 base:
-  - template:_images/ubuntu
+  - template:_images/ubuntu-24.04
 
 mounts: []
 
@@ -61,11 +73,18 @@ provision:
         exit 1
       fi
 
-      # Prerequisites for the swamp installer itself.
-      if ! command -v curl >/dev/null 2>&1; then
-        apt-get update -qq
-        apt-get install -y -qq curl ca-certificates >/dev/null
-      fi
+      # Prerequisites for the swamp installer itself, plus the packages the
+      # Hermes installer assumes are present and does not install.
+      #
+      # libatomic1 is not optional and not obvious: the Node 26 arm64 build
+      # links against libatomic.so.1, the Ubuntu 24.04 cloud image does not
+      # ship it, and without it `node --version` fails with exit 127 —
+      # "command not found", which reads as a PATH problem rather than a
+      # missing library. That killed the first install on this image.
+      #
+      # unzip is what Playwright extracts its browser archives with.
+      apt-get update -qq
+      apt-get install -y -qq curl ca-certificates libatomic1 unzip >/dev/null
 
       # Install swamp as the lima user, so it lands in the user's home rather
       # than root's. This is a curl|sh, which is the same single-party-trust

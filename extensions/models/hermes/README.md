@@ -91,12 +91,19 @@ resolves those before the method runs at all.
 
 ## Known limitations
 
-**Playwright hangs in `--with-deps`, so budget ten wasted minutes or turn it
-off.** Chromium downloads fine on arm64 under Lima `vz`, then the dependency
-step hangs until upstream's own 600-second cap kills it — every run. Upstream
-treats that step as non-fatal, so the install still succeeds; browser tools are
-what you lose. Ten of the seventeen minutes go to a step that never completes.
-`installBrowser: false` skips it.
+**Use `installBrowser: false`.** Playwright's installer downloads and installs a
+component correctly and then never exits, on both Ubuntu 24.04 and 26.04. It
+gets killed by whatever timeout wraps it and leaves its `__dirlock` behind, so
+every later run blocks on the stale lock and times out producing no output at
+all. The effect is roughly ten minutes per install spent on a component set that
+never finishes: Chromium arrives, `chromium_headless_shell` and `ffmpeg` do not,
+and browser tools do not work. Upstream treats the step as non-fatal so the
+install itself still succeeds.
+
+Turning it off costs a capability that was not working anyway, and removes the
+largest single reason a dispatched install approaches the fifteen-minute
+ceiling below. See `DESIGN.md`, "The Playwright failure is not the distro", for
+the evidence and for the manual recipe if you want the browser regardless.
 
 **A dispatched install must finish inside fifteen minutes.** When these methods
 run as placed workflow steps on a worker, swamp's dispatch credential expires

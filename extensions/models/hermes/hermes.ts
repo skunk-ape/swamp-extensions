@@ -402,9 +402,19 @@ fi
 
 if sudo -n true >/dev/null 2>&1; then echo "SUDO=yes"; else echo "SUDO=no"; fi
 
-for t in git curl python3 rg ffmpeg; do
+for t in git curl python3 unzip xz rg ffmpeg; do
   if command -v "$t" >/dev/null 2>&1; then echo "TOOL_$t=yes"; else echo "TOOL_$t=no"; fi
 done
+
+# Not a command, so it needs its own probe. The Node 26 arm64 build links
+# against libatomic.so.1 and the installer does not install it. When it is
+# absent, node fails with exit 127 — indistinguishable from "not on PATH"
+# unless you know to look, which is why this is checked here by name.
+if ldconfig -p 2>/dev/null | grep -q 'libatomic\.so\.1'; then
+  echo "LIB_libatomic=yes"
+else
+  echo "LIB_libatomic=no"
+fi
 
 # Measure the nearest existing ancestor: df on a path that does not exist yet
 # reports nothing, and a fresh host has neither the data dir nor its parent.
@@ -441,9 +451,12 @@ echo "COMMIT=\${COMMIT:-}"
         const existingInstall = kv.EXISTING === "yes";
         const resolvedCommit = kv.COMMIT ?? "";
         const tools: Record<string, boolean> = {};
-        for (const t of ["git", "curl", "python3", "rg", "ffmpeg"]) {
+        for (
+          const t of ["git", "curl", "python3", "unzip", "xz", "rg", "ffmpeg"]
+        ) {
           tools[t] = kv[`TOOL_${t}`] === "yes";
         }
+        tools["libatomic.so.1"] = kv.LIB_libatomic === "yes";
 
         const failures: string[] = [];
         if (os !== "Linux") {
@@ -457,6 +470,24 @@ echo "COMMIT=\${COMMIT:-}"
               `${t} is not on the target, and the installer needs it to fetch anything.`,
             );
           }
+        }
+        if (!tools["xz"]) {
+          failures.push(
+            "xz is missing, and the Node tarball the installer downloads is .tar.xz.",
+          );
+        }
+        if (!tools["libatomic.so.1"]) {
+          // Learned the hard way: this presents as exit 127 from `node
+          // --version`, which reads as a PATH problem and sends you looking in
+          // the wrong place entirely.
+          failures.push(
+            "libatomic.so.1 is missing. The Node build the installer fetches links against it, so node would fail with exit 127 — which looks like a PATH problem, not a missing library. Install libatomic1 (Debian/Ubuntu) or libatomic (Fedora/Arch).",
+          );
+        }
+        if (!tools["unzip"] && g.installBrowser) {
+          failures.push(
+            "installBrowser is true but unzip is missing, and Playwright extracts its browser archives with it.",
+          );
         }
         if (!systemd && g.installGatewayService) {
           failures.push(
