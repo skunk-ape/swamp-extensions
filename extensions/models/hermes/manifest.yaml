@@ -1,0 +1,77 @@
+manifestVersion: 1
+name: '@skunk-ape/hermes'
+version: 2026.08.19.1
+description: |
+  Install and configure the Hermes agent (https://hermes-agent.org/) on a Linux
+  host, from a declaration rather than an interactive wizard.
+
+  Upstream ships one command: a curl|bash installer that tracks `main`, prompts
+  about system packages and PATH edits, asks what to do with an existing
+  install, and then runs a setup wizard for API keys. Wrapping that adds
+  nothing. This model inverts it — every choice the wizard asks for at runtime
+  becomes a field decided once, in version control, before anything touches the
+  host. A declarative install is reviewable, re-runnable, and diffable.
+
+  ## Status
+
+  In development. `preflight` is implemented; `install`, `configure`,
+  `service`, and `verify` are declared and stubbed. `DESIGN.md` is the design
+  record and is the thing worth reading first.
+
+  ## Methods
+
+  - `preflight` — assert OS and arch, systemd, passwordless sudo, free space,
+    and egress, and validate the configuration. Changes nothing, so a mistyped
+    vault reference fails here rather than after Chromium has downloaded.
+  - `install` — clone at the pinned ref and drive the upstream installer
+    non-interactively. Idempotent.
+  - `configure` — render the Hermes `.env`. Written 0600 through a base64
+    payload inside a stdin-fed script, so no secret reaches a command argument
+    or a local temporary file.
+  - `service` — install and enable the systemd unit for the messaging gateway.
+  - `verify` — confirm Hermes answers, rather than that the installer exited 0.
+
+  ## Target
+
+  The target is any Linux host, and this model does not create it. Provisioning
+  has a separate lifecycle. `lima-hermes.yaml` is a ready template for the
+  intended first target: a Lima VM on macOS with no host mounts, passwordless
+  sudo, and a swamp worker enrolled on first boot.
+
+  The VM boundary is load-bearing rather than convenient. It is what makes
+  granting an autonomous agent passwordless sudo a reasonable trade, and it is
+  why the template pins `mounts: []` instead of inheriting a base that mounts
+  the host home directory.
+
+  ## Prerequisites
+
+  - A Linux host with systemd.
+  - Passwordless sudo, unless `installSystemPackages` is false.
+  - A vault holding whatever API keys Hermes needs.
+repository: 'https://github.com/skunk-ape/swamp-extensions'
+
+# Everything for this extension lives beside this manifest, so typed entries
+# and additionalFiles both resolve from here rather than from extensions/models/.
+paths:
+  base: manifest
+
+models:
+  - hermes.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills: []
+additionalFiles:
+  - README.md
+  - DESIGN.md
+  - lima-hermes.yaml
+  - LICENSE
+dependencies: []
+labels:
+  - hermes
+  - agent
+  - install
+  - lima
+  - provisioning

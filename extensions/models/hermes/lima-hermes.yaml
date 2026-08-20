@@ -1,0 +1,119 @@
+# Lima template for a Hermes agent host.
+#
+#   limactl start --name hermes ./lima-hermes.yaml \
+#     --param orchestrator=ws://192.168.5.2:9099 \
+#     --param workerToken=<name>.<secret> \
+#     --param workerLabels=role=hermes
+#   limactl autostart hermes
+#
+# The token is a start-time parameter, never a committed value. Mint it with
+# `swamp worker token create <name> --duration <d>` on the orchestrator.
+#
+# 192.168.5.2 is the host as seen from a vz guest. Confirm it for your setup.
+
+minimumLimaVersion: 2.0.0
+
+# Deliberately NOT inheriting template:_default/mounts. That base adds host
+# mounts, and an autonomous agent with shell access and the host home directory
+# mounted is not isolated. The empty `mounts` below is the whole security model
+# for this VM, so it is pinned here rather than inherited.
+base:
+  - template:_images/ubuntu
+
+mounts: []
+
+vmType: vz
+
+# Chromium, Node, and Python all land in this VM. 4 GiB is the Lima default and
+# is believed to be tight rather than wrong; revise once the install is measured.
+cpus: 4
+memory: 8GiB
+disk: 60GiB
+
+user:
+  # The trade the design record argues for: an agent that writes its own skills
+  # will need to install things nobody anticipated. Root here is bounded by the
+  # VM, which is what makes this grantable at all.
+  passwordlessSudo: true
+
+param:
+  orchestrator: ""
+  workerToken: ""
+  workerLabels: "role=hermes"
+
+provision:
+  # Runs as root on every boot, so every step below is idempotent by
+  # construction rather than by luck.
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+
+      ORCHESTRATOR='{{.Param.orchestrator}}'
+      WORKER_TOKEN='{{.Param.workerToken}}'
+      WORKER_LABELS='{{.Param.workerLabels}}'
+      LIMA_USER='{{.User}}'
+      LIMA_HOME='{{.Home}}'
+
+      if [ -z "$ORCHESTRATOR" ] || [ -z "$WORKER_TOKEN" ]; then
+        echo "orchestrator and workerToken params are required" >&2
+        exit 1
+      fi
+
+      # Prerequisites for the swamp installer itself.
+      if ! command -v curl >/dev/null 2>&1; then
+        apt-get update -qq
+        apt-get install -y -qq curl ca-certificates >/dev/null
+      fi
+
+      # Install swamp as the lima user, so it lands in the user's home rather
+      # than root's. This is a curl|sh, which is the same single-party-trust
+      # shape the design record objects to upstream. It is accepted here only
+      # because the blast radius is one disposable VM. Pin a version and verify
+      # a checksum before this template is used for anything that matters.
+      if ! su -l "$LIMA_USER" -c 'command -v swamp' >/dev/null 2>&1; then
+        su -l "$LIMA_USER" -c 'curl -fsSL https://swamp-club.com/install.sh | sh'
+      fi
+
+      SWAMP_BIN="$(su -l "$LIMA_USER" -c 'command -v swamp')"
+
+      # The token goes in a 0600 EnvironmentFile rather than in the unit, which
+      # is world-readable. swamp worker connect reads SWAMP_WORKER_TOKEN.
+      install -d -m 0755 /etc/swamp
+      umask 077
+      cat > /etc/swamp/worker.env <<EOF
+      SWAMP_WORKER_TOKEN=$WORKER_TOKEN
+      SWAMP_WORKER_LABELS=$WORKER_LABELS
+      EOF
+      chmod 0600 /etc/swamp/worker.env
+      umask 022
+
+      # A stable cache dir holds the machine id the enrollment token binds to,
+      # so the worker re-enrolls on the same identity after a restart.
+      install -d -o "$LIMA_USER" -g "$LIMA_USER" -m 0755 /var/lib/swamp-worker
+
+      # A plain `swamp worker connect` under systemd, deliberately not
+      # `swamp worker daemon`, which is EXPERIMENTAL. HOME must be set
+      # explicitly or pulled extension types fail to resolve.
+      cat > /etc/systemd/system/swamp-worker.service <<EOF
+      [Unit]
+      Description=swamp remote execution worker
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=$LIMA_USER
+      Environment=HOME=$LIMA_HOME
+      EnvironmentFile=/etc/swamp/worker.env
+      ExecStart=$SWAMP_BIN worker connect $ORCHESTRATOR --cache-dir /var/lib/swamp-worker
+      Restart=on-failure
+      RestartSec=5s
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      systemctl daemon-reload
+      systemctl enable --now swamp-worker.service
