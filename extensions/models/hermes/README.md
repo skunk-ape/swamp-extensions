@@ -3,11 +3,12 @@
 Install and configure the [Hermes agent](https://hermes-agent.org/) on a Linux
 host, from a declaration rather than an interactive wizard.
 
-**Status: in development.** All five methods are implemented against the
-upstream installer's real flags and paths, and `preflight` is verified end to
-end. The install path itself has not yet been run against a Linux host — see
-"What is not yet proven" below. [`DESIGN.md`](./DESIGN.md) is the design record,
-and it is the thing worth reading first.
+**Status: working, with one known limitation.** All five methods are implemented
+against the upstream installer's real flags and paths, and the whole sequence
+has been verified end to end against a Lima VM — installed, configured, gateway
+running, verified, in 10m29s. See "Known limitations" below for the two things
+that will bite you. [`DESIGN.md`](./DESIGN.md) is the design record, and it is
+the thing worth reading first.
 
 ## Why this exists
 
@@ -88,14 +89,33 @@ resolves those before the method runs at all.
   different commit on each run, which is the upstream behaviour this model
   exists to replace, and it makes `install` and `verify` disagree legitimately.
 
-## What is not yet proven
+## Known limitations
 
-`preflight` has been run end to end. The remaining four have been written
-against the upstream source — `scripts/install.sh`, `scripts/hermes-gateway`,
-and `hermes_cli/env_loader.py` — and unit-tested at the escaping and parsing
-layer, but not yet executed against a Linux host. The open questions in
-`DESIGN.md` that a first real run should settle are Playwright and Chromium on
-arm64 under Lima `vz`, and whether 4 CPU and 8 GiB is enough.
+**Playwright hangs in `--with-deps`, so budget ten wasted minutes or turn it
+off.** Chromium downloads fine on arm64 under Lima `vz`, then the dependency
+step hangs until upstream's own 600-second cap kills it — every run. Upstream
+treats that step as non-fatal, so the install still succeeds; browser tools are
+what you lose. Ten of the seventeen minutes go to a step that never completes.
+`installBrowser: false` skips it.
+
+**A dispatched install must finish inside fifteen minutes.** When these methods
+run as placed workflow steps on a worker, swamp's dispatch credential expires
+after fifteen minutes and cannot be renewed, so a longer install completes on
+the host and then fails to record anything — the side effects happen and nothing
+persists. A full install with the browser step is close enough to that ceiling
+to be unreliable. Use `installBrowser: false`, or run the methods locally on the
+target instead of dispatching them. Filed upstream as
+[swamp-club Lab #1750](https://swamp-club.com/lab/1750); `installTimeoutSeconds`
+cannot help, because the ceiling is in the transport rather than in the script.
+
+## Running it on a worker
+
+[`workflow-hermes-install.yaml`](../../../workflows/workflow-hermes-install.yaml)
+drives the five methods in order as placed steps. It sets `affinity: true`,
+which is load-bearing rather than an optimisation: install, configure, service,
+and verify all address one host's filesystem and one host's systemd, so a run
+that spread them over two workers would report success for a machine that was
+never assembled.
 
 ## Target
 

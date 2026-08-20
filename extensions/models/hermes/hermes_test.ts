@@ -23,6 +23,7 @@ import {
 } from "./_lib/exec.ts";
 import {
   HERMES_BIN_FRAGMENT,
+  parseHermesVersion,
   renderEnvFile,
   resolveCommitFragment,
   resolveInstallDir,
@@ -185,6 +186,29 @@ Deno.test("runScript throws on a failing step mid-script", async () => {
   assert(threw, "set -e must turn a failing step into an error");
 });
 
+Deno.test("runScript returns when the script exits, even if a child outlives it", async () => {
+  // The bug this pins down cost thirteen minutes on the first real install.
+  // A grandchild that survives the script inherits the output pipe, so waiting
+  // for end-of-file waits forever on a script that already finished. Here the
+  // background sleep holds stdout open for 60s; the call must still return in
+  // about the drain grace, not in a minute.
+  const started = Date.now();
+  const { stdout, code } = await runScript(`
+# A descendant that outlives the script and keeps the pipe open.
+sleep 60 &
+disown
+echo "DONE=yes"
+`);
+  const elapsed = Date.now() - started;
+
+  assertEquals(code, 0);
+  assertEquals(parseKv(stdout).DONE, "yes");
+  assert(
+    elapsed < 20000,
+    `runScript took ${elapsed}ms — it is waiting for pipe EOF rather than for exit`,
+  );
+});
+
 Deno.test("runProbe reports a failure as data rather than throwing", async () => {
   const { stdout, code } = await runProbe(`
 echo "A=$(false || echo no)"
@@ -212,6 +236,25 @@ Deno.test("resolveInstallDir mirrors the upstream non-root default", () => {
     resolveInstallDir(g({ dataDir: "~/.hermes", installDir: "/opt/h" })),
     "/opt/h",
   );
+});
+
+// --- version parsing -----------------------------------------------------
+
+Deno.test("parseHermesVersion pulls the version out of the real banner", () => {
+  // Exactly what the command printed on the test VM.
+  assertEquals(
+    parseHermesVersion("Hermes Agent v0.20.4 (2026.8.18)"),
+    "0.20.4",
+  );
+  assertEquals(parseHermesVersion("Hermes Agent v1.2.30"), "1.2.30");
+});
+
+Deno.test("parseHermesVersion says unknown rather than guessing", () => {
+  assertEquals(parseHermesVersion("unknown"), "unknown");
+  assertEquals(parseHermesVersion(""), "unknown");
+  // The release date is also three dot-separated numbers, so a banner missing
+  // its version must report unknown rather than confidently returning the date.
+  assertEquals(parseHermesVersion("Hermes Agent (2026.8.18)"), "unknown");
 });
 
 // --- env validation ------------------------------------------------------

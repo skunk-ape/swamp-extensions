@@ -69,11 +69,38 @@ export function stripAnsi(s: string): string {
 }
 
 /**
+ * How long to keep draining the output pipes after the script has exited.
+ *
+ * See runScriptRaw. Two seconds is far more than a drain of already-buffered
+ * bytes needs, and it is only ever paid when a descendant outlived the script.
+ */
+const DRAIN_GRACE_MS = 2000;
+
+/**
  * Run a bash script on the host and capture its output.
  *
  * The script is written to the process's stdin rather than passed as an
  * argument. Does not throw on a non-zero exit — callers decide, because a
  * probe that answers "no" is not a failure.
+ *
+ * ## Why this does not use `proc.output()`
+ *
+ * `proc.output()` waits for end-of-file on the output pipes, not for the
+ * process to exit. Those are the same thing right up until a grandchild
+ * survives its parent: the orphan inherits the write end of the pipe, EOF never
+ * arrives, and the call blocks forever on a script that finished minutes ago.
+ *
+ * This is not hypothetical. It is what the first real run of `install` did.
+ * The upstream installer wraps its Playwright step in `timeout 600`, `timeout`
+ * signals only the child it spawned, and the Chromium downloader two levels
+ * below it survived. The installer exited successfully, and the method sat
+ * there for another thirteen minutes holding a pipe open for a process that had
+ * nothing left to say — long enough that the dispatch's own credential expired
+ * underneath it and the resource write then failed with a 401.
+ *
+ * So: wait for the process to *exit*, let the pipes drain briefly for whatever
+ * was already buffered, then cancel the readers and move on. A stray orphan
+ * costs DRAIN_GRACE_MS instead of the rest of the run.
  */
 export async function runScriptRaw(
   script: string,
@@ -91,11 +118,62 @@ export async function runScriptRaw(
   await writer.write(new TextEncoder().encode(script));
   await writer.close();
 
-  const result = await proc.output();
+  const outReader = proc.stdout.getReader();
+  const errReader = proc.stderr.getReader();
+
+  const drain = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    into: Uint8Array[],
+  ) => {
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) into.push(value);
+      }
+    } catch {
+      // Cancelled below, or the pipe broke. Either way we keep what we read.
+    }
+  };
+
+  const outChunks: Uint8Array[] = [];
+  const errChunks: Uint8Array[] = [];
+  const pumping = Promise.all([
+    drain(outReader, outChunks),
+    drain(errReader, errChunks),
+  ]);
+
+  const status = await proc.status;
+
+  // The pipes usually hit EOF the moment the script exits. When they do not,
+  // something outlived it, and waiting is waiting forever.
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    pumping,
+    new Promise<void>((resolve) => {
+      graceTimer = setTimeout(resolve, DRAIN_GRACE_MS);
+    }),
+  ]);
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+
+  await outReader.cancel().catch(() => {});
+  await errReader.cancel().catch(() => {});
+
+  const join = (chunks: Uint8Array[]) => {
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const buf = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      buf.set(c, at);
+      at += c.length;
+    }
+    return new TextDecoder().decode(buf);
+  };
+
   return {
-    stdout: new TextDecoder().decode(result.stdout),
-    stderr: new TextDecoder().decode(result.stderr),
-    code: result.code,
+    stdout: join(outChunks),
+    stderr: join(errChunks),
+    code: status.code,
   };
 }
 

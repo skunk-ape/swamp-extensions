@@ -1,0 +1,23 @@
+type: '@skunk-ape/hermes'
+typeVersion: 2026.08.20.1
+id: a423629d-007c-4c57-888e-dd8d6e990a4c
+name: hermes-lima
+version: 1
+tags: {}
+globalArguments:
+  ref: v2026.8.18
+  dataDir: ~/.hermes
+  installDir: ''
+  installSystemPackages: true
+  installBrowser: true
+  installComputerUse: true
+  seedBundledSkills: true
+  onExisting: update
+  installGatewayService: true
+  enableLinger: true
+  env:
+    ANTHROPIC_API_KEY: '${{ vault.get("stef-secrets", "hermes-anthropic-key") }}'
+    TZ: UTC
+  minDiskGb: 20
+  installTimeoutSeconds: 3600
+methods: {}

@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: '@skunk-ape/hermes'
-version: 2026.08.20.1
+version: 2026.08.20.2
 description: |
   Install and configure the Hermes agent (https://hermes-agent.org/) on a Linux
   host, from a declaration rather than an interactive wizard.
@@ -14,10 +14,17 @@ description: |
 
   ## Status
 
-  In development. All five methods are implemented against the upstream
-  installer's real flags and paths. `preflight` is verified end to end; the
-  install path has not yet been run against a Linux host. `DESIGN.md` is the
+  Working. All five methods are implemented against the upstream installer's
+  real flags and paths, and the whole sequence is verified end to end against a
+  Lima VM — installed, configured, gateway running, verified. `DESIGN.md` is the
   design record and is the thing worth reading first.
+
+  Two limitations are worth knowing before you use it. Playwright's dependency
+  step hangs on arm64 Linux until the upstream 600-second cap kills it, so
+  `installBrowser: false` saves ten minutes and loses only browser tools. And
+  when these methods run as dispatched worker steps, swamp's dispatch credential
+  expires after fifteen minutes and cannot be renewed, so a longer install
+  completes on the host and then records nothing (swamp-club Lab #1750).
 
   ## Methods
 

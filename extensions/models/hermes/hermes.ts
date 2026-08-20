@@ -84,7 +84,7 @@ const GlobalArgsSchema = z.object({
     "Free space preflight requires. Chromium, Node, and a Python toolchain are the bulk of it, so a smaller floor is reasonable with installBrowser false.",
   ),
   installTimeoutSeconds: z.number().default(3600).describe(
-    "Wall-clock cap on the installer, enforced by timeout(1) on the target. Nothing else bounds it, and the Chromium and Node steps look identical to a hang while they are working.",
+    "Wall-clock cap on the installer, enforced by timeout(1) on the target. Nothing else bounds it, and the Chromium and Node steps look identical to a hang while they are working. Note that when this method runs as a dispatched worker step, the transport imposes a shorter ceiling than this field can: a dispatch credential expires after 15 minutes and cannot be renewed, so a longer install completes on the host and then fails to record anything. See swamp-club Lab #1750, and prefer installBrowser false for a dispatched first install.",
   ),
 });
 
@@ -110,12 +110,31 @@ const PreflightSchema = z.object({
   timestamp: z.string(),
 });
 
+/**
+ * One row of the install history.
+ *
+ * This resource has `lifetime: "infinite"` and keeps ten versions, so the
+ * datastore is the record of which Hermes has been on this host and when. That
+ * is why it carries both what was installed and what it replaced: a series of
+ * snapshots tells you the current state, but a series of transitions tells you
+ * the upgrade history, and the second is the question people actually ask.
+ *
+ * `ref` is what was asked for and `commit` is what that resolved to. Keeping
+ * both matters because they are different kinds of fact — `v2026.8.18` is a
+ * decision someone made and recorded in git, while `e624e9fd…` is the immutable
+ * thing that decision meant on the day it ran.
+ */
 const InstallSchema = z.object({
   ref: z.string(),
   commit: z.string(),
   hermesVersion: z.string(),
+  hermesVersionRaw: z.string(),
+  previousCommit: z.string(),
+  previousVersion: z.string(),
+  changed: z.boolean(),
   installPath: z.string(),
   commandPath: z.string(),
+  logPath: z.string(),
   timestamp: z.string(),
 });
 
@@ -212,6 +231,23 @@ export function resolveInstallDir(g: GlobalArgs): string {
   return `${g.dataDir.replace(/\/+$/, "")}/hermes-agent`;
 }
 
+/**
+ * Pull the version out of what `hermes --version` prints.
+ *
+ * The command answers "Hermes Agent v0.20.4 (2026.8.18)". Recording that whole
+ * sentence would make the install history unqueryable — comparing versions
+ * across runs means comparing "0.20.4", not a line of prose.
+ */
+export function parseHermesVersion(raw: string): string {
+  // Only the v-prefixed form counts. Upstream always prints one — the banner is
+  // built as `f"Hermes Agent v{__version__} ({__release_date__})"` — and the
+  // release date in those parentheses is itself three dot-separated numbers. A
+  // looser pattern would happily report the date as the version on any banner
+  // where the version was missing, which is precisely the case where being
+  // wrong is worst.
+  return raw.match(/\bv(\d+\.\d+\.\d+)/)?.[1] ?? "unknown";
+}
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -294,7 +330,7 @@ export function renderEnvFile(env: Record<string, string>): string {
  */
 export const model = {
   type: "@skunk-ape/hermes",
-  version: "2026.08.20.1",
+  version: "2026.08.20.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     "preflight": {
@@ -529,6 +565,13 @@ echo "COMMIT=\${COMMIT:-}"
         const g = ctx.globalArgs as GlobalArgs;
         const installDir = resolveInstallDir(g);
 
+        // What is on the host now, so this run can record the transition rather
+        // than just the destination. Absent on a first install, which is the
+        // only time both previous fields are empty.
+        const prior = await ctx.readResource("install") as
+          | { commit?: string; hermesVersion?: string }
+          | null;
+
         const flags = [
           // Never run the wizard, and never let a prompt decide anything. Both
           // are needed: --skip-setup silences the wizard, --non-interactive
@@ -584,10 +627,17 @@ curl -fsSL --max-time 120 -o "$INSTALLER" ${
           shellEsc(RAW_BASE)
         }/"$COMMIT"/scripts/install.sh
 
-# The installer's transcript goes to stderr so stdout carries nothing but the
-# KEY=value answers below. </dev/null matters more than it looks: this script
-# arrived on bash's own stdin, so an installer that read stdin would eat the
-# rest of it.
+# The transcript goes to a log file on the target rather than to this script's
+# stderr, and is tailed back afterwards. That is deliberate: the installer's
+# Playwright step leaves orphaned processes behind, and an orphan that inherited
+# this script's stderr keeps the pipe open long after the install is done. Let
+# the orphans hold a log file instead of the pipe the orchestrator is reading.
+#
+# </dev/null matters for the same family of reason: this script arrived on
+# bash's own stdin, so an installer that read stdin would eat the rest of it.
+LOG="$DATA_DIR/install-$(date -u +%Y%m%d-%H%M%S).log"
+mkdir -p "$DATA_DIR"
+echo "installer transcript: $LOG" >&2
 set +e
 timeout ${Math.floor(g.installTimeoutSeconds)} bash "$INSTALLER" ${
           flags.join(" ")
@@ -595,9 +645,11 @@ timeout ${Math.floor(g.installTimeoutSeconds)} bash "$INSTALLER" ${
   --branch main \\
   --commit "$COMMIT" \\
   --hermes-home "$DATA_DIR" \\
-  --dir "$INSTALL_DIR" </dev/null >&2
+  --dir "$INSTALL_DIR" </dev/null >"$LOG" 2>&1
 RC=$?
 set -e
+tail -n 40 "$LOG" >&2 || true
+echo "LOG=$LOG"
 
 if [ "$RC" -eq 124 ]; then
   echo "the installer exceeded its ${
@@ -642,12 +694,40 @@ echo "INSTALL_DIR=$INSTALL_DIR"
         );
         ctx.logger.info("Installer finished. Last lines:\n{tail}", { tail });
 
+        // `hermes --version` prints "Hermes Agent v0.20.4 (2026.8.18)". Keep the
+        // whole line, but also pull the version out on its own so the history is
+        // queryable — `data.latest(…).attributes.hermesVersion` should give you
+        // something you can compare, not a sentence you have to parse.
+        const versionRaw = kv.VERSION ?? "unknown";
+        const hermesVersion = parseHermesVersion(versionRaw);
+
+        const previousCommit = prior?.commit ?? "";
+        const previousVersion = prior?.hermesVersion ?? "";
+        const changed = previousCommit !== commit;
+
+        if (previousCommit && changed) {
+          ctx.logger.info(
+            "Hermes moved {from} → {to} ({fromCommit} → {toCommit})",
+            {
+              from: previousVersion || "unknown",
+              to: hermesVersion,
+              fromCommit: previousCommit.slice(0, 12),
+              toCommit: commit.slice(0, 12),
+            },
+          );
+        }
+
         const handle = await ctx.writeResource("install", "install", {
           ref: g.ref,
           commit,
-          hermesVersion: kv.VERSION ?? "unknown",
+          hermesVersion,
+          hermesVersionRaw: versionRaw,
+          previousCommit,
+          previousVersion,
+          changed,
           installPath: kv.INSTALL_DIR ?? installDir,
           commandPath: kv.HERMES_BIN ?? "",
+          logPath: kv.LOG ?? "",
           timestamp: new Date().toISOString(),
         });
         return { dataHandles: [handle] };
@@ -865,7 +945,7 @@ fi
         const { stdout } = await runProbe(script, { signal: ctx.signal });
         const kv = parseKv(stdout);
 
-        const hermesVersion = kv.VERSION ?? "unknown";
+        const hermesVersion = parseHermesVersion(kv.VERSION ?? "unknown");
         const head = kv.HEAD ?? "unknown";
         const commit = kv.COMMIT ?? "unknown";
         const gatewayActive = kv.ACTIVE === "active";

@@ -1,9 +1,10 @@
 # @skunk-ape/hermes — design
 
-Status: all five methods implemented; `preflight` verified end to end, the
-install path not yet run against a Linux host. The transport seam is currently
-the local implementation that shape C calls for. See "What the upstream source
-changed" at the end, which is the part of this record written after the code.
+Status: all five methods implemented and verified end to end against a Lima VM
+on 2026-08-20, driven as placed steps on an enrolled worker. The transport seam
+is the local implementation that shape C calls for. The last two sections —
+"What the upstream source changed" and "What the first real run changed" — were
+written after the code and record where this document was wrong.
 
 Install and configure the [Hermes agent](https://hermes-agent.org/) on a Linux
 host. Hermes is an autonomous agent from Nous Research that runs on a host you
@@ -543,3 +544,187 @@ model exists to avoid. `verify` therefore makes its own checks — the command
 answers, the checkout is at the pinned commit, `.env` exists at mode 0600, the
 unit is enabled and active — and records doctor's issue count, scraped from its
 summary line, as diagnosis rather than judgement.
+
+## What the first real run changed
+
+Written after running the whole thing against a Lima VM on 2026-08-20, with a
+worker enrolled by `lima-hermes.yaml` and the five methods driven as placed
+steps of the `hermes-install` workflow. Two bugs, one of them mine and one of
+them a hard constraint on shape C. Both were invisible to the unit tests and to
+every amount of reading, which is the argument for having done this.
+
+### The install worked; the bookkeeping did not
+
+Worth saying first, because it frames both bugs. On the host afterwards:
+
+```
+Hermes Agent v0.20.4 (2026.8.18)
+Install directory: /home/seth.guest/.hermes/hermes-agent
+e624e9fde561e1add9388384012b295fde669ade
+```
+
+That commit is exactly the peeled `refs/tags/v2026.8.18^{}`, so the annotated-tag
+peeling written from reading `install.sh` is right in practice. Chromium
+downloaded and extracted on arm64 under `vz`, which is most of open question 1.
+`preflight` passed on Linux. The vault-sourced `.env` value resolved on the
+orchestrator and arrived at a worker that holds no vault, which is the shape C
+claim, now observed rather than argued.
+
+### A timeout does not bound wall-clock time if you read to EOF
+
+`runScriptRaw` used `proc.output()`, which waits for end-of-file on the output
+pipes rather than for the process to exit. Those are the same event until a
+grandchild outlives its parent.
+
+Upstream wraps its Playwright step in `timeout 600`. `timeout` signals only the
+child it spawned, so when it fired, the Chromium downloader two levels below
+survived and inherited the pipe. The installer exited successfully at 10:30. The
+method sat blocked until 10:43, holding a pipe open for a process with nothing
+left to say. The evidence was unambiguous once looked at:
+
+```
+/proc/34401/fd/1 -> pipe:[39812]
+/proc/34401/fd/2 -> pipe:[39812]
+    PID    PPID STAT     ELAPSED CMD
+  27248       1 Sl         22:58 node .../playwright install --with-deps chromium
+```
+
+`PPID 1` — reparented, so its parent was long gone. Killing those two processes
+released the run instantly.
+
+This is worth stating as a rule, because the design record above got it wrong in
+a way that reads as right: **"cap every long step remotely" does not cap
+anything if the caller waits for pipe EOF.** The cap bounds the command; it does
+not bound the descendants the command leaves behind, and it is the descendants
+that hold the pipe.
+
+Fixed twice over, deliberately:
+
+- **At the seam.** `runScriptRaw` now waits for the process to *exit*, drains
+  the pipes for a two-second grace, then cancels the readers. A stray orphan
+  costs two seconds instead of the rest of the run. This is the general fix, and
+  it covers scripts nobody has written yet.
+- **At the call.** `install` sends the installer's transcript to a log file on
+  the target and tails it back, so orphans inherit a log file rather than the
+  pipe the orchestrator is reading. The log path is recorded in the resource,
+  which also makes a failed install diagnosable after the fact.
+
+### Dispatch credentials expire at fifteen minutes and never refresh
+
+The thirteen minutes of dead time pushed the step to 25m19s, and the resource
+write then failed:
+
+```
+Data plane POST /data/resource failed (401): {"error":"Missing or invalid session credential"}
+```
+
+Not a flake. From swamp's own source, `src/domain/remote/session_credential.ts`:
+
+```ts
+export const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
+```
+
+and `refresh()`, whose doc comment says "Does not affect dispatch credentials",
+returns `null` whenever the record carries a `dispatchId`. There is no
+`swamp serve` flag that changes it.
+
+**So a dispatched method that runs longer than fifteen minutes cannot record
+what it did.** The work lands on the host and swamp records the step as failed,
+which is the worst available shape for a failure: the side effects happened and
+nothing persisted. It also does not re-dispatch, because a step that failed at
+its write is treated as having written.
+
+This is a real constraint on shape C rather than a detail, and it deserves to be
+weighed against shape B honestly. B has no dispatch credential to expire, so it
+has no ceiling. The credential posture is still the reason to prefer C — but the
+comparison is now "C costs you a fifteen-minute ceiling", not "C is strictly
+better ergonomics-wise once the worker exists".
+
+Filed upstream as swamp-club Lab #1750, with the suggestion that the
+orchestrator renew a credential while its dispatch is still open: it already
+tracks that, and the credential dies with the dispatch either way.
+
+**Consequence for this extension.** A full install with Chromium is close enough
+to fifteen minutes that it cannot be relied on to fit. Until #1750 moves, the
+honest guidance is to run a browser-bearing first install with
+`installBrowser: false` and add the browser afterwards, or to drive the install
+locally on the target rather than as a dispatched step. `installTimeoutSeconds`
+defaulting to 3600 is now actively misleading — it promises an hour that the
+transport will not honour, and that is called out at the field.
+
+### Install history, not install snapshots
+
+Prompted by review while the run was in flight. The `install` resource already
+persisted with `lifetime: "infinite"` and ten versions retained, so the
+datastore was already the record of what had been installed. What it recorded
+was a series of destinations, though, and the question people ask is about
+transitions. It now reads the prior resource first and records `previousCommit`,
+`previousVersion`, and `changed` alongside the new state.
+
+`hermesVersion` is also now the parsed `0.20.4` rather than the whole banner,
+with the raw line kept beside it, so the history is comparable in a CEL
+expression instead of needing parsing at the point of use. The parser requires
+the `v` prefix: upstream prints `Hermes Agent v0.20.4 (2026.8.18)`, the release
+date in those parentheses is itself three dot-separated numbers, and a looser
+pattern reports the date as the version precisely when the version is missing.
+
+### An operational note that cost twenty-eight minutes
+
+`swamp serve` bundles an extension once and keeps serving that bundle. Editing
+`hermes.ts` under a running orchestrator changes nothing about what the worker
+executes, and the second run reproduced the first run's failure exactly —
+identical symptom, identical duration, entirely stale code. The tell was that
+the log file the fix introduces never appeared on the target.
+
+Restart the orchestrator after editing an extension, and bump the model type
+version so the bundle cache cannot serve the old one. Cheap to say afterwards;
+expensive to notice while a twenty-five minute install is the unit of feedback.
+
+### The run that passed
+
+With both fixes in and the orchestrator restarted on a fresh bundle:
+
+```
+preflight  done in 1.9s     Linux/aarch64, 49GB free, ref resolves to e624e9fde561
+install    done in 10m17s
+configure  done in 498ms    2 environment key(s)
+service    done in 5.5s     hermes-gateway is enabled and active, linger on
+verify     done in 3.8s     Hermes answers: 0.20.4, pinned at e624e9fde561
+Completed  workflow hermes-install succeeded in 10m29s
+```
+
+The install number is the one that matters, and it is the seam fix measured
+rather than asserted. Playwright hung after its download again — the log's mtime
+stopped at 16:42:30 and did not move — and upstream's `timeout 600` fired at
+about 16:52:20. The method completed at 16:52:33, thirteen seconds later, with
+six Playwright processes still alive on the host. Before the fix the same
+situation cost thirteen minutes.
+
+`verify` checked the host rather than trusting the installer, and every check
+passed: command present, version answers, checkout at the pinned commit, `.env`
+present and mode 600, unit enabled, unit active. Confirmed independently over
+`limactl shell` afterwards, because a model reporting that its own work
+succeeded is not evidence.
+
+The vault claim was also checked rather than assumed. The SHA-256 of the value
+in the target's `.env` matches the SHA-256 of the vault secret, while the
+worker's `~/.swamp` contains only `bin`, `bundles`, and a `machine-id` — no
+vault, no repository, no auth token. Orchestrator-side resolution is now
+observed end to end.
+
+**Playwright is still the open problem.** It downloads Chromium fine on arm64
+under `vz` — that half of open question 1 is answered — and then hangs in
+`--with-deps`, every time, until upstream's own cap kills it. The install
+succeeds anyway because upstream treats that step as non-fatal, so browser tools
+are the casualty rather than the install. Ten of the seventeen minutes are spent
+waiting for a step that never succeeds, which is also what puts a browser-bearing
+install uncomfortably near the fifteen-minute dispatch ceiling. `installBrowser:
+false` avoids both, and on current evidence is the better default for a
+dispatched install.
+
+**A note on `doctorIssues`.** `verify` recorded 2; running `hermes doctor` by
+hand a few minutes later reported 4, the extra two being npm audit findings that
+had not been computed yet. There is only one "Found N issue(s)" line in the
+output, so this is not a parsing error — the number genuinely moves in the
+minutes after an install. It is recorded as diagnosis, never as the verdict, and
+that is the right weight to give it.
