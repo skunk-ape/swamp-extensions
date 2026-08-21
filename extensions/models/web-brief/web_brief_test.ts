@@ -9,6 +9,7 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import { hostResolvesPublicly, looksLikeAppShell } from "./_lib/fetch.ts";
+import { firecrawlOne, titleFrom } from "./_lib/firecrawl.ts";
 import { extractBriefJson } from "./web_brief.ts";
 
 // --- egress policy -------------------------------------------------------
@@ -145,4 +146,157 @@ Deno.test("a reply with no JSON is an error, not a passthrough", () => {
     assertStringIncludes(String(e), "did not return a JSON object");
   }
   assert(threw, "an unparseable reply must be refused");
+});
+
+// --- firecrawl fetcher ---------------------------------------------------
+
+/** Serve one canned Firecrawl response and shut down. */
+async function withMockFirecrawl(
+  handler: (req: Request) => Response | Promise<Response>,
+  run: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  const ac = new AbortController();
+  const server = Deno.serve(
+    { port: 0, signal: ac.signal, onListen: () => {} },
+    handler,
+  );
+  const port = (server.addr as { port: number }).port;
+  try {
+    await run(`http://127.0.0.1:${port}`);
+  } finally {
+    ac.abort();
+    await server.finished;
+  }
+}
+
+const FIRECRAWL_OPTS = {
+  apiKey: "test-key",
+  apiUrl: "",
+  timeoutMs: 10_000,
+  maxBytes: 1_000_000,
+  onlyMainContent: true,
+  allowPrivateNetworks: false,
+};
+
+Deno.test("firecrawl returns rendered markdown as the body", async () => {
+  await withMockFirecrawl(
+    () =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: {
+            markdown: "# Laptops\n\nThe Bolt Air is $999.",
+            metadata: {
+              title: "Deals",
+              sourceURL: "https://example.com/deals",
+              statusCode: 200,
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    async (baseUrl) => {
+      const r = await firecrawlOne("https://example.com/deals", {
+        ...FIRECRAWL_OPTS,
+        apiUrl: baseUrl,
+      });
+      assert(r.ok, r.error);
+      assertStringIncludes(r.body, "Bolt Air is $999");
+      assertEquals(r.finalUrl, "https://example.com/deals");
+      // The whole point of this fetcher: a shell is rendered, never reported.
+      assertEquals(r.renderRequired, false);
+    },
+  );
+});
+
+Deno.test("firecrawl sends the auth header and asks for markdown", async () => {
+  let seenAuth = "";
+  let seenBody: Record<string, unknown> = {};
+  await withMockFirecrawl(
+    async (req) => {
+      seenAuth = req.headers.get("authorization") ?? "";
+      seenBody = await req.json();
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: { markdown: "x", metadata: { statusCode: 200 } },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+    async (baseUrl) => {
+      await firecrawlOne("https://example.com", {
+        ...FIRECRAWL_OPTS,
+        apiUrl: baseUrl,
+      });
+    },
+  );
+  assertEquals(seenAuth, "Bearer test-key");
+  assertEquals(seenBody.formats, ["markdown"]);
+  assertEquals(seenBody.onlyMainContent, true);
+});
+
+Deno.test("a 404 reported inside a 200 is not a successful fetch", async () => {
+  // Firecrawl answers 200 with the target's real status in metadata. Trusting
+  // the outer status would record a missing page as content.
+  await withMockFirecrawl(
+    () =>
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: { markdown: "Not Found", metadata: { statusCode: 404 } },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    async (baseUrl) => {
+      const r = await firecrawlOne("https://example.com/gone", {
+        ...FIRECRAWL_OPTS,
+        apiUrl: baseUrl,
+      });
+      assert(!r.ok);
+      assertEquals(r.status, 404);
+      assertStringIncludes(r.error, "404");
+    },
+  );
+});
+
+Deno.test("credit and rate-limit failures are named, not generic", async () => {
+  for (
+    const [status, expected] of [
+      [402, "credits exhausted"],
+      [429, "rate limit"],
+      [401, "rejected the API key"],
+    ] as const
+  ) {
+    await withMockFirecrawl(
+      () => new Response("nope", { status }),
+      async (baseUrl) => {
+        const r = await firecrawlOne("https://example.com", {
+          ...FIRECRAWL_OPTS,
+          apiUrl: baseUrl,
+        });
+        assert(!r.ok);
+        assertStringIncludes(r.error, expected);
+      },
+    );
+  }
+});
+
+Deno.test("the egress policy applies to firecrawl too", async () => {
+  // Asking a third party to fetch the metadata service is still asking for
+  // SSRF, just with someone else's network. Same policy on both fetchers means
+  // a configuration flag cannot quietly change the model's egress posture.
+  const r = await firecrawlOne("http://169.254.169.254/latest/meta-data/", {
+    ...FIRECRAWL_OPTS,
+    apiUrl: "https://api.firecrawl.dev",
+  });
+  assert(!r.ok);
+  assertStringIncludes(r.error, "not a public address");
+});
+
+Deno.test("titleFrom copes with firecrawl returning an array title", () => {
+  assertEquals(titleFrom({ title: ["First", "Second"] }, "fallback"), "First");
+  assertEquals(titleFrom({ title: "Only" }, "fallback"), "Only");
+  assertEquals(titleFrom({}, "fallback"), "fallback");
+  assertEquals(titleFrom({ title: "   " }, "fallback"), "fallback");
 });

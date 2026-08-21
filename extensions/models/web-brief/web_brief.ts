@@ -12,6 +12,7 @@
  */
 import { z } from "npm:zod@4";
 import { fetchOne } from "./_lib/fetch.ts";
+import { firecrawlOne } from "./_lib/firecrawl.ts";
 
 // deno-lint-ignore no-explicit-any
 type Ctx = any;
@@ -19,6 +20,18 @@ type Ctx = any;
 declare const Deno: any;
 
 const GlobalArgsSchema = z.object({
+  fetcher: z.enum(["http", "firecrawl"]).default("http").describe(
+    'How pages are fetched. "http" is a plain request from this machine — free, private, and unable to run JavaScript, so app-shell pages come back nearly empty. "firecrawl" renders the page on Firecrawl\'s infrastructure and returns markdown, which is what makes product listings and search results usable. Firecrawl also strengthens the process boundary, since no browser runs on your machine at all, and weakens privacy, since every URL is seen by a third party.',
+  ),
+  firecrawlApiKey: z.string().default("").describe(
+    'API key for Firecrawl, required when fetcher is "firecrawl" against the hosted service. Source it from a vault, and keep it on the orchestrator: an agent asks this model for a brief and should never hold the fetching credential itself.',
+  ),
+  firecrawlApiUrl: z.string().default("https://api.firecrawl.dev").describe(
+    "Firecrawl base URL. Point this at a self-hosted instance to keep URLs on your own infrastructure — note that the self-hosted stack omits the anti-bot handling the cloud service uses, which is most of what makes commercial sites scrapeable.",
+  ),
+  onlyMainContent: z.boolean().default(true).describe(
+    "Ask Firecrawl to drop navigation, headers, and footers. Usually right: it removes a large amount of boilerplate that would otherwise consume the summarizer's attention, and boilerplate is where injected content likes to hide.",
+  ),
   userAgent: z.string().default(
     "swamp-web-brief/1.0 (+https://github.com/skunk-ape/swamp-extensions)",
   ).describe(
@@ -253,7 +266,7 @@ async function runClaude(
  */
 export const model = {
   type: "@skunk-ape/web-brief",
-  version: "2026.08.21.1",
+  version: "2026.08.21.2",
   globalArguments: GlobalArgsSchema,
   resources: {
     "fetched": {
@@ -283,19 +296,43 @@ export const model = {
         const urls = args.urls.slice(0, g.maxUrls);
         if (urls.length === 0) throw new Error("no urls given");
 
-        ctx.logger.info("Fetching {count} url(s)", { count: urls.length });
+        ctx.logger.info("Fetching {count} url(s) via {fetcher}", {
+          count: urls.length,
+          fetcher: g.fetcher,
+        });
+
+        if (g.fetcher === "firecrawl" && !g.firecrawlApiKey.trim()) {
+          // Only the hosted service needs a key; a self-hosted instance may run
+          // without auth, which is why this checks the URL rather than refusing
+          // outright on an empty key.
+          if (g.firecrawlApiUrl.includes("api.firecrawl.dev")) {
+            throw new Error(
+              'fetcher is "firecrawl" but firecrawlApiKey is empty. Set it from a vault, or point firecrawlApiUrl at a self-hosted instance that does not require auth.',
+            );
+          }
+        }
 
         const results = [];
         const items = [];
         for (const [i, url] of urls.entries()) {
-          const r = await fetchOne(url, {
-            timeoutMs: g.timeoutSeconds * 1000,
-            maxBytes: g.maxBytesPerUrl,
-            maxRedirects: g.maxRedirects,
-            userAgent: g.userAgent,
-            allowPrivateNetworks: g.allowPrivateNetworks,
-            signal: ctx.signal,
-          });
+          const r = g.fetcher === "firecrawl"
+            ? await firecrawlOne(url, {
+              apiKey: g.firecrawlApiKey,
+              apiUrl: g.firecrawlApiUrl,
+              timeoutMs: g.timeoutSeconds * 1000,
+              maxBytes: g.maxBytesPerUrl,
+              onlyMainContent: g.onlyMainContent,
+              allowPrivateNetworks: g.allowPrivateNetworks,
+              signal: ctx.signal,
+            })
+            : await fetchOne(url, {
+              timeoutMs: g.timeoutSeconds * 1000,
+              maxBytes: g.maxBytesPerUrl,
+              maxRedirects: g.maxRedirects,
+              userAgent: g.userAgent,
+              allowPrivateNetworks: g.allowPrivateNetworks,
+              signal: ctx.signal,
+            });
           results.push({
             url: r.url,
             finalUrl: r.finalUrl,
@@ -326,8 +363,10 @@ export const model = {
         const renderRequiredCount =
           results.filter((r) => r.renderRequired).length;
         if (renderRequiredCount > 0) {
+          // Only reachable on the http fetcher — firecrawl renders, so a shell
+          // arrives as content. Naming the fix beats reporting the symptom.
           ctx.logger.info(
-            "{n} page(s) look like JavaScript shells — this fetcher renders no JavaScript, so their content is missing rather than absent",
+            '{n} page(s) look like JavaScript shells. This fetcher renders none, so their content is missing rather than absent — set fetcher: "firecrawl" to render them.',
             { n: renderRequiredCount },
           );
         }

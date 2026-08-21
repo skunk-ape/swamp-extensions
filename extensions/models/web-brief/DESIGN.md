@@ -1,7 +1,7 @@
 # @skunk-ape/web-brief — design
 
-Status: HTTP(S) fetch, sanitize, and summarize implemented and verified end to end
-on 2026-08-21, including against a page carrying a hidden injection. A
+Status: HTTP(S) fetch, sanitize, and summarize implemented and verified end to
+end on 2026-08-21, including against a page carrying a hidden injection. A
 browser-backed fetcher is the main thing still missing — see open questions.
 
 Give an autonomous agent web access **without giving it a browser**. Takes a
