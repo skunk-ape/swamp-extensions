@@ -55,12 +55,20 @@ description: |
   gateway enables a platform when it finds that platform's token in the
   environment. Putting the token in `env` is how you turn it on.
 
-  ## Target
+  ## Target — read this first
 
-  The target is any Linux host, and this model does not create it. Provisioning
-  has a separate lifecycle. `lima-hermes.yaml` is a ready template for the
-  intended first target: a Lima VM on macOS with no host mounts, passwordless
-  sudo, and a swamp worker enrolled on first boot.
+  This model installs onto the machine its methods execute on. It does not open
+  a connection for you and there is no SSH transport, so "the target" is not a
+  hostname you configure — it is wherever the method runs. Either enrol a swamp
+  worker on the target and place the steps on it, or install swamp on the target
+  and run the methods there. With neither, it installs onto the machine you ran
+  it from; preflight fails safe on macOS by checking the OS, but a Linux
+  orchestrator would install onto itself.
+
+  The model does not create the machine. Provisioning has a separate lifecycle.
+  `lima-hermes.yaml` is a ready template for the intended first target: a Lima
+  VM on macOS with no host mounts, passwordless sudo, and a swamp worker
+  enrolled on first boot.
 
   The VM boundary is load-bearing rather than convenient. It is what makes
   granting an autonomous agent passwordless sudo a reasonable trade, and it is

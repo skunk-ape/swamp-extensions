@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.08.20.2",
+  "reviewedAt": "2026-08-21T02:55:00Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Secrets reach the target only as a base64 payload inside a script fed over the process's stdin, so no value touches argv or a local temp file. writeFileScript creates the file at 0600 before writing into it, so it is never briefly world-readable. The configure resource records key names only, never values. Vault references are documented as needing to be static and literal, because a dynamically constructed reference forfeits swamp's per-step secret allowlist."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Checked every ctx.logger call: counts, key names, versions, commit prefixes and unit states only. configure logs the number of keys, not the keys. The one place attacker-influenced text is logged is the tail of the installer transcript, which is upstream's own output and receives no secret from this model."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Deliberate deviation worth flagging: preflight and verify write their resource BEFORE throwing, contrary to the usual 'throw before writing' rule. Both resources carry an explicit ok:false plus the failure list, so neither can be mistaken for success, and the record of why a host was rejected is the point of running them. Every other method throws before writing. install additionally throws when the checkout does not land on the requested commit rather than recording a wrong pin."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "37 tests cover the escaping, parsing, rendering and generated shell fragments, several by running bash for real rather than asserting on strings. No test exercises a method body, because all five need a Linux host with systemd. Those were verified manually end to end against a Lima VM instead, and the results recorded in DESIGN.md, but that is a one-off rather than a regression guard. An integration suite against a disposable container is the obvious next step."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "install re-runs cleanly: the upstream installer updates an existing checkout, and --force-commit makes the declared ref authoritative rather than letting a pin be silently ignored. configure rewrites .env whole, so it converges rather than accumulating. service restarts rather than starts, so it is also the mechanism by which a configure takes effect. preflight mutates nothing. onExisting=fresh moves the code aside and never touches the data directory."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No API client and no SDK. The only network calls are two plain HTTPS fetches made on the target by shell: an egress probe against github.com, and the installer fetched from a raw URL whose path is the resolved commit. Both use curl -fsSL with --max-time. Nothing is paginated and no response body is parsed, so pagination, rate limiting and response-shape validation do not apply."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "The installer download uses mktemp with a trap on EXIT, so it is removed on error paths too. The exec seam explicitly cancels its stdout and stderr readers rather than leaking them, which is the fix for a real bug found in testing: an orphaned grandchild holding the output pipe made a finished install appear to hang for thirteen minutes."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Cleaned in this pass: DESIGN.md transcripts contained a real home directory path and a private vault name, both replaced with neutral placeholders. The one remaining IPv4 literal, 192.168.5.2, is retained deliberately and annotated — it is not an example to be substituted but the fixed gateway Lima's vz networking assigns to the host, and replacing it with a documentation range would make the instructions wrong."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "All five resource schemas and the global arguments use plain z.object with no .passthrough(). Mechanical field-coverage check performed as the review asks: every declared field is written and every written field is declared, 1:1 across all five specs, including the shorthand-property assignments."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "All five specs set lifetime and garbageCollection. install is lifetime:infinite with 10 versions retained, which is deliberate — that resource is the install history, and it records previousCommit/previousVersion/changed so the retained versions read as a sequence of upgrades rather than a pile of snapshots. The other four are 30d/10, since they describe current state that a re-run reproduces."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "Install-only. There is no uninstall or delete, and no backup/restore for the data directory. The second is the more serious: DESIGN.md's State section defines an explicit regenerable/irreplaceable/disposable split and calls the irreplaceable column 'the only thing that must survive', while nothing in the code preserves it. That overclaim is now marked as unimplemented in the document rather than left to imply a capability that does not exist. Mitigating context: this model installs software onto a host it did not create, so it is closer to a configuration model than a CRUD resource model, and limactl delete is the real teardown for the intended target."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "issue",
+      "note": "The checks themselves are the strongest part of the extension — OS, arch, systemd and its user bus, lingering, passwordless sudo, disk, egress, required tools including a non-command ldconfig probe for libatomic.so.1, remote ref resolution, env key validity, and the messaging allowlist trap. But they live in a separate preflight method rather than as labelled checks inside the mutating methods, so running install directly skips all of them. The documented flow always runs preflight first and the shipped workflow enforces the ordering, which is why this is a shape issue rather than an absence, but a user invoking install on its own gets no validation."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Enumerated explicitly as the review asks: each of the five specs is written by exactly one method, each writes a fixed instance name equal to the spec name, and no two methods write to the same spec. No collisions and no shape divergence are possible."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "install reads prior state through ctx.readResource to record what the install replaced. No direct dataRepository access anywhere."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "issue",
+      "note": "The model type version has been bumped twice (2026.08.19.1 to 2026.08.20.1 to 2026.08.20.2) with no upgrades entry. Nothing is published yet so there is no deployed data to migrate and no user affected, but the guidance is unconditional and the bumps did change resource shapes — InstallSchema gained logPath, hermesVersionRaw, previousCommit, previousVersion and changed, and PreflightSchema gained userBus, linger and tools. The next bump after publication must carry migration logic, and the shape drift already accumulated should be the starting point for it."
+    }
+  ]
+}

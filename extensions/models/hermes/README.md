@@ -28,6 +28,25 @@ once, in version control, before anything touches the host.** A declarative
 install is reviewable, re-runnable, and diffable. An interactive one is none of
 those.
 
+## Read this before running anything
+
+**This model installs onto the machine its methods execute on. It does not open
+a connection for you, and there is no SSH transport.**
+
+So "the target" is not a hostname you configure — it is wherever the method
+runs. Two ways to make that the machine you meant:
+
+| How | When |
+| --- | --- |
+| **Enrol a swamp worker on the target** and place the steps on it | The normal path, and what `lima-hermes.yaml` sets up. See "Running it on a worker" |
+| **Install swamp on the target** and run the methods there | Simplest for a box you already sit on |
+
+Run a method with neither, and it installs Hermes onto the machine you ran it
+from. `preflight` refuses on macOS because it checks the OS, so a Mac
+orchestrator fails safe — but a **Linux** orchestrator would happily install
+onto itself. Adding SSH is a matter of replacing one file, `_lib/exec.ts`; it
+has not been done.
+
 ## Use
 
 ```bash
@@ -185,7 +204,7 @@ first target — a Lima VM on macOS:
 swamp worker token create hermes --duration 720h
 
 limactl start --name hermes ./lima-hermes.yaml \
-  --param orchestrator=ws://192.168.5.2:9099 \
+  --param orchestrator=ws://192.168.5.2:9099 \      # Lima's fixed host gateway
   --param workerToken=<name>.<secret> \
   --param workerLabels=role=hermes
 limactl autostart hermes

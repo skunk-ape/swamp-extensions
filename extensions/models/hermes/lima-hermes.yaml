@@ -9,7 +9,11 @@
 # The token is a start-time parameter, never a committed value. Mint it with
 # `swamp worker token create <name> --duration <d>` on the orchestrator.
 #
-# 192.168.5.2 is the host as seen from a vz guest. Confirm it for your setup.
+# 192.168.5.2 is not an example address to be replaced — it is the fixed gateway
+# Lima's vz user-mode networking assigns to the host, so the guest reaches the
+# Mac there. Usefully, it forwards to the host's loopback, so the orchestrator
+# can bind 127.0.0.1 and stay off the LAN and any tailnet. Confirm it for your
+# setup if you use a different Lima network.
 
 minimumLimaVersion: 2.0.0
 

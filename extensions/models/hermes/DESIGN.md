@@ -42,21 +42,36 @@ Out of scope, deliberately:
 
 ## Target
 
-**The contract is an SSH destination.** The extension does not create the
-machine, and it holds no opinion about where the machine came from. This keeps
-one install path across every host type:
+> **Superseded.** This section originally opened "the contract is an SSH
+> destination", which described shape A. The Transport section below settled on
+> shape C instead, and the implementation followed it — but this section was not
+> updated, so the document promised SSH for months while the code ran locally.
+> Corrected here rather than deleted, because a design record that quietly edits
+> away its wrong turns is less useful than one that shows them.
 
-| Host | How it becomes an SSH destination |
+**The contract is a host this model can execute on.** The extension does not
+create the machine and holds no opinion about where it came from, but it does
+require the ability to run a shell there — and it does not open that connection
+itself. There are exactly two ways to satisfy that today:
+
+| How | What it means |
 | --- | --- |
-| Lima VM on macOS | `limactl` writes `~/.lima/<name>/ssh.config`; the destination is `lima-<name>` |
-| VMware, UTM, libvirt | Ordinary SSH |
-| EC2 or any cloud instance | Ordinary SSH |
-| The local machine | `ssh localhost`, with no special-case code path |
+| **A swamp worker enrolled on the target** | The normal path. Methods are dispatched to the worker and run locally on it. `lima-hermes.yaml` enrols one on first boot. |
+| **Swamp installed on the target** | Run the methods there directly. Simplest for a machine you already sit on, and the shape the "Rejected" section calls shape B. |
 
-This decoupling is an established pattern in the ecosystem, not an invention
-here. `@evrardjp/libvirt-vm-pool` reconciles a VM pool and "publishes per-VM
-connection facts for downstream SSH/config models." This is the downstream
-model in that arrangement.
+**There is no SSH transport.** Running a method with no worker and no placement
+installs Hermes onto whatever machine the method ran on — which on a laptop is
+the laptop. `preflight` catches the obvious case, since macOS fails its OS
+check, but a Linux orchestrator would install onto itself without complaint.
+
+Adding SSH means replacing `_lib/exec.ts` and nothing else, which is what that
+seam exists for. The transport table below records why it was not done first.
+
+The decoupling from provisioning is an established pattern in the ecosystem, not
+an invention here. `@evrardjp/libvirt-vm-pool` reconciles a VM pool and
+"publishes per-VM connection facts for downstream SSH/config models." This is
+the downstream model in that arrangement — with the caveat that consuming those
+facts needs the SSH transport that does not exist yet.
 
 ### The intended first target is a Lima VM
 
@@ -117,16 +132,28 @@ An agent with root that mutates its own machine for months produces a VM whose
 drifted state is not reconstructible. So the model is not "back up the machine."
 It is:
 
-| Class | Examples | Handling |
+| Class | Examples | Intended handling |
 | --- | --- | --- |
-| Regenerable | `.env`, API keys | Rebuilt from swamp vault. **Never backed up.** |
-| Irreplaceable | learned skills, memory, sessions | Backed up. The only thing that must survive. |
+| Regenerable | `.env`, API keys | Rebuilt from swamp vault by `configure`. **Never backed up.** |
+| Irreplaceable | learned skills, memory, sessions | Should be backed up. The only thing that must survive. |
 | Disposable | OS packages, drift, logs | Rebuilt by `install`. |
 
 Backing up `~/.hermes` wholesale would walk the secrets straight back across the
 isolation boundary. Splitting it makes restore mean "fresh host, plus vault,
 plus preserved state" — which is the same operation as migrating to EC2. Getting
 this split right now is what keeps a later move from being a rewrite.
+
+> **Not implemented.** The middle row describes intent, not behaviour: there is
+> no `backup` or `restore` method, and nothing in this extension preserves the
+> irreplaceable column. `configure` covers the regenerable row and `install`
+> covers the disposable one, so two thirds of the table is real and the third is
+> a plan.
+>
+> This is the largest functional gap in the extension, and an uncomfortable one
+> to leave open, because compounding state is the entire product claim. Anyone
+> relying on this today should treat the target as disposable and take their own
+> copy of the data directory — minus `.env`, which is regenerable and must not
+> cross the boundary.
 
 ## Reuse
 
@@ -235,7 +262,7 @@ the orchestrator. Two paths exist, and neither puts the vault on the worker:
 
 **Confirmed by running it, not only by reading it.** A worker was enrolled with
 an isolated `HOME`, a working directory outside the repository, and therefore no
-access to `.swamp/secrets/local_encryption/stef-secrets/.key`. A workflow step
+access to `.swamp/secrets/local_encryption/<vault>/.key`. A workflow step
 placed on that worker by label ran `@skunk-ape/stef.lint` over text sourced from
 a vault reference, and succeeded:
 
@@ -559,7 +586,7 @@ Worth saying first, because it frames both bugs. On the host afterwards:
 
 ```
 Hermes Agent v0.20.4 (2026.8.18)
-Install directory: /home/seth.guest/.hermes/hermes-agent
+Install directory: /home/agent/.hermes/hermes-agent
 e624e9fde561e1add9388384012b295fde669ade
 ```
 
