@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: '@skunk-ape/hermes'
-version: 2026.08.20.2
+version: 2026.08.21.1
 description: |
   Install and configure the Hermes agent (https://hermes-agent.org/) on a Linux
   host, from a declaration rather than an interactive wizard.
@@ -57,13 +57,17 @@ description: |
 
   ## Target — read this first
 
-  This model installs onto the machine its methods execute on. It does not open
-  a connection for you and there is no SSH transport, so "the target" is not a
-  hostname you configure — it is wherever the method runs. Either enrol a swamp
-  worker on the target and place the steps on it, or install swamp on the target
-  and run the methods there. With neither, it installs onto the machine you ran
-  it from; preflight fails safe on macOS by checking the OS, but a Linux
-  orchestrator would install onto itself.
+  Decide where the install lands. With `transport: ssh` it goes to the `sshHost`
+  you name. With `transport: local` — the default — it goes wherever the method
+  executes, which is correct when a swamp worker is enrolled on the target or
+  swamp is installed there, and surprising otherwise: with no worker placement
+  it installs onto the machine you ran it from. Preflight fails safe on macOS by
+  checking the OS, but a Linux orchestrator would install onto itself.
+
+  The ssh transport takes no port or identity options on purpose. Those belong
+  in ssh_config, which ssh already reads — for a Lima VM, adding
+  `Include ~/.lima/*/ssh.config` there makes `lima-<name>` resolvable with no
+  configuration in this model.
 
   The model does not create the machine. Provisioning has a separate lifecycle.
   `lima-hermes.yaml` is a ready template for the intended first target: a Lima

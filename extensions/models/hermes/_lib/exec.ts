@@ -25,12 +25,75 @@ export interface RunResult {
   code: number;
 }
 
+/**
+ * Where a script runs.
+ *
+ * This is the whole of the seam the design record argues for. Every script body
+ * in the model — the probes, the installer drive, the .env write, the systemd
+ * handling — is byte-identical across both, because all of them are shell fed
+ * over stdin and none of them names a host.
+ */
+export type Transport =
+  | { kind: "local" }
+  | {
+    kind: "ssh";
+    /**
+     * An ssh destination: `user@host`, or any alias `ssh` can resolve.
+     *
+     * Deliberately *not* accompanied by port or identity options. `ssh` reads
+     * `~/.ssh/config`, which is where those belong — a Lima VM becomes
+     * reachable by adding `Include ~/.lima/ * /ssh.config` there, with no code
+     * here knowing anything about Lima. Re-implementing `-p` and `-i` would
+     * duplicate ssh_config badly and cover less of it.
+     */
+    host: string;
+    /** Bounds the handshake only. Wall-clock work is capped by `timeout(1)` in the script. */
+    connectTimeoutSeconds?: number;
+  };
+
+export const LOCAL: Transport = { kind: "local" };
+
 export interface RunOptions {
   /**
    * Cancellation signal, normally `ctx.signal`. Without it a cancelled method
    * leaves the install running on the host with nothing left to reap it.
    */
   signal?: AbortSignal;
+  /** Defaults to local. */
+  transport?: Transport;
+}
+
+/**
+ * Build the argv that runs `bash -s` in the right place.
+ *
+ * Two `ssh` options are set and no more:
+ *
+ * - `BatchMode=yes`, so any prompt fails immediately instead of hanging
+ *   forever against a pipe nobody is watching. This is the safety net behind
+ *   the installer's `--non-interactive`.
+ * - `ConnectTimeout`, so an unreachable host fails on a schedule.
+ *
+ * Everything else is left to the caller's ssh_config **on purpose**. In
+ * particular `StrictHostKeyChecking` is not set: forcing it off — as at least
+ * one published SSH extension does, alongside `UserKnownHostsFile=/dev/null` —
+ * silently destroys host verification for every connection the model makes, and
+ * a model that reaches outward to install software with sudo is the last place
+ * that should happen. Inheriting the user's policy is both safer and less code.
+ */
+export function buildCommand(t: Transport): { bin: string; args: string[] } {
+  if (t.kind === "local") return { bin: "bash", args: ["-s"] };
+  return {
+    bin: "ssh",
+    args: [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      `ConnectTimeout=${Math.floor(t.connectTimeoutSeconds ?? 10)}`,
+      t.host,
+      "bash",
+      "-s",
+    ],
+  };
 }
 
 /** Single-quote a value for safe interpolation into a shell script. */
@@ -106,8 +169,9 @@ export async function runScriptRaw(
   script: string,
   opts: RunOptions = {},
 ): Promise<RunResult> {
-  const proc = new Deno.Command("bash", {
-    args: ["-s"],
+  const { bin, args } = buildCommand(opts.transport ?? LOCAL);
+  const proc = new Deno.Command(bin, {
+    args,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -254,11 +318,29 @@ export function writeFileScript(
   let latin1 = "";
   for (const b of bytes) latin1 += String.fromCharCode(b);
   const b64 = btoa(latin1);
+
+  // Written to a sibling temp file and renamed over the destination, because
+  // rename(2) is atomic within a filesystem: a reader sees either the old file
+  // or the new one, never a half-written one. Truncating in place would leave a
+  // window where the file is empty or partial, and the window is not
+  // theoretical here — `service` restarts the gateway immediately after
+  // `configure` writes the .env, and the gateway reads that file at startup.
+  //
+  // The temp lives beside the destination rather than in /tmp so the rename
+  // stays within one filesystem. Borrowed from @mgreten/hermes-env, which got
+  // this right first.
   return [
-    `mkdir -p "$(dirname ${pathWord})"`,
-    `: > ${pathWord}`,
-    `chmod ${mode} ${pathWord}`,
-    `printf '%s' ${shellEsc(b64)} | base64 -d > ${pathWord}`,
+    `__hermes_dst=${pathWord}`,
+    `__hermes_tmp="$__hermes_dst.tmp.$$"`,
+    `mkdir -p "$(dirname "$__hermes_dst")"`,
+    `: > "$__hermes_tmp"`,
+    `chmod ${mode} "$__hermes_tmp"`,
+    `if ! printf '%s' ${shellEsc(b64)} | base64 -d > "$__hermes_tmp"; then`,
+    `  rm -f "$__hermes_tmp"`,
+    `  echo "failed writing $__hermes_dst" >&2`,
+    `  exit 1`,
+    `fi`,
+    `mv -f "$__hermes_tmp" "$__hermes_dst"`,
   ].join("\n");
 }
 

@@ -14,6 +14,7 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import {
+  buildCommand,
   parseKv,
   runProbe,
   runScript,
@@ -27,6 +28,7 @@ import {
   renderEnvFile,
   resolveCommitFragment,
   resolveInstallDir,
+  transportFor,
   USER_BUS_FRAGMENT,
   validateEnv,
   validatePlatformAllowlists,
@@ -276,6 +278,83 @@ Deno.test("validateEnv rejects keys that are not shell identifiers", () => {
 
 Deno.test("validateEnv passes a normal environment", () => {
   assertEquals(validateEnv({ TELEGRAM_BOT_TOKEN: "123:abc", TZ: "UTC" }), []);
+});
+
+// --- transport -----------------------------------------------------------
+
+Deno.test("transportFor defaults to local", () => {
+  // deno-lint-ignore no-explicit-any
+  const g = (o: Record<string, unknown>) => o as any;
+  assertEquals(transportFor(g({ transport: "local" })), { kind: "local" });
+});
+
+Deno.test("transportFor carries the host and connect timeout", () => {
+  // deno-lint-ignore no-explicit-any
+  const g = (o: Record<string, unknown>) => o as any;
+  assertEquals(
+    transportFor(g({
+      transport: "ssh",
+      sshHost: "lima-hermes",
+      sshConnectTimeoutSeconds: 25,
+    })),
+    { kind: "ssh", host: "lima-hermes", connectTimeoutSeconds: 25 },
+  );
+});
+
+Deno.test("local transport runs bash -s", () => {
+  assertEquals(buildCommand({ kind: "local" }), {
+    bin: "bash",
+    args: ["-s"],
+  });
+});
+
+Deno.test("ssh transport sets BatchMode and nothing about host keys", () => {
+  const { bin, args } = buildCommand({
+    kind: "ssh",
+    host: "example-host",
+    connectTimeoutSeconds: 7,
+  });
+  assertEquals(bin, "ssh");
+  assertEquals(args, [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=7",
+    "example-host",
+    "bash",
+    "-s",
+  ]);
+
+  // The absences are the point. Forcing StrictHostKeyChecking off — as at least
+  // one published SSH extension does — silently disables host verification for
+  // every connection, and re-implementing -p/-i would shadow ssh_config with a
+  // worse copy of it.
+  const joined = args.join(" ");
+  assert(!joined.includes("StrictHostKeyChecking"));
+  assert(!joined.includes("UserKnownHostsFile"));
+  assert(!args.includes("-p"));
+  assert(!args.includes("-i"));
+  assert(!args.includes("-F"));
+});
+
+Deno.test("ssh transport still feeds the script over stdin", () => {
+  // `bash -s` at the end is what keeps the script off the command line. Losing
+  // it would put every script — including the base64 of a .env — into argv on
+  // both machines.
+  const { args } = buildCommand({ kind: "ssh", host: "h" });
+  assertEquals(args.slice(-2), ["bash", "-s"]);
+});
+
+Deno.test("ssh connect timeout defaults and is always an integer", () => {
+  assertStringIncludes(
+    buildCommand({ kind: "ssh", host: "h" }).args.join(" "),
+    "ConnectTimeout=10",
+  );
+  assertStringIncludes(
+    buildCommand({ kind: "ssh", host: "h", connectTimeoutSeconds: 2.7 }).args
+      .join(" "),
+    "ConnectTimeout=2",
+  );
 });
 
 // --- messaging allowlists ------------------------------------------------

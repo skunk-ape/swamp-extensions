@@ -16,11 +16,13 @@
  */
 import { z } from "npm:zod@4";
 import {
+  LOCAL,
   parseKv,
   runProbe,
   runScript,
   shellEsc,
   stripAnsi,
+  type Transport,
   writeFileScript,
 } from "./_lib/exec.ts";
 
@@ -47,6 +49,15 @@ const GATEWAY_UNIT = "hermes-gateway";
 // --- configuration -------------------------------------------------------
 
 const GlobalArgsSchema = z.object({
+  transport: z.enum(["local", "ssh"]).default("local").describe(
+    'How methods reach the target. "local" runs on whatever machine executes the method — correct when a swamp worker is enrolled on the target, or when swamp itself is installed there. "ssh" runs the same scripts over an ssh connection, which is what lets one orchestrator drive a host it is not running on.',
+  ),
+  sshHost: z.string().default("").describe(
+    'The ssh destination, required when transport is "ssh". Any alias ssh can resolve: user@host, or a Host entry from your ssh_config. Port and identity belong in ssh_config rather than here — adding `Include ~/.lima/*/ssh.config` there makes a Lima VM reachable as `lima-<name>` with no configuration in this model.',
+  ),
+  sshConnectTimeoutSeconds: z.number().default(10).describe(
+    "How long to wait for the ssh handshake. Bounds connecting only; the wall-clock cost of the work itself is capped by installTimeoutSeconds inside the script.",
+  ),
   ref: z.string().describe(
     "Git ref of NousResearch/hermes-agent to install: a tag, a branch, or a full 40-character commit SHA. Required with no default on purpose — tracking `main` is the upstream behaviour this model exists to replace. Prefer a tag or a SHA: a branch resolves to a different commit on every run, so `install` and `verify` can legitimately disagree. Abbreviated SHAs are rejected, because the recorded commit has to compare equal to `git rev-parse HEAD`.",
   ),
@@ -106,6 +117,8 @@ const PreflightSchema = z.object({
   existingInstall: z.boolean(),
   tools: z.record(z.string(), z.boolean()),
   resolvedCommit: z.string(),
+  transport: z.string(),
+  target: z.string(),
   envKeys: z.array(z.string()),
   timestamp: z.string(),
 });
@@ -224,6 +237,22 @@ export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUN
 `;
 
 // --- helpers -------------------------------------------------------------
+
+/**
+ * Turn the configured transport into the one the seam understands.
+ *
+ * This function is the entire difference between driving the local machine and
+ * driving a remote one. Every script body in this model is unchanged across
+ * both, which is what the seam was for.
+ */
+export function transportFor(g: GlobalArgs): Transport {
+  if (g.transport !== "ssh") return LOCAL;
+  return {
+    kind: "ssh",
+    host: g.sshHost,
+    connectTimeoutSeconds: g.sshConnectTimeoutSeconds,
+  };
+}
 
 /** Where the code checkout goes, mirroring the upstream non-root default. */
 export function resolveInstallDir(g: GlobalArgs): string {
@@ -427,7 +456,7 @@ export function renderEnvFile(env: Record<string, string>): string {
  */
 export const model = {
   type: "@skunk-ape/hermes",
-  version: "2026.08.20.2",
+  version: "2026.08.21.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "preflight": {
@@ -534,7 +563,10 @@ ${resolveCommitFragment(g.ref)}
 echo "COMMIT=\${COMMIT:-}"
 `;
 
-        const { stdout } = await runScript(script, { signal: ctx.signal });
+        const { stdout } = await runScript(script, {
+          signal: ctx.signal,
+          transport: transportFor(g),
+        });
         const kv = parseKv(stdout);
 
         const os = kv.OS ?? "unknown";
@@ -649,6 +681,11 @@ echo "COMMIT=\${COMMIT:-}"
             `a checkout already exists at ${installDir} and onExisting is "fail".`,
           );
         }
+        if (g.transport === "ssh" && !g.sshHost.trim()) {
+          failures.push(
+            'transport is "ssh" but sshHost is empty, so there is nothing to connect to.',
+          );
+        }
         failures.push(...validateEnv(g.env));
         if (g.installGatewayService) {
           failures.push(...validatePlatformAllowlists(g.env));
@@ -668,6 +705,8 @@ echo "COMMIT=\${COMMIT:-}"
           existingInstall,
           tools,
           resolvedCommit,
+          transport: g.transport,
+          target: g.transport === "ssh" ? g.sshHost : "local",
           envKeys: Object.keys(g.env).sort(),
           timestamp: new Date().toISOString(),
         });
@@ -806,6 +845,7 @@ echo "INSTALL_DIR=$INSTALL_DIR"
 
         const { stdout, stderr } = await runScript(script, {
           signal: ctx.signal,
+          transport: transportFor(g),
         });
         const kv = parseKv(stdout);
 
@@ -900,7 +940,10 @@ echo "ENV_PATH=$ENV_PATH"
 echo "MODE=$(stat -c '%a' "$ENV_PATH" 2>/dev/null || echo unknown)"
 `;
 
-        const { stdout } = await runScript(script, { signal: ctx.signal });
+        const { stdout } = await runScript(script, {
+          signal: ctx.signal,
+          transport: transportFor(g),
+        });
         const kv = parseKv(stdout);
 
         if (kv.MODE !== "600") {
@@ -990,7 +1033,10 @@ echo "ENABLED=$(systemctl --user is-enabled ${GATEWAY_UNIT} 2>/dev/null || echo 
 echo "ACTIVE=$(systemctl --user is-active ${GATEWAY_UNIT} 2>/dev/null || echo unknown)"
 `;
 
-        const { stdout } = await runScript(script, { signal: ctx.signal });
+        const { stdout } = await runScript(script, {
+          signal: ctx.signal,
+          transport: transportFor(g),
+        });
         const kv = parseKv(stdout);
 
         const enabled = kv.ENABLED === "enabled";
@@ -1011,7 +1057,7 @@ echo "ACTIVE=$(systemctl --user is-active ${GATEWAY_UNIT} 2>/dev/null || echo un
           const { stdout: logs } = await runProbe(
             `${USER_BUS_FRAGMENT}
 journalctl --user -u ${GATEWAY_UNIT} -n 20 --no-pager 2>&1 || true`,
-            { signal: ctx.signal },
+            { signal: ctx.signal, transport: transportFor(g) },
           );
           throw new Error(
             `${GATEWAY_UNIT} is ${
@@ -1079,7 +1125,10 @@ else
 fi
 `;
 
-        const { stdout } = await runProbe(script, { signal: ctx.signal });
+        const { stdout } = await runProbe(script, {
+          signal: ctx.signal,
+          transport: transportFor(g),
+        });
         const kv = parseKv(stdout);
 
         const hermesVersion = parseHermesVersion(kv.VERSION ?? "unknown");

@@ -1,10 +1,10 @@
 # @skunk-ape/hermes — design
 
 Status: all five methods implemented and verified end to end against a Lima VM
-on 2026-08-20, driven as placed steps on an enrolled worker. The transport seam
-is the local implementation that shape C calls for. The last two sections —
-"What the upstream source changed" and "What the first real run changed" — were
-written after the code and record where this document was wrong.
+on 2026-08-20, driven as placed steps on an enrolled worker. Both transports
+are implemented: local (shape C) and ssh. The sections after "What the upstream
+source changed" were written after the code and record where this document was
+wrong.
 
 Install and configure the [Hermes agent](https://hermes-agent.org/) on a Linux
 host. Hermes is an autonomous agent from Nous Research that runs on a host you
@@ -52,26 +52,24 @@ Out of scope, deliberately:
 **The contract is a host this model can execute on.** The extension does not
 create the machine and holds no opinion about where it came from, but it does
 require the ability to run a shell there — and it does not open that connection
-itself. There are exactly two ways to satisfy that today:
+itself unless told to. Three ways to satisfy that:
 
-| How | What it means |
+| `transport` | How the target is reached |
 | --- | --- |
-| **A swamp worker enrolled on the target** | The normal path. Methods are dispatched to the worker and run locally on it. `lima-hermes.yaml` enrols one on first boot. |
-| **Swamp installed on the target** | Run the methods there directly. Simplest for a machine you already sit on, and the shape the "Rejected" section calls shape B. |
+| `local`, with a **swamp worker enrolled on the target** | The methods are dispatched to the worker and run locally on it. `lima-hermes.yaml` enrols one on first boot. |
+| `local`, with **swamp installed on the target** | Run the methods there directly. Simplest for a machine you already sit on, and the shape the "Rejected" section calls shape B. |
+| `ssh`, with **`sshHost`** | The same scripts run over an ssh connection. Added 2026-08-21 — see "The SSH transport, and what reading a neighbour changed" at the end. |
 
-**There is no SSH transport.** Running a method with no worker and no placement
-installs Hermes onto whatever machine the method ran on — which on a laptop is
-the laptop. `preflight` catches the obvious case, since macOS fails its OS
+`local` is the default, and it is the one that surprises people: run a method
+with no worker and no placement and it installs Hermes onto whatever machine the
+method ran on. `preflight` catches the obvious case, since macOS fails its OS
 check, but a Linux orchestrator would install onto itself without complaint.
-
-Adding SSH means replacing `_lib/exec.ts` and nothing else, which is what that
-seam exists for. The transport table below records why it was not done first.
 
 The decoupling from provisioning is an established pattern in the ecosystem, not
 an invention here. `@evrardjp/libvirt-vm-pool` reconciles a VM pool and
 "publishes per-VM connection facts for downstream SSH/config models." This is
-the downstream model in that arrangement — with the caveat that consuming those
-facts needs the SSH transport that does not exist yet.
+the downstream model in that arrangement, and with the ssh transport in place
+those facts are now directly consumable.
 
 ### The intended first target is a Lima VM
 
@@ -877,3 +875,78 @@ one:
 The durable fix was never the distro. It was declaring the dependencies, which
 the template now installs and `preflight` now enforces by name — including
 `libatomic.so.1`, which is not a command and therefore needs its own probe.
+
+## The SSH transport, and what reading a neighbour changed
+
+Added 2026-08-21, after pulling `@mgreten/hermes-env` — the one published Hermes
+extension that already had SSH — and reading its implementation. Two things came
+out of that, one of which corrects this document.
+
+### The gap list against `@keeb/ssh` was partly wrong
+
+The Transport section above disqualifies `@keeb/ssh` on six counts, and the
+first two — "no port" and "no identity file" — do not hold up. `hermes-env`
+does not implement them either. It passes its host string to `ssh` verbatim and
+stops.
+
+That is the correct design, and this document already knew it in a different
+section: "Reaching a Lima VM needs no code", via `Include ~/.lima/*/ssh.config`.
+`ssh` reads `ssh_config`. Port, identity, jump hosts, ciphers, and user all live
+there, maintained by people who have thought about it much harder than this
+model will. Re-implementing `-p` and `-i` would shadow that with a worse and
+much smaller copy. So the same fact was written up as a blocking gap in one
+place and as an elegant non-problem in another.
+
+What genuinely disqualifies `@keeb/ssh` is narrower and worse than the list
+suggested: it hardcodes `StrictHostKeyChecking=no` **and**
+`UserKnownHostsFile=/dev/null`. That does not merely skip verification, it
+*overrides* whatever the user configured, for every connection, with no way to
+turn it back on. For a model that installs software with sudo on a remote host,
+silently disabling host-key verification is the one thing that must not happen.
+`hermes-env` avoids it by not setting it — safer through doing less.
+
+### What the transport therefore sets
+
+Two options, and no more:
+
+- `BatchMode=yes` — a prompt fails immediately instead of hanging against a pipe
+  nobody is watching. The safety net behind the installer's `--non-interactive`.
+- `ConnectTimeout` — an unreachable host fails on a schedule.
+
+Everything else is inherited. The tests assert on the *absence* of
+`StrictHostKeyChecking`, `UserKnownHostsFile`, `-p`, `-i` and `-F`, because
+those absences are decisions rather than omissions and a future edit should have
+to argue with a failing test before adding them.
+
+### The seam paid for itself
+
+The whole change to reach remote hosts was:
+
+```ts
+const { bin, args } = buildCommand(opts.transport ?? LOCAL);
+const proc = new Deno.Command(bin, { args, … })
+```
+
+plus a function turning two global arguments into a `Transport`. Every script
+body — the probes, the installer drive, the base64 `.env` write, the systemd
+user-unit handling, `expand_home`, `parseKv` — is unchanged, because all of them
+were already shell fed over stdin and none of them named a host. That is exactly
+the property the seam was introduced for, and it is the first time it has been
+tested by an actual architecture change rather than asserted.
+
+Notably this model's shape is *stronger* than the neighbour it learned from.
+`hermes-env` puts its command in argv (`ssh host "sudo tee … && chmod …"`) and
+pipes only the payload over stdin, so the command line is visible in `ps` on
+both machines. Feeding the entire script to `bash -s` over stdin keeps
+everything out of argv, which is why `ssh … bash -s` was the right target shape
+and not a translation of what the neighbour does.
+
+### Also borrowed: atomic writes
+
+`hermes-env` writes `.env` to a temp file and renames it over the destination.
+This model truncated in place, which leaves a window where a reader sees an
+empty or partial file — and the window is not theoretical, because `service`
+restarts the gateway immediately after `configure` writes, and the gateway reads
+that file at startup. `writeFileScript` now creates a sibling temp at the target
+mode, fills it, and `mv -f`s it into place, so a reader sees the old file or the
+new one and never a half-written one.

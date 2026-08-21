@@ -30,22 +30,42 @@ those.
 
 ## Read this before running anything
 
-**This model installs onto the machine its methods execute on. It does not open
-a connection for you, and there is no SSH transport.**
+**Decide where the install lands.** There are three ways, and the default is the
+one that surprises people:
 
-So "the target" is not a hostname you configure — it is wherever the method
-runs. Two ways to make that the machine you meant:
+| `transport` | Where it installs | When |
+| --- | --- | --- |
+| `local` *(default)* | Wherever the method executes | A swamp worker is enrolled on the target, or swamp is installed on it |
+| `ssh` | The `sshHost` you name | One orchestrator driving a host it is not running on |
 
-| How | When |
-| --- | --- |
-| **Enrol a swamp worker on the target** and place the steps on it | The normal path, and what `lima-hermes.yaml` sets up. See "Running it on a worker" |
-| **Install swamp on the target** and run the methods there | Simplest for a box you already sit on |
+With `transport: local` and no worker placement, **it installs onto the machine
+you ran it from.** `preflight` refuses on macOS because it checks the OS, so a
+Mac fails safe — but a **Linux** orchestrator would happily install onto itself.
 
-Run a method with neither, and it installs Hermes onto the machine you ran it
-from. `preflight` refuses on macOS because it checks the OS, so a Mac
-orchestrator fails safe — but a **Linux** orchestrator would happily install
-onto itself. Adding SSH is a matter of replacing one file, `_lib/exec.ts`; it
-has not been done.
+### Using the ssh transport
+
+```yaml
+globalArguments:
+  transport: ssh
+  sshHost: lima-hermes # any alias ssh can resolve
+```
+
+Port and identity are **not** options here, deliberately — they belong in your
+`~/.ssh/config`, which `ssh` already reads and which covers far more than a
+handful of re-implemented flags would. For a Lima VM that means one line, once:
+
+```
+Include ~/.lima/*/ssh.config
+```
+
+after which `lima-<name>` is a resolvable destination with its port and key
+supplied automatically.
+
+Only two ssh options are set: `BatchMode=yes`, so a prompt fails instead of
+hanging against a pipe nobody is watching, and `ConnectTimeout`. In particular
+`StrictHostKeyChecking` is left alone — forcing it off would silently disable
+host verification for every connection, which is the last thing a model that
+installs software with sudo should do.
 
 ## Use
 
