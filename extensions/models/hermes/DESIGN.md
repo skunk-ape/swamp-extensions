@@ -176,26 +176,55 @@ building an integration. So this extension does **not** author an SSH transport.
 
 ### Overlap with the existing Hermes extensions
 
-Three Hermes extensions are already published, and all three assume Hermes is
-**already installed**:
+Re-surveyed 2026-08-21; an earlier pass of this document said three, and the
+count has since grown to seven. **All seven assume Hermes is already
+installed**, and they fall into two distinct layers:
 
-| Extension | What it covers |
-| --- | --- |
-| `@mgreten/hermes-env` | `setEnv`, `removeEnv`, `listKeys`, `restartGateway`, `rotateSwampKey`, over SSH or in-container |
-| `@mgreten/hermes-config` | Main model, auxiliary task overrides, gateway restart |
-| `@webframp/hermes-kanban-orchestrator` | Kanban tasks through the `hermes` CLI |
+**Manage an existing install**
 
-Nobody has published the install. **That is the actual gap, and it narrows this
-extension usefully:** `preflight`, `install`, and `service` are unserved, while
-day-two config is largely covered.
+| Extension | Methods | Downloads |
+| --- | --- | --- |
+| `@mgreten/hermes-env` | `listKeys`, `setEnv`, `removeEnv`, `rotateSwampKey`, `restartGateway` | 11 |
+| `@mgreten/hermes-config` | `getConfig`, `setMainModel`, `setAuxiliaryModels`, `restartGateway` | 12 |
+
+**Use the running agent**
+
+| Extension | Methods | Downloads |
+| --- | --- | --- |
+| `@webframp/hermes-journal-writer` | `write_daily_entry` | 30 |
+| `@mgreten/hermes-review-kit` | `collect`, plus workflows and reports | 14 |
+| `@mgreten/cron-builder` | `build`, `validate` — cron specs, touches no host | 9 |
+| `@webframp/hermes-kanban-orchestrator` | `new_task`, `list_recent` | 8 |
+| `@mgreten/hermes-interest-signals` | `aggregate` | 1 |
+
+**Nobody has published the install, and the re-survey strengthens rather than
+weakens that claim** — the ecosystem has doubled and still nothing occupies the
+bottom layer. The shape is a dependency graph missing its root: install, then
+configure, then use, with seven extensions crowded into the top two tiers.
+
+The overlap with this model is therefore narrow and worth stating precisely.
+`preflight`, `install`, and `verify` are unserved entirely. `configure` overlaps
+`@mgreten/hermes-env`, and `service` overlaps the `restartGateway` that *both*
+`hermes-env` and `hermes-config` implement — three implementations of "restart
+the gateway" now exist, which is a small duplication signal the ecosystem might
+eventually want to collapse.
 
 Note that `@mgreten/hermes-env` recreates a container, so it assumes a
 containerized Hermes rather than systemd on a VM. The overlap is partial.
 
-**Open decision.** Keep `configure` in scope for first-boot `.env` seeding,
-since the gateway cannot start without it, and defer ongoing env mutation to
-`@mgreten/hermes-env` if its container assumption can be relaxed. Confirm by
-reading its source before writing a `configure` method.
+~~**Open decision.** Keep `configure` in scope for first-boot `.env` seeding…~~
+**Settled.** `configure` stays, and the overlap turned out to be smaller than
+feared for two independent reasons. `hermes-env` targets a Docker deployment —
+`rotateSwampKey` does a full container recreation — while this model targets
+systemd on a VM, so the two do not operate on the same kind of host. And
+`env_loader.py` clears known keys absent from `.env`, which means whole-file
+writes are the semantically correct operation and incremental `setEnv` mutation
+is the thing at odds with upstream, not the other way round.
+
+`hermes-env` is also the one prior extension that claims an **SSH** transport,
+which is exactly what this model lacks. Worth reading before writing one — it
+may already solve the port, identity, and stdin problems that ruled out
+`@keeb/ssh` below, or it may confirm that analysis.
 
 ## Transport
 
