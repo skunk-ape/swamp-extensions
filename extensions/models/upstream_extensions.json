@@ -41,5 +41,33 @@
     "checksum": "b0762086f2a0c1ded6026acd1f85c4eb807b9a4be405d553156f56d640968f10",
     "filesChecksum": "06a1956f2eb48e66c1f2d43177e4ebbc9fc7396d08ab42ce4e2687485ba97fd7",
     "serverUrl": "https://swamp-club.com"
+  },
+  "@mgreten/hermes-env": {
+    "version": "2026.05.30.1",
+    "pulledAt": "2026-08-21T13:18:59.178Z",
+    "files": [
+      ".swamp/bundles/b4e71ffc/hermes_env.js",
+      ".swamp/pulled-extensions/@mgreten/hermes-env/files/LICENSE.txt",
+      ".swamp/pulled-extensions/@mgreten/hermes-env/files/README.md",
+      ".swamp/pulled-extensions/@mgreten/hermes-env/manifest.yaml",
+      ".swamp/pulled-extensions/@mgreten/hermes-env/models/hermes_env.ts"
+    ],
+    "checksum": "e80af9c5bf11fddcff24017bc57717d1c261c2f784493c78c238c77c44aa1d06",
+    "filesChecksum": "003aa78eb56ca174ed28f90e8887ea40426f71cb446ec6bd59c671a8835c0ab0",
+    "serverUrl": "https://swamp-club.com"
+  },
+  "@mgreten/brief-sanitize": {
+    "version": "2026.07.20.7",
+    "pulledAt": "2026-08-21T15:43:41.953Z",
+    "files": [
+      ".swamp/bundles/e66d9778/brief_sanitize.js",
+      ".swamp/pulled-extensions/@mgreten/brief-sanitize/files/LICENSE.txt",
+      ".swamp/pulled-extensions/@mgreten/brief-sanitize/files/README.md",
+      ".swamp/pulled-extensions/@mgreten/brief-sanitize/manifest.yaml",
+      ".swamp/pulled-extensions/@mgreten/brief-sanitize/models/brief_sanitize.ts"
+    ],
+    "checksum": "e990f8bb223024f825f864a1820c7a7edd463ebddce57c4ed19502ab4c6f5339",
+    "filesChecksum": "397c5f23e604b7abc700b1691326bbd32ffe625efd9cef94323f4bf1c0e82406",
+    "serverUrl": "https://swamp-club.com"
   }
 }
