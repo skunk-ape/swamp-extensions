@@ -1,6 +1,8 @@
 # @skunk-ape/web-brief — design
 
-Status: design. No code yet.
+Status: HTTP(S) fetch, sanitize, and summarize implemented and verified end to end
+on 2026-08-21, including against a page carrying a hidden injection. A
+browser-backed fetcher is the main thing still missing — see open questions.
 
 Give an autonomous agent web access **without giving it a browser**. Takes a
 list of URLs, fetches them inside a container, sanitizes the result, and has a
@@ -32,11 +34,11 @@ is not small.
 
 Three stages, each a boundary of a different kind:
 
-| Stage | Boundary | What it stops |
-| --- | --- | --- |
-| **fetch**, in a container | Process and network | A malicious page exploiting the fetcher reaches a disposable container, not the agent's host |
-| **sanitize**, via `@mgreten/brief-sanitize` | Lexical | HTML, Unicode obfuscation, `javascript:`/`data:` URLs; wraps content in an unguessable nonce delimiter |
-| **summarize**, tool-less LLM | Capability | The model that reads the page cannot call anything. It can only emit text |
+| Stage                                       | Boundary            | What it stops                                                                                          |
+| ------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------ |
+| **fetch**, in a container                   | Process and network | A malicious page exploiting the fetcher reaches a disposable container, not the agent's host           |
+| **sanitize**, via `@mgreten/brief-sanitize` | Lexical             | HTML, Unicode obfuscation, `javascript:`/`data:` URLs; wraps content in an unguessable nonce delimiter |
+| **summarize**, tool-less LLM                | Capability          | The model that reads the page cannot call anything. It can only emit text                              |
 
 The output the caller receives is a structured brief plus provenance, never the
 page body.
@@ -163,27 +165,27 @@ them is the minimum. See open questions.
 
 Undecided, and the choice is not obvious:
 
-| Option | For | Against |
-| --- | --- | --- |
-| **On the orchestrator** | Keeps the fetch away from the agent's host entirely; one place to maintain | The orchestrator is the machine holding every vault — running attacker-fetched content there is exactly backwards |
-| **On the agent's own VM** | Already has `nerdctl` from the Lima base template; the VM is already the disposable blast radius | Puts fetched content on the same host as the agent, weakening stage one to "different process" rather than "different machine" |
-| **On a third disposable host** | Cleanest boundary | Another machine to provision and pay for |
+| Option                         | For                                                                                              | Against                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| **On the orchestrator**        | Keeps the fetch away from the agent's host entirely; one place to maintain                       | The orchestrator is the machine holding every vault — running attacker-fetched content there is exactly backwards              |
+| **On the agent's own VM**      | Already has `nerdctl` from the Lima base template; the VM is already the disposable blast radius | Puts fetched content on the same host as the agent, weakening stage one to "different process" rather than "different machine" |
+| **On a third disposable host** | Cleanest boundary                                                                                | Another machine to provision and pay for                                                                                       |
 
-Current lean: **the agent's VM**, because the VM is already the thing designed to
-be disposable and to hold nothing of value, and because the capability boundary
-(stage three) is doing the load-bearing work regardless. But the argument against
-running it on the orchestrator is strong enough that it should be written down
-rather than assumed, and the seam should make it swappable — the same lesson the
-`hermes` transport seam taught.
+Current lean: **the agent's VM**, because the VM is already the thing designed
+to be disposable and to hold nothing of value, and because the capability
+boundary (stage three) is doing the load-bearing work regardless. But the
+argument against running it on the orchestrator is strong enough that it should
+be written down rather than assumed, and the seam should make it swappable — the
+same lesson the `hermes` transport seam taught.
 
 ## Reuse of the transport seam
 
 `@skunk-ape/hermes` `_lib/exec.ts` already solves "run a script here or over
 there, identically", including the orphaned-pipe bug that cost thirteen minutes
-to find and the atomic-write helper. If the fetch stage shells out to a container
-runtime, that seam is worth lifting rather than rewriting — most likely by
-extracting it into something both extensions depend on, rather than copying it
-and letting the two drift.
+to find and the atomic-write helper. If the fetch stage shells out to a
+container runtime, that seam is worth lifting rather than rewriting — most
+likely by extracting it into something both extensions depend on, rather than
+copying it and letting the two drift.
 
 ## Open questions
 
@@ -194,9 +196,9 @@ and letting the two drift.
 2. **Does the fetch need a browser at all?** Many pages are readable with plain
    HTTP plus HTML-to-text. A browser is only needed for JavaScript-rendered
    content, and it is by far the biggest cost and the biggest attack surface.
-   Starting HTTP-only, with the browser as an opt-in per call, is probably
-   right — and would make this extension useful long before the Playwright
-   problem is solved.
+   Starting HTTP-only, with the browser as an opt-in per call, is probably right
+   — and would make this extension useful long before the Playwright problem is
+   solved.
 3. **Egress enforcement**, per above.
 4. **Which model summarizes**, and whether the caller may choose. Letting the
    caller pick is a small injection surface of its own if the field is free
