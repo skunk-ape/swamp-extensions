@@ -4,12 +4,13 @@ Take a CLI the agent already has, work out which of its commands are safe to run
 unattended, and generate a wrapper that enforces that answer.
 
 **f**ormerly **k**nown **a**s. The name is the mechanism: after a run there is
-no `gh` for the agent to call, only `safe-gh`, `private-gh`, and `write-gh`. The
-tier moves out of the argument list and into the command name, which is the one
-part of a shell command a permission rule can match cheaply and exactly.
+no `gh` for the agent to call, only `fka-safe-gh`, `fka-write-gh`, and whatever
+else the plan for gh called for.
 
-> **Amended during implementation.** The wrappers were first named `gh-safe`,
-> which reads better and does not work. See "Why the tier leads the name".
+The general move is not tiering. It is **lifting a fact out of the argument
+vector and into a command name**, because a permission rule matches a name
+cheaply and exactly and cannot see arguments at all. Tiers are one use of that.
+Pinning a subcommand is another. Pinning `--help` is a third.
 
 ## The problem this solves
 
@@ -75,55 +76,81 @@ policy for a wrapper is built by filtering twice — commands, then each survivi
 command's options — and `git log` reaches `safe-git` with forty options and
 without that one.
 
-### Help is not a tier
+## The alias plan
 
-Asking a tool to describe itself is the one thing an agent does constantly that
-cannot change anything, and the first version of the tier model refused it. A
-help flag was classified like any other option, so nothing guaranteed it landed
-in `read-safe`; `safe-gh --help` failed outright because no rule existed for the
-bare root path; and `safe-gh pr close --help` failed because `gh pr close` sits
-above the tier — even though reading its help does nothing at all.
+Which aliases a tool gets is judgement about that tool, proposed by the
+classifier against guidelines and settled by whoever edits the review file. It
+is not a fixed set of tier wrappers, because CLIs are not fixed in shape: one
+path-taking help alias suits a regular tree, a pinned alias per command suits a
+tool where the subtrees differ in what they should permit.
 
-That last one is the case agents hit hourly, and the cost of getting it wrong is
-not a refusal. It is an agent that escalates a tier, or guesses at arguments, to
-find out what a command takes.
+A spec has four moving parts, and between them they cover every alias worth
+making:
 
-So help is orthogonal to the tier ladder. `helpOptions` in the review file lists
-the tool's own spellings, and every command in the table — including the ones a
-wrapper will not run — carries a **help-only rule** at `helpTier`: the help
-flags permitted, no positionals, no other options, and `requireOneOf` so the
-rule does not match at all without one of them.
+- `admits` — which commands, by tier ceiling or an explicit list.
+- `prepend` / `append` — argv the alias pins.
+- `accepts` — `table` to follow the review's options and positionals,
+  `path-only` to take a command path and nothing else.
 
-That last condition is the load-bearing half. Without it the same rule would let
-bare `safe-git commit` through, and `git commit` with no arguments opens an
-editor and waits. Requiring the flag also means the only argument vector that
-ever reaches the tool is `commit --help`, so the residual risk — a tool that
-does not short-circuit on its help flag — has nothing to act on.
+Help falls out of that rather than being special-cased: `append: ["--help"]`
+with `accepts: path-only`. There is no help mechanism in the code.
 
-The spellings come from the crawl, never from the classifier, and from two
-sources. Options named `--help` in a table, and **the flag the crawl actually
-ran and got an answer from**. The second exists because the first does not cover
-`git`: git mentions `[-h | --help]` only inside its usage line, so reading
-option tables alone finds git no help flag at all. A bare `-h` is never assumed
-to mean help — `sort -h` and `du -h` mean human-readable — unless the crawl
-itself used it successfully.
+### Pinning beats permitting
 
-## Why the tier leads the name
+The first attempt at help allowed the flag and required it, so the wrapper
+validated the caller's intent. Pinning is strictly stronger.
+`fka-help-git
+commit` runs `git commit --help` because the alias _builds_ that
+vector; no token the caller writes decides whether help happens, and `-m pwned`
+is refused because the alias carries no `-m`. Both the check and the exec run on
+the effective vector, so there is no gap between what was judged and what runs.
 
-`gh-safe` is the better-reading name and it cannot be made to work.
+The pinned tokens are permitted by deriving their arity from the pin itself, not
+by looking them up in the table. A pin and its permission that came from two
+places could disagree; these cannot.
 
-Claude Code matches a Bash rule by string prefix, so `Bash(gh:*)` matches every
-command line beginning with `gh` — `gh-safe pr list` included. The settings
-snippet wants to deny the raw tool and allow the safe wrapper, and under a
-suffix scheme the deny rule swallows its own exception. Deny wins, so the safe
-wrapper would be dead on arrival, silently.
+## Segments, and why the name is `fka-safe-gh`
 
-Leading with the tier fixes that and buys a second property worth more than the
-first. The only rules that can bleed into one another by prefix are now rules
-_within_ a tier: `safe-gh` can only ever be a prefix of another `safe-*`
-wrapper, never of `write-ghi`. Over-matching on the one rule nobody controls
-reaches something already judged safe. A test asserts no deny rule the generator
-emits is a prefix of an allow rule it emits.
+A wrapper is `<prefix>-<segment>-<name>`. The prefix is shared across every
+tool, which is the whole ergonomic point: four rules cover everything you will
+ever wrap.
+
+```jsonc
+"allow": ["Bash(fka-help:*)", "Bash(fka-safe:*)"]
+"ask":   ["Bash(fka-private:*)", "Bash(fka-write:*)"]
+```
+
+Wrap another CLI tomorrow and that file does not change. The corollary is the
+sharp edge, and it is deliberate: once those rules exist, a new run makes a new
+tool's safe commands runnable unattended. The review gate is what stands in
+between, which is why the gate is where the care goes.
+
+The segment is a closed set — `help`, `safe`, `private`, `write`, `escape` —
+because permission rules key on it. Assignment is judgement; vocabulary is not.
+If a classifier could invent `fka-mostly-safe-gh`, it would land outside every
+rule.
+
+`help` is a segment rather than a tier because it is not on the tier ladder at
+all. Tiers partition what a command does to the world; asking a tool to describe
+itself is not a kind of command. Its own segment also means `Bash(fka-help:*)`
+is grantable alone — the narrowest useful position, where an agent reads any
+command's documentation and runs none of them.
+
+That makes `fka-help-*` **wider in coverage than `fka-safe-*` and narrower in
+power**: it reaches `gh repo delete` because reading is not deleting. Correct,
+and surprising enough that the generated skill says it out loud.
+
+Segment before tool also keeps prefix collisions contained. `fka-safe-gh` can
+only ever prefix another `fka-safe-*`, so the one match nobody controls reaches
+something already judged safe.
+
+### No deny rule
+
+An earlier version denied the raw tool to push the agent toward the aliases.
+That is harsher than the default without being safer. Unlisted commands already
+prompt, so the operator keeps the option of approving one; a deny removes that
+and stops nothing, since an absolute path never matched the bare name. It also
+grew one line per tool, against the point of segment-keyed rules.
 
 ## Shape
 

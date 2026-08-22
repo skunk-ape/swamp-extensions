@@ -7,16 +7,28 @@ import {
   renderWrapper,
 } from "./wrapper.ts";
 import { ReviewSchema, toPolicy } from "./review.ts";
-import type { Review } from "./review.ts";
+import type { Review, WrapperSpec } from "./review.ts";
 
 const VALIDATE = new URL("./validate.ts", import.meta.url);
+
+/** The spec a review carries for one segment. */
+function at(segment: WrapperSpec["segment"], from?: Review): WrapperSpec {
+  const found = (from ?? review).wrappers.find((s) => s.segment === segment);
+  if (!found) throw new Error(`no ${segment} alias in this fixture`);
+  return found;
+}
 
 const review: Review = ReviewSchema.parse({
   cli: "demo",
   binary: "/usr/bin/demo",
   binaryVersion: "demo 1.2.3",
   generatedAt: "2026-08-22T00:00:00.000Z",
-  emit: ["read-safe", "read-private", "modify"],
+  wrappers: [
+    { segment: "help", name: "demo", append: ["--help"], accepts: "path-only" },
+    { segment: "safe", name: "demo", admits: { maxTier: "read-safe" } },
+    { segment: "private", name: "demo", admits: { maxTier: "read-private" } },
+    { segment: "write", name: "demo", admits: { maxTier: "modify" } },
+  ],
   env: { scrub: ["DEMO_PAGER", "LD_PRELOAD"], set: { NO_COLOR: "1" } },
   globalOptions: { "--no-color": { arity: 0, tier: "read-safe" } },
   commands: [
@@ -45,7 +57,7 @@ Deno.test("the wrapper carries the validator source verbatim", async () => {
   // The claim the whole design rests on: the parser guarding an allow rule is
   // the module this suite exercises, not a second implementation of it.
   const source = await Deno.readTextFile(VALIDATE);
-  const script = renderWrapper(review, "read-safe", source, "/usr/bin/deno");
+  const script = renderWrapper(review, at("safe"), source, "/usr/bin/deno");
   assertStringIncludes(script, source.trimEnd());
 });
 
@@ -58,7 +70,7 @@ Deno.test("the validator has no imports, so a wrapper needs no network or lockfi
 // --- the shebang ---------------------------------------------------------
 
 Deno.test("the wrapper grants itself the narrowest permissions that work", () => {
-  const flags = denoFlags(toPolicy(review, "read-safe"));
+  const flags = denoFlags(toPolicy(review, at("safe")));
   // Naming the one binary is a real boundary: a wrapper that is somehow talked
   // into spawning cannot spawn anything else.
   assert(flags.includes("--allow-run=/usr/bin/demo"));
@@ -72,7 +84,7 @@ Deno.test("the wrapper grants itself the narrowest permissions that work", () =>
 
 Deno.test("the binary is embedded absolute, so PATH cannot be re-aimed", async () => {
   const source = await Deno.readTextFile(VALIDATE);
-  const script = renderWrapper(review, "read-safe", source, "/usr/bin/deno");
+  const script = renderWrapper(review, at("safe"), source, "/usr/bin/deno");
   assertStringIncludes(script, `"binary": "/usr/bin/demo"`);
 });
 
@@ -89,7 +101,7 @@ Deno.test("the launcher keeps the shebang line short enough for any kernel", asy
       set: {},
     },
   });
-  const script = renderWrapper(long, "read-safe", source, "/usr/bin/deno");
+  const script = renderWrapper(long, at("safe", long), source, "/usr/bin/deno");
   const [first, second] = script.split("\n");
   assertEquals(first, "#!/bin/sh");
   assert(first.length < 127);
@@ -98,7 +110,7 @@ Deno.test("the launcher keeps the shebang line short enough for any kernel", asy
 
 Deno.test("the launcher line is a comment to TypeScript and a no-op to sh", async () => {
   const source = await Deno.readTextFile(VALIDATE);
-  const script = renderWrapper(review, "read-safe", source, "/usr/bin/deno");
+  const script = renderWrapper(review, at("safe"), source, "/usr/bin/deno");
   const second = script.split("\n")[1];
   // `:` is sh's null command and `//` is only an argument to it; to TypeScript
   // the line is a string literal followed by a comment.
@@ -114,7 +126,7 @@ Deno.test("a path with a space survives the launcher", async () => {
   });
   const script = renderWrapper(
     spaced,
-    "read-safe",
+    at("safe", spaced),
     source,
     "/opt/my deno/deno",
   );
@@ -125,82 +137,141 @@ Deno.test("a path with a space survives the launcher", async () => {
 
 Deno.test("a wrapper refuses commands above its tier", async () => {
   const source = await Deno.readTextFile(VALIDATE);
-  const safe = renderWrapper(review, "read-safe", source, "/usr/bin/deno");
+  const safe = renderWrapper(review, at("safe"), source, "/usr/bin/deno");
   // The escape-tier option must not survive into the safe wrapper's table.
   assert(!safe.includes(`"--exec"`));
   assert(!safe.includes(`"delete"`));
 
-  const write = renderWrapper(review, "modify", source, "/usr/bin/deno");
+  const write = renderWrapper(review, at("write"), source, "/usr/bin/deno");
   assertStringIncludes(write, `"delete"`);
   assert(!write.includes(`"--exec"`));
 });
 
-Deno.test("a refusal points at the tier that would accept the command", async () => {
+Deno.test("a refusal points at a wider alias for the same tool", async () => {
   const source = await Deno.readTextFile(VALIDATE);
-  const safe = renderWrapper(review, "read-safe", source, "/usr/bin/deno");
-  assertStringIncludes(safe, "private-demo or write-demo");
+  const safe = renderWrapper(review, at("safe"), source, "/usr/bin/deno");
+  assertStringIncludes(safe, "fka-private-demo or fka-write-demo");
 
-  const write = renderWrapper(review, "modify", source, "/usr/bin/deno");
-  assertStringIncludes(write, "No higher tier is available");
+  const write = renderWrapper(review, at("write"), source, "/usr/bin/deno");
+  assertStringIncludes(write, "No wider alias exists");
+});
+
+Deno.test("a refusal never points at another tool's alias", async () => {
+  const source = await Deno.readTextFile(VALIDATE);
+  const mixed = ReviewSchema.parse({
+    ...review,
+    wrappers: [
+      { segment: "safe", name: "demo", admits: { maxTier: "read-safe" } },
+      { segment: "write", name: "other", admits: { maxTier: "modify" } },
+    ],
+  });
+  const script = renderWrapper(mixed, mixed.wrappers[0], source, "/x/deno");
+  assert(!script.includes("fka-write-other"));
 });
 
 // --- the permission snippet ---------------------------------------------
 
 function rules(
   snippet: string,
-): { allow: string[]; ask: string[]; deny: string[] } {
+): { allow: string[]; ask: string[]; deny?: string[] } {
   const json = snippet.slice(snippet.indexOf("{"));
   return JSON.parse(json).permissions;
 }
 
-Deno.test("only read-safe is allowed; every other tier asks", () => {
-  const { allow, ask, deny } = rules(renderSettings(review));
-  assertEquals(allow, ["Bash(safe-demo:*)"]);
-  assertEquals(ask, ["Bash(private-demo:*)", "Bash(write-demo:*)"]);
-  assertEquals(deny, ["Bash(demo:*)"]);
+Deno.test("rules are keyed on the segment, not on the tool", () => {
+  // The whole point of the shared prefix: this file does not grow when you
+  // wrap another CLI tomorrow.
+  const { allow, ask } = rules(renderSettings(review));
+  assertEquals(allow, ["Bash(fka-help:*)", "Bash(fka-safe:*)"]);
+  assertEquals(ask, ["Bash(fka-private:*)", "Bash(fka-write:*)"]);
 });
 
-Deno.test("no deny rule is a prefix of an allow rule", () => {
-  // This is the invariant the naming scheme exists to hold. Bash rules match by
-  // string prefix and deny wins, so a deny that prefixes an allow silently
-  // cancels it — which is exactly what `gh` vs `gh-safe` would have done.
-  const { allow, ask, deny } = rules(renderSettings(review));
-  const command = (rule: string) =>
-    rule.replace(/^Bash\(/, "").replace(/:\*\)$/, "");
-  for (const d of deny.map(command)) {
-    for (const a of [...allow, ...ask].map(command)) {
-      assert(!a.startsWith(d), `deny "${d}" would swallow "${a}"`);
-    }
-  }
+Deno.test("no rule denies the raw tool", () => {
+  // Denying it is harsher than the default without being safer: an unlisted
+  // command already prompts, so the operator keeps the option of approving
+  // one, and an absolute path was never matched by the bare name anyway.
+  const { deny } = rules(renderSettings(review));
+  assertEquals(deny, undefined);
+  assert(!renderSettings(review).includes('"deny"'));
 });
 
-Deno.test("the snippet admits the limit of a prefix rule rather than implying there is none", () => {
-  const snippet = renderSettings(review);
-  assertStringIncludes(snippet, "not a sandbox");
-  assertStringIncludes(snippet, "/usr/bin/demo");
-});
-
-Deno.test("a wrapper is never proposed for a tier that was not emitted", () => {
-  const narrow = ReviewSchema.parse({ ...review, emit: ["read-safe"] });
+Deno.test("a segment with no alias gets no rule", () => {
+  const narrow = ReviewSchema.parse({
+    ...review,
+    wrappers: [{
+      segment: "safe",
+      name: "demo",
+      admits: { maxTier: "read-safe" },
+    }],
+  });
   const { allow, ask } = rules(renderSettings(narrow));
-  assertEquals(allow, ["Bash(safe-demo:*)"]);
+  assertEquals(allow, ["Bash(fka-safe:*)"]);
   assertEquals(ask, []);
+});
+
+Deno.test("the snippet says what one shared rule costs", () => {
+  const snippet = renderSettings(review);
+  // Someone pasting this deserves to know that a later run on a different tool
+  // lands inside the rule they just wrote.
+  assertStringIncludes(snippet, "running");
+  assertStringIncludes(snippet, "review gate");
+  assertStringIncludes(snippet, "narrowest useful grant");
 });
 
 // --- the skill snippet ---------------------------------------------------
 
-Deno.test("the skill names every emitted wrapper and no other", () => {
+Deno.test("the skill names every alias in the plan and no other", () => {
   const skill = renderSkill(review, "/tmp/bin");
-  for (const name of ["safe-demo", "private-demo", "write-demo"]) {
+  for (const name of ["fka-help-demo", "fka-safe-demo", "fka-write-demo"]) {
     assertStringIncludes(skill, name);
   }
-  assert(!skill.includes("escape-demo"));
+  assert(!skill.includes("fka-escape-demo"));
 });
 
 Deno.test("the skill uses real commands from the table, never invented ones", () => {
   const skill = renderSkill(review, "/tmp/bin");
-  assertStringIncludes(skill, "safe-demo list");
-  assertStringIncludes(skill, "write-demo delete");
+  assertStringIncludes(skill, "fka-safe-demo list");
+  assertStringIncludes(skill, "fka-write-demo delete");
+});
+
+Deno.test("the skill says the help alias reaches what nothing else runs", () => {
+  const skill = renderSkill(review, "/tmp/bin");
+  assertStringIncludes(skill, "reaches every command");
+  // The example has to use a command the safe alias will not run, or it
+  // demonstrates nothing.
+  assertStringIncludes(skill, "fka-help-demo delete");
+  assertStringIncludes(skill, "not yours to pass");
+});
+
+Deno.test("the skill omits the help note when the plan has no help alias", () => {
+  const narrow = ReviewSchema.parse({
+    ...review,
+    wrappers: [{
+      segment: "safe",
+      name: "demo",
+      admits: { maxTier: "read-safe" },
+    }],
+  });
+  assert(!renderSkill(narrow, "/tmp/bin").includes("reaches every command"));
+});
+
+Deno.test("an alias that pins a subcommand shows the argument the caller types", () => {
+  const pinned = ReviewSchema.parse({
+    ...review,
+    commands: [
+      { path: ["pr", "list"], tier: "read-safe", why: "reads" },
+    ],
+    wrappers: [{
+      segment: "safe",
+      name: "demo-pr",
+      prepend: ["pr"],
+      admits: { maxTier: "read-safe" },
+    }],
+  });
+  const skill = renderSkill(pinned, "/tmp/bin");
+  // `pr` is the alias's own; typing it again would be wrong.
+  assertStringIncludes(skill, "fka-safe-demo-pr list");
+  assert(!skill.includes("fka-safe-demo-pr pr list"));
 });
 
 Deno.test("the skill explains what a refusal means and what not to do about it", () => {

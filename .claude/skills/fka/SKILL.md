@@ -1,9 +1,10 @@
 ---
 name: fka
 description: >
-  Wrap a command-line tool in tier-named wrappers so an agent can run its safe
-  commands without a permission prompt, using the @skunk-ape/fka model and
-  the fka workflow. Analyses a CLI's commands, sorts them into read-safe,
+  Wrap a command-line tool in tier-named aliases so an agent can run its safe
+  commands without a permission prompt, using the @skunk-ape/fka model and its
+  workflow. Aliases are named fka-safe-gh, fka-help-gh and so on, so one
+  permission rule per segment covers every tool you ever wrap. Analyses a CLI's commands, sorts them into read-safe,
   read-private, modify, and escape, and generates wrappers, a settings snippet,
   and a skill snippet. Use when asked to wrap a CLI, reduce permission prompts
   for a tool, work out which commands of a tool are safe to run unattended, or
@@ -19,9 +20,9 @@ description: >
 Take a CLI the agent already has, work out which of its commands are safe to run
 unattended, and generate a wrapper that enforces the answer.
 
-`gh` becomes `safe-gh`, `private-gh`, and `write-gh`. The tier moves out of the
-argument list and into the command name, so one short permission rule covers a
-whole tier — and the wrapper re-parses every argument, so the rule is true.
+`gh` becomes `fka-safe-gh`, `fka-write-gh`, and whatever else the plan for gh
+called for. The name carries what a permission rule needs to know, and the
+wrapper re-parses every argument, so the rule is true.
 
 **You never install what this produces.** The last step is handing a person the
 permission snippet and asking them to merge it. Do not edit `settings.json`
@@ -29,22 +30,21 @@ yourself, and do not use the `update-config` skill to do it for you.
 
 ## Help always works
 
-Reading a tool's help changes nothing, so the help flag reaches every command in
-the table — including the ones the safe wrapper will not run. Read the help
-rather than escalating a tier to find out what a command takes.
-
 ```bash
-safe-gh pr close --help   # prints, even though safe-gh will not close a PR
-safe-gh pr close          # refused: reachable only with --help
+fka-help-gh pr close           # prints, even though nothing else will close a PR
+fka-help-gh pr close --json    # refused: this alias pins --help and takes nothing else
 ```
+
+The help alias reaches every command, because reading what one does is not doing
+it. Ask here rather than escalating a segment to find out what a command takes.
 
 ## When a wrapper refuses
 
 A refusal exits 126 and names the token at fault. It means the argument is
-outside that tier, not that the command failed. There are two honest responses:
+outside that alias, not that the command failed. There are two honest responses:
 
-- Run the same command on the next tier up. Those prompt, which is the point.
-- Tell the user the tier table looks wrong, and offer to re-run the workflow.
+- Run the same command on a wider alias. Those prompt, which is the point.
+- Tell the user the table looks wrong, and offer to re-run the workflow.
 
 Never route around a refusal by calling the tool directly, by its absolute path,
 or through another program that runs it. If you find yourself reaching for one
@@ -70,13 +70,13 @@ The run suspends at `review`. That is not a failure — it is the gate.
 
 ### What each stage does
 
-| Stage      | Kind          | What it decides                                  |
-| ---------- | ------------- | ------------------------------------------------ |
-| `discover` | deterministic | What the commands and options are actually called |
-| `classify` | model session | A proposed tier for each, plus an option allowlist |
-| `review`   | a person      | The tiers that will be enforced                   |
+| Stage      | Kind          | What it decides                                       |
+| ---------- | ------------- | ----------------------------------------------------- |
+| `discover` | deterministic | What the commands and options are actually called     |
+| `classify` | model session | A proposed tier for each, plus an option allowlist    |
+| `review`   | a person      | The tiers that will be enforced                       |
 | `generate` | deterministic | The wrappers, the settings snippet, the skill snippet |
-| `verify`   | deterministic | That each wrapper permits its tier and nothing above |
+| `verify`   | deterministic | That each wrapper permits its tier and nothing above  |
 
 ## Driving the human gate
 
@@ -133,10 +133,15 @@ snippet and ask them to merge it into `.claude/settings.json`:
 swamp data get fka-<cli> generated-<cli> --json | jq -r '.content.settingsSnippet'
 ```
 
-Say plainly what it does: `safe-<cli>` runs without asking, the other wrappers
-prompt, and the bare tool is denied so you reach for the wrappers instead. Say
-plainly what it does not do: the deny rule is a prefix match on the command
-line, so an absolute path is not covered. It steers, it does not sandbox.
+Say plainly what it does. Rules are keyed on the segment, not the tool, so this
+is a one-time paste: `fka-help-*` and `fka-safe-*` run without asking, the rest
+prompt, and wrapping another CLI later needs no new rule.
+
+Say plainly what that costs, because it is the sharp edge. Once those rules
+exist, a later run on a different tool makes that tool's safe commands runnable
+unattended with no further approval. The review gate is the only thing in
+between. Offer `Bash(fka-help:*)` alone as a first step for anyone who wants to
+go slowly — the agent reads documentation and runs nothing.
 
 Then offer the skill snippet for the project that will use the wrappers, and
 tell them the wrappers need to be on `PATH`:
@@ -165,13 +170,13 @@ again, which is correct — new commands have never been reviewed.
 
 Set these in the model definition's `globalArguments`.
 
-| Argument       | Default          | Why you would change it                        |
-| -------------- | ---------------- | ----------------------------------------------- |
-| `docsMode`     | `none`           | `web` lets the classifier read the tool's docs, which help text often does not cover. It also puts a network-capable session in front of pages you do not control. |
-| `emit`         | three tiers      | Add `escape` only if you want a wrapper for the dangerous commands. |
-| `maxDepth`     | `3`              | Deeper command trees. |
-| `maxCommands`  | `400`            | Raise for a big tool, or scope with `include` instead. |
-| `envScrub`     | eight variables  | Extra variables every wrapper deletes before exec. |
+| Argument      | Default         | Why you would change it                                                                                                                                            |
+| ------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `docsMode`    | `none`          | `web` lets the classifier read the tool's docs, which help text often does not cover. It also puts a network-capable session in front of pages you do not control. |
+| `prefix`      | `fka`           | The first word of every alias. Change it only on a name collision.                                                                                                 |
+| `maxDepth`    | `3`             | Deeper command trees.                                                                                                                                              |
+| `maxCommands` | `400`           | Raise for a big tool, or scope with `include` instead.                                                                                                             |
+| `envScrub`    | eight variables | Extra variables every wrapper deletes before exec.                                                                                                                 |
 
 ## What this cannot do
 

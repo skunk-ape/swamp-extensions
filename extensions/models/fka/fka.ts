@@ -48,9 +48,8 @@ import {
   ReviewSchema,
   surfaceOf,
   tierCounts,
-  TIERS,
+  toPolicy,
   toYaml,
-  wrapperName,
 } from "./_lib/review.ts";
 import type { Review } from "./_lib/review.ts";
 import { classifyAll, spawnAsk } from "./_lib/classify.ts";
@@ -69,8 +68,6 @@ declare const Deno: any;
 // ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
-
-const TierEnum = z.enum(TIERS);
 
 const GlobalArgsSchema = z.object({
   /** Where each tool's workspace lives, relative to the repository root. */
@@ -123,12 +120,14 @@ const GlobalArgsSchema = z.object({
    * into every wrapper, so moving the runtime later breaks them.
    */
   denoPath: z.string().default(""),
-  /** Which tiers get a wrapper. Add `escape` only if you mean it. */
-  emit: z.array(TierEnum).min(1).default([
-    "read-safe",
-    "read-private",
-    "modify",
-  ]),
+  /**
+   * The first word of every generated alias.
+   *
+   * Shared across every tool, so one set of permission rules keyed on
+   * `<prefix>-<segment>` covers everything you ever wrap. Change it only if
+   * `fka` collides with something already on your `PATH`.
+   */
+  prefix: z.string().regex(/^[a-z][a-z0-9-]*$/).default("fka"),
   /**
    * Variables every wrapper scrubs, on top of whatever the classifier named.
    *
@@ -215,8 +214,9 @@ const GeneratedSchema = z.object({
   settingsPath: z.string(),
   skillPath: z.string(),
   wrappers: z.array(z.object({
-    tier: z.string(),
+    segment: z.string(),
     name: z.string(),
+    purpose: z.string(),
     path: z.string(),
     commandCount: z.number(),
   })),
@@ -512,6 +512,7 @@ export const model = {
           nodes: crawled.nodes,
           batchSize: g.batchSize,
           docsMode: g.docsMode,
+          helpFlag: helpOptionsOf(crawled.nodes)[0] ?? "",
           ask: spawnAsk({
             claudePath: g.claudePath,
             model: g.model,
@@ -531,11 +532,12 @@ export const model = {
           helpFlag: g.helpFlag,
           fallbackHelpFlag: g.fallbackHelpFlag,
           generatedAt: new Date().toISOString(),
-          emit: g.emit,
           env: { scrub, set: {} },
           // Taken from the crawl rather than from the classifier: what the
           // tool calls its help flag is ground truth, not a judgement.
           helpOptions: helpOptionsOf(crawled.nodes),
+          prefix: g.prefix,
+          wrappers: result.wrappers,
           globalOptions: result.globalOptions,
           commands: result.commands,
         });
@@ -641,27 +643,30 @@ export const model = {
         await ensureDir(binDir);
 
         const wrappers: {
-          tier: string;
+          segment: string;
           name: string;
+          purpose: string;
           path: string;
           commandCount: number;
         }[] = [];
-        for (const tier of TIERS) {
-          if (!review.emit.includes(tier)) continue;
-          const name = wrapperName(review.cli, tier);
-          const path = `${binDir}/${name}`;
+        for (const spec of review.wrappers) {
+          const policy = toPolicy(review, spec);
+          const path = `${binDir}/${policy.name}`;
           await Deno.writeTextFile(
             path,
-            renderWrapper(review, tier, validateSource, denoPath),
+            renderWrapper(review, spec, validateSource, denoPath),
           );
           await Deno.chmod(path, 0o755);
-          const covered = review.commands.filter((c) =>
-            TIERS.indexOf(c.tier) <= TIERS.indexOf(tier)
-          ).length;
-          wrappers.push({ tier, name, path, commandCount: covered });
+          wrappers.push({
+            segment: spec.segment,
+            name: policy.name,
+            purpose: spec.purpose,
+            path,
+            commandCount: policy.commands.length,
+          });
           ctx.logger.info("Wrote {name} covering {count} command(s)", {
-            name,
-            count: covered,
+            name: policy.name,
+            count: policy.commands.length,
           });
         }
 

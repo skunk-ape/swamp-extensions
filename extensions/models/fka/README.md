@@ -6,10 +6,10 @@ Take a command-line tool your agent already has. Find out which of its commands
 are safe to run without a person watching. Then generate a wrapper that enforces
 the answer.
 
-After a run there is no `gh` for the agent to call. There is `safe-gh`,
-`private-gh`, and `write-gh`. The tier moves out of the argument list and into
-the command name. A permission rule can match a command name cheaply and
-exactly, and it is the only part of a shell command that it can.
+After a run there is no `gh` for the agent to call. There is `fka-safe-gh`,
+`fka-write-gh`, and whatever else the plan for gh called for. A permission rule
+can match a command name cheaply and exactly. A name is the only part of a shell
+command that it can match at all.
 
 ## The problem
 
@@ -47,27 +47,59 @@ one dangerous option in forty pushes the whole command out of the safe wrapper.
 `read-safe` is the only tier that runs unattended. That one fact drives the rest
 of the design.
 
-## Help is not a tier
+## Aliases, not just tiers
 
-Asking a tool to describe itself changes nothing, so help works everywhere. The
-help flag reaches every command in the table, including the ones the wrapper
-will not run:
+The move is to lift a fact out of the argument vector and into a command name. A
+permission rule matches a name cheaply and exactly, and it cannot see arguments
+at all. Tiers are one use of it. Pinning a subcommand is another. Pinning
+`--help` is a third.
 
-```bash
-safe-git commit --help    # prints
-safe-git commit           # refused: reachable only with --help or -h
+An alias is named `fka-<segment>-<tool>`, and the segment comes from a closed
+set: `help`, `safe`, `private`, `write`, `escape`. Which aliases a tool gets is
+judgement about that tool, proposed by the classifier and settled by whoever
+edits the review file.
+
+```yaml
+wrappers:
+  - segment: help
+    name: git
+    append: ["--help"] # the alias adds it, not the caller
+    accepts: path-only # a command path and nothing else
+  - segment: safe
+    name: git
+    admits: { maxTier: read-safe }
 ```
 
-The second line is what makes the first one safe. The path opens for the
-question and closes again for everything else: no positional arguments, no other
-options, and no match at all without a help flag. Bare `git commit` opens an
-editor and waits, so a rule that lets it through is worse than no rule.
+### Four rules, forever
 
-The spellings come from the tool. `fka` reads them from the option tables. It
-also takes the flag the crawl itself ran and got an answer from. That second
-source is how `git` gets help at all, because git names `--help` only inside its
-usage line. A bare `-h` is never assumed to mean help, because `sort -h` and
-`du -h` do not.
+The prefix is shared across every tool, so permission rules key on the segment
+rather than the tool:
+
+```jsonc
+"allow": ["Bash(fka-help:*)", "Bash(fka-safe:*)"]
+"ask":   ["Bash(fka-private:*)", "Bash(fka-write:*)"]
+```
+
+Wrap another CLI tomorrow and that file does not change. The corollary is the
+sharp edge, and it is deliberate: once those rules exist, a new run makes a new
+tool's safe commands runnable unattended. The review gate is what stands in
+between.
+
+`Bash(fka-help:*)` on its own is the narrowest useful grant. The agent reads any
+command's documentation and runs none of them. It is a reasonable place to
+start.
+
+### Help pins the flag
+
+```bash
+fka-help-git commit           # runs: git commit --help
+fka-help-git commit -m pwned  # refused: this alias carries no -m
+```
+
+The alias builds the vector, so no token the caller writes decides whether help
+happens. That is a stronger guarantee than allowing the flag and checking for
+it. It also means help reaches every command, including ones no other alias will
+run, because reading what `git commit` does is not committing.
 
 ## The stages
 
@@ -141,17 +173,21 @@ ships broken. So `_lib/validate.ts` has no imports, and `generate` pastes its
 text into each wrapper without change. The code that runs on your machine is the
 module the test suite exercises. Only the table differs.
 
-## Why the tier comes first in the name
+## Why the segment comes before the tool
 
-`gh-safe` reads better than `safe-gh`, and it does not work. Permission rules
-match by string prefix, so `Bash(gh:*)` matches every command line that starts
-with `gh`, and that includes `gh-safe pr list`. A deny rule on the raw tool
-cancels the allow rule for its own safe wrapper, and deny wins.
+`gh-safe` reads better, and it does not work. Permission rules match by string
+prefix, so `Bash(gh:*)` matches every command line that starts with `gh`, and
+that includes `gh-safe pr list`. A rule on the raw tool cancels the rule for its
+own safe wrapper.
 
-Putting the tier first fixes that, and it buys something better. The only rules
-that can reach each other by prefix are rules inside one tier: `safe-gh` can
-only ever be a prefix of another `safe-*` wrapper. If the one match nobody
+Putting the segment first fixes that and buys something better. The only rules
+that can reach each other by prefix are rules inside one segment: `fka-safe-gh`
+can only ever be a prefix of another `fka-safe-*` alias. If the one match nobody
 controls goes wrong, it reaches something already judged safe.
+
+No rule denies the raw tool. Denying it is harsher than the default without
+being safer: an unlisted command already prompts, so you keep the option of
+approving one, and an absolute path never matched the bare name anyway.
 
 ## What this does not do
 

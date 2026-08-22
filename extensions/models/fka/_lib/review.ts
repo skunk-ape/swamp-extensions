@@ -46,25 +46,71 @@ export const TIER_MEANING: Record<Tier, string> = {
 };
 
 /**
- * The word that leads a wrapper's name. `modify` reads better as `write`.
+ * The second word of every wrapper name, and a closed set.
  *
- * The tier goes in front rather than behind, and that ordering is a security
- * property rather than a style choice. Claude Code matches a Bash permission
- * rule by string prefix, so `Bash(gh:*)` matches every command line beginning
- * with `gh` — `gh-safe pr list` included. A suffix scheme therefore cannot say
- * "deny the raw tool, allow the safe wrapper": the deny rule swallows its own
- * exception, and deny wins.
+ * A wrapper is called `<prefix>-<segment>-<name>`, so `fka-safe-gh`. The
+ * segment has to come from a fixed vocabulary because it is what permission
+ * rules key on: `Bash(fka-safe:*)` means something only if nothing can invent
+ * `fka-mostly-safe-gh` and land outside every rule. Which commands go in which
+ * segment is judgement; the set of segments is not.
  *
- * Leading with the tier also contains the one match nobody controls. The only
- * rules that can bleed into each other by prefix are rules within a tier —
- * `safe-gh` can only ever be a prefix of another `safe-*` wrapper — so
- * over-matching reaches something already judged safe.
+ * `help` is not a tier and does not sit on the tier ladder. Tiers partition
+ * what a command does to the world; help is a mode outside that axis — asking
+ * a tool to describe itself is not a kind of command at all. Its own segment
+ * also means an operator can grant `Bash(fka-help:*)` and nothing else, which
+ * is a real starting position.
  */
-export const TIER_PREFIX: Record<Tier, string> = {
+export const SEGMENTS = [
+  "help",
+  "safe",
+  "private",
+  "write",
+  "escape",
+] as const;
+export type Segment = typeof SEGMENTS[number];
+
+/** Which permission bucket a segment belongs in. */
+export const SEGMENT_BUCKET: Record<Segment, "allow" | "ask"> = {
+  help: "allow",
+  safe: "allow",
+  private: "ask",
+  write: "ask",
+  escape: "ask",
+};
+
+export const SEGMENT_MEANING: Record<Segment, string> = {
+  help:
+    "Asks the tool to describe itself. Runs no command and reads nothing else.",
+  safe: "Changes nothing, reveals nothing confidential. Runs unattended.",
+  private:
+    "Changes nothing, but reads secrets, private source, identity, or billing.",
+  write: "Changes state — local files, remote resources, money.",
+  escape:
+    "Hands over arbitrary code execution, or names a program or endpoint to reach.",
+};
+
+/** The segment a tier's commands land in when nothing says otherwise. */
+export const SEGMENT_OF_TIER: Record<Tier, Segment> = {
   "read-safe": "safe",
   "read-private": "private",
   "modify": "write",
   "escape": "escape",
+};
+
+/**
+ * The tier ceiling a segment implies, for a spec that does not state one.
+ *
+ * `help` has none: reading what `gh repo delete` does is not deleting
+ * anything, so a help alias reaches every command in the table. That makes
+ * `fka-help-*` broader in coverage than `fka-safe-*` while being narrower in
+ * what it can do, which is correct and surprising enough to say out loud.
+ */
+export const SEGMENT_CEILING: Record<Segment, Tier | null> = {
+  help: null,
+  safe: "read-safe",
+  private: "read-private",
+  write: "modify",
+  escape: "escape",
 };
 
 /** Strip any directory part: a wrapper is named for the tool, not its path. */
@@ -73,8 +119,20 @@ export function baseName(cli: string): string {
   return parts[parts.length - 1] || cli;
 }
 
-export function wrapperName(cli: string, tier: Tier): string {
-  return `${TIER_PREFIX[tier]}-${baseName(cli)}`;
+/**
+ * `fka-safe-gh`.
+ *
+ * Prefix matching is what makes this hierarchy useful rather than decorative.
+ * `Bash(fka-safe:*)` grants every safe wrapper of every tool ever wrapped,
+ * `Bash(fka-safe-gh:*)` narrows to one tool, and `Bash(fka-safe-gh-pr:*)`
+ * to one alias — the same rule syntax at three levels of scope.
+ */
+export function wrapperName(
+  prefix: string,
+  segment: Segment,
+  name: string,
+): string {
+  return `${prefix}-${segment}-${name}`;
 }
 
 const TierSchema = z.enum(TIERS);
@@ -116,6 +174,55 @@ const ReviewCommandSchema = z.object({
 });
 export type ReviewCommand = z.infer<typeof ReviewCommandSchema>;
 
+const SegmentSchema = z.enum(SEGMENTS);
+
+const AdmitsSchema = z.object({
+  /** Commands at this tier or below. Omit to admit every command in the table. */
+  maxTier: TierSchema.optional(),
+  /** Exactly these command paths. Omit to admit everything within `maxTier`. */
+  paths: z.array(z.array(z.string().min(1))).optional(),
+}).default({});
+
+const WrapperSpecSchema = z.object({
+  segment: SegmentSchema,
+  /**
+   * What follows the segment. Usually the tool, sometimes tool plus qualifier.
+   *
+   * `gh` gives `fka-safe-gh`; `gh-pr` gives `fka-safe-gh-pr`, which an operator
+   * can grant on its own without granting the rest of gh.
+   */
+  name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+  /** One line on what this alias is for. Shown to the agent in the skill. */
+  purpose: z.string().default(""),
+  /**
+   * Tokens pinned in front of whatever the caller writes.
+   *
+   * Pinning beats permitting: `fka-safe-gh-pr` that prepends `pr` is a wrapper
+   * for the pull-request subtree by construction, not by a rule that could be
+   * argued with.
+   */
+  prepend: z.array(z.string()).default([]),
+  /**
+   * Tokens pinned after the caller's.
+   *
+   * How an alias becomes an answer rather than a permission. A help wrapper
+   * appends the help flag itself, so nothing the caller writes decides whether
+   * help happens.
+   */
+  append: z.array(z.string()).default([]),
+  admits: AdmitsSchema,
+  /**
+   * What the caller may supply beyond the command path.
+   *
+   * `table` follows the review's own option and positional entries.
+   * `path-only` accepts a command path and nothing else — no options, no
+   * positionals — so the only argument vector that can reach the tool is the
+   * path plus whatever this spec pins. That is the whole of a help alias.
+   */
+  accepts: z.enum(["table", "path-only"]).default("table"),
+});
+export type WrapperSpec = z.infer<typeof WrapperSpecSchema>;
+
 export const ReviewSchema = z.object({
   cli: z.string().min(1),
   /** Absolute path, resolved at discover time. */
@@ -123,12 +230,26 @@ export const ReviewSchema = z.object({
   binaryVersion: z.string().default(""),
   helpFlag: z.string().default("--help"),
   generatedAt: z.string().default(""),
-  /** Which tiers get a wrapper. `escape` only ever appears here on request. */
-  emit: z.array(TierSchema).min(1).default([
-    "read-safe",
-    "read-private",
-    "modify",
-  ]),
+  /**
+   * The first word of every generated wrapper name.
+   *
+   * One shared prefix across every tool is what turns per-tool permission
+   * bookkeeping into a handful of rules that never change: wrap a new tool and
+   * `Bash(fka-safe:*)` already covers its safe alias. The cost is that the
+   * review gate becomes the only thing standing between running the workflow
+   * and new commands running unattended, which is the trade this design makes
+   * on purpose.
+   */
+  prefix: z.string().regex(/^[a-z][a-z0-9-]*$/).default("fka"),
+  /**
+   * The aliases to generate.
+   *
+   * Not a fixed set of tier wrappers. Which aliases a tool wants is judgement
+   * about that tool — one path-taking help wrapper where the tree is regular,
+   * a pinned alias per command where it is not — proposed by the classifier
+   * against the guidelines and settled by whoever edits this file.
+   */
+  wrappers: z.array(WrapperSpecSchema).default([]),
   env: z.object({
     scrub: z.array(z.string()).default([]),
     set: z.record(z.string(), z.string()).default({}),
@@ -169,17 +290,41 @@ function optionTier(o: ReviewOption, fallback: Tier): Tier {
  * options, because the two are tiered independently. A command that survives
  * the first filter can still lose most of its options to the second.
  */
-export function toPolicy(review: Review, tier: Tier): Policy {
-  const ceiling = tierRank(tier);
+export function toPolicy(review: Review, spec: WrapperSpec): Policy {
+  const ceilingTier = spec.admits.maxTier ?? SEGMENT_CEILING[spec.segment];
+  // No ceiling means every command in the table, which is what a help alias
+  // wants: it reaches `gh repo delete` because asking is not doing.
+  const ceiling = ceilingTier === null
+    ? Number.POSITIVE_INFINITY
+    : tierRank(ceilingTier);
+  const only = spec.admits.paths
+    ? new Set(spec.admits.paths.map((p) => p.join(" ")))
+    : null;
+  const pathOnly = spec.accepts === "path-only";
 
   const globalOptions: Record<string, OptionSpec> = {};
-  for (const [name, opt] of Object.entries(review.globalOptions)) {
-    if (tierRank(opt.tier) <= ceiling) globalOptions[name] = toSpec(opt);
+  if (!pathOnly) {
+    for (const [name, opt] of Object.entries(review.globalOptions)) {
+      if (tierRank(opt.tier) <= ceiling) globalOptions[name] = toSpec(opt);
+    }
   }
+  // The tokens this wrapper pins have to be legal in the policy that judges
+  // them, because the check runs over the effective vector and not the
+  // caller's. Deriving them here rather than asking the table keeps a pin and
+  // its permission from ever disagreeing.
+  Object.assign(
+    globalOptions,
+    pinnedOptions([...spec.prepend, ...spec.append]),
+  );
 
   const commands = review.commands
-    .filter((c) => tierRank(c.tier) <= ceiling)
+    .filter((c) =>
+      tierRank(c.tier) <= ceiling && (!only || only.has(c.path.join(" ")))
+    )
     .map((c) => {
+      if (pathOnly) {
+        return { path: c.path, options: {}, positionals: "none" as const };
+      }
       const options: Record<string, OptionSpec> = {};
       for (const [name, opt] of Object.entries(c.options)) {
         if (tierRank(optionTier(opt, c.tier)) <= ceiling) {
@@ -201,16 +346,95 @@ export function toPolicy(review: Review, tier: Tier): Policy {
 
   return {
     cli: review.cli,
-    name: wrapperName(review.cli, tier),
-    tier,
-    prependArgs: [],
-    appendArgs: [],
+    name: wrapperName(review.prefix, spec.segment, spec.name),
+    tier: spec.segment,
+    prependArgs: [...spec.prepend],
+    appendArgs: [...spec.append],
     binary: review.binary,
     binaryVersion: review.binaryVersion,
     globalOptions,
     commands,
     env: { scrub: [...review.env.scrub], set: { ...review.env.set } },
   };
+}
+
+/**
+ * The plan a tool gets when nobody proposes a better one.
+ *
+ * Three tier wrappers and a help wrapper covers most tools, and is the shape
+ * the guidelines tell the classifier to start from and depart from with a
+ * reason. `escape` is absent on purpose: a wrapper for the commands that hand
+ * over execution is something an operator asks for, not something a default
+ * hands out.
+ */
+export function defaultWrappers(cli: string, helpFlag: string): WrapperSpec[] {
+  const name = baseName(cli);
+  const plan: WrapperSpec[] = [
+    {
+      segment: "safe",
+      name,
+      purpose: `${name} commands cleared to run unattended`,
+      prepend: [],
+      append: [],
+      admits: { maxTier: "read-safe" },
+      accepts: "table",
+    },
+    {
+      segment: "private",
+      name,
+      purpose: `${name} commands that read private or billable data`,
+      prepend: [],
+      append: [],
+      admits: { maxTier: "read-private" },
+      accepts: "table",
+    },
+    {
+      segment: "write",
+      name,
+      purpose: `${name} commands that change state`,
+      prepend: [],
+      append: [],
+      admits: { maxTier: "modify" },
+      accepts: "table",
+    },
+  ];
+  if (helpFlag) {
+    plan.unshift({
+      segment: "help",
+      name,
+      purpose: `read the help for any ${name} command`,
+      prepend: [],
+      append: [helpFlag],
+      admits: {},
+      accepts: "path-only",
+    });
+  }
+  return plan;
+}
+
+/**
+ * Permissions for the tokens a wrapper pins.
+ *
+ * Arity comes from the shape of the pin itself: an option followed by a
+ * non-option consumes it, anything else is a flag. Reading it off the pinned
+ * list rather than the review table means `append: ["--format", "json"]`
+ * cannot be rendered into a wrapper that then refuses its own argument.
+ */
+function pinnedOptions(tokens: readonly string[]): Record<string, OptionSpec> {
+  const options: Record<string, OptionSpec> = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token.startsWith("-") || token === "-") continue;
+    const name = token.includes("=")
+      ? token.slice(0, token.indexOf("="))
+      : token;
+    const next = tokens[i + 1];
+    const takesValue = !token.includes("=") && next !== undefined &&
+      !next.startsWith("-");
+    options[name] = { arity: takesValue ? 1 : 0 };
+    if (takesValue) i++;
+  }
+  return options;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +517,8 @@ export type Problem =
   | { kind: "unknown-option"; path: string[]; option: string; message: string }
   | { kind: "unknown-global-option"; option: string; message: string }
   | { kind: "unknown-help-option"; option: string; message: string }
-  | { kind: "bad-pattern"; pattern: string; message: string };
+  | { kind: "bad-pattern"; pattern: string; message: string }
+  | { kind: "bad-wrapper"; wrapper: string; message: string };
 
 /**
  * Reject anything the classifier invented.
@@ -395,6 +620,69 @@ export function checkAgainstSurface(
     }
   }
 
+  problems.push(...checkWrappers(review, surface));
+  return problems;
+}
+
+/**
+ * Check the alias plan itself.
+ *
+ * The plan is as much a classifier proposal as the tier table is, and it has
+ * its own ways of being wrong: two aliases fighting over one name, a pinned
+ * subcommand the tool does not have, an alias that admits nothing and so ships
+ * a wrapper that refuses everything.
+ */
+function checkWrappers(review: Review, surface: Surface): Problem[] {
+  const problems: Problem[] = [];
+  const seen = new Set<string>();
+
+  for (const spec of review.wrappers) {
+    const wrapper = wrapperName(review.prefix, spec.segment, spec.name);
+    if (seen.has(wrapper)) {
+      problems.push({
+        kind: "bad-wrapper",
+        wrapper,
+        message: `two aliases are both called "${wrapper}"`,
+      });
+      continue;
+    }
+    seen.add(wrapper);
+
+    // A pinned path component has to be a real command, or the wrapper writes
+    // an argument vector the tool will reject on every call.
+    const pinnedPath = spec.prepend.filter((t) => !t.startsWith("-"));
+    if (pinnedPath.length > 0 && !surface.paths.has(pinnedPath.join(" "))) {
+      problems.push({
+        kind: "bad-wrapper",
+        wrapper,
+        message: `"${wrapper}" pins the command "${
+          pinnedPath.join(" ")
+        }", which was never seen in the crawl`,
+      });
+    }
+
+    for (const path of spec.admits.paths ?? []) {
+      if (!surface.paths.has(path.join(" "))) {
+        problems.push({
+          kind: "bad-wrapper",
+          wrapper,
+          message: `"${wrapper}" admits "${
+            path.join(" ")
+          }", which was never seen in the crawl`,
+        });
+      }
+    }
+
+    if (toPolicy(review, spec).commands.length === 0) {
+      problems.push({
+        kind: "bad-wrapper",
+        wrapper,
+        message:
+          `"${wrapper}" admits no command at all and would refuse everything`,
+      });
+    }
+  }
+
   return problems;
 }
 
@@ -414,6 +702,7 @@ export function pruneProblems(
   const dropCommands = new Set<string>();
   const dropGlobals = new Set<string>();
   const dropHelp = new Set<string>();
+  const dropWrappers = new Set<string>();
   const dropOptions = new Map<string, Set<string>>();
 
   for (const problem of problems) {
@@ -438,6 +727,9 @@ export function pruneProblems(
       case "bad-pattern":
         // A pattern that will not compile refuses everything it is attached to,
         // so the validator already fails closed. Reported, not pruned.
+        break;
+      case "bad-wrapper":
+        dropWrappers.add(problem.wrapper);
         break;
     }
   }
@@ -464,8 +756,11 @@ export function pruneProblems(
     });
 
   const helpOptions = review.helpOptions.filter((n) => !dropHelp.has(n));
+  const wrappers = review.wrappers.filter((s) =>
+    !dropWrappers.has(wrapperName(review.prefix, s.segment, s.name))
+  );
 
-  return { ...review, globalOptions, helpOptions, commands };
+  return { ...review, globalOptions, helpOptions, wrappers, commands };
 }
 
 function* patternsIn(review: Review): Generator<string> {

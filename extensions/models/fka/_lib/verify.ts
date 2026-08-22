@@ -22,8 +22,8 @@
  * disagreement between the two runs is a failure, which is the point.
  */
 
-import type { Review, Tier } from "./review.ts";
-import { tierRank, TIERS, toPolicy, wrapperName } from "./review.ts";
+import type { Review } from "./review.ts";
+import { toPolicy, wrapperName } from "./review.ts";
 import type { Policy } from "./validate.ts";
 import { validate } from "./validate.ts";
 
@@ -31,7 +31,6 @@ import { validate } from "./validate.ts";
 declare const Deno: any;
 
 export interface Case {
-  tier: Tier;
   wrapper: string;
   argv: string[];
   expect: "permit" | "refuse";
@@ -49,66 +48,87 @@ export interface Case {
 export function buildCases(review: Review): Case[] {
   const cases: Case[] = [];
 
-  for (const tier of TIERS) {
-    if (!review.emit.includes(tier)) continue;
-    const wrapper = wrapperName(review.cli, tier);
-    const ceiling = tierRank(tier);
+  for (const spec of review.wrappers) {
+    const wrapper = wrapperName(review.prefix, spec.segment, spec.name);
+    const policy = toPolicy(review, spec);
+    const admitted = new Set(policy.commands.map((c) => c.path.join(" ")));
+    // What the caller types, once this alias's own pinned path is taken off
+    // the front. `fka-safe-gh-pr` that prepends `pr` is called as `… list`.
+    const pinnedDepth = spec.prepend.filter((t) => !t.startsWith("-")).length;
+    const typed = (path: string[]) => path.slice(pinnedDepth);
 
     for (const cmd of review.commands) {
       const name = [review.cli, ...cmd.path].join(" ");
-      const within = tierRank(cmd.tier) <= ceiling;
+      const key = cmd.path.join(" ");
+      const within = admitted.has(key);
+      // A command this alias pins past cannot be typed at all: the caller
+      // would have to write a path that contradicts the pin.
+      if (pinnedDepth > 0 && typed(cmd.path).length === cmd.path.length) {
+        continue;
+      }
 
       cases.push({
-        tier,
         wrapper,
-        argv: [...cmd.path],
+        argv: typed(cmd.path),
         expect: within ? "permit" : "refuse",
         about: within
-          ? `${name} is ${cmd.tier} and ${wrapper} covers that tier`
-          : `${name} is ${cmd.tier}, which is above ${tier}`,
+          ? `${name} is admitted by ${wrapper}`
+          : `${name} is outside ${wrapper}`,
       });
 
       if (!within) continue;
 
-      for (const [option, spec] of Object.entries(cmd.options)) {
-        const optionTier = spec.tier ?? cmd.tier;
-        const argv = [...cmd.path, option];
-        if (spec.arity === 1) argv.push("value");
-
-        if (tierRank(optionTier) > ceiling) {
+      // `path-only` is the whole claim of a pinned alias: the caller supplies
+      // a command and nothing else. Every option in the table is a refusal.
+      if (spec.accepts === "path-only") {
+        for (const option of Object.keys(cmd.options).slice(0, 2)) {
           cases.push({
-            tier,
+            wrapper,
+            argv: [...typed(cmd.path), option],
+            expect: "refuse",
+            about:
+              `${wrapper} takes a command path only, so ${option} is refused`,
+          });
+        }
+        continue;
+      }
+
+      const rule = policy.commands.find((c) => c.path.join(" ") === key);
+      for (const [option, spec_] of Object.entries(cmd.options)) {
+        const argv = [...typed(cmd.path), option];
+        if (spec_.arity === 1) argv.push("value");
+
+        if (!rule?.options[option]) {
+          cases.push({
             wrapper,
             argv,
             expect: "refuse",
-            about:
-              `${option} on ${name} is ${optionTier}, which is above ${tier}`,
+            about: `${option} on ${name} is outside ${wrapper}`,
           });
           continue;
         }
         // A constrained value cannot be exercised with a made-up token: the
         // refusal would be the pattern doing its job, indistinguishable here
         // from the option being missing. Those are left to the reviewer.
-        if (spec.valuePattern) continue;
+        if (spec_.valuePattern) continue;
         cases.push({
-          tier,
           wrapper,
           argv,
           expect: "permit",
-          about: `${option} is permitted on ${name} at ${tier}`,
+          about: `${option} is permitted on ${name} by ${wrapper}`,
         });
       }
     }
 
-    // An escape command must not be reachable from a wrapper that is not the
-    // escape wrapper, and the bare tool name must not be a command by accident.
-    if (!review.commands.some((c) => c.path.length === 0)) {
+    // The bare alias, which for a pinned one is the pinned command itself.
+    if (
+      !admitted.has(spec.prepend.filter((t) => !t.startsWith("-")).join(" "))
+    ) {
       cases.push({
-        tier,
         wrapper,
         argv: [],
         expect: "refuse",
-        about: `${review.cli} on its own is not a permitted command`,
+        about: `${wrapper} on its own names no permitted command`,
       });
     }
   }
@@ -124,17 +144,20 @@ export interface CaseResult extends Case {
 
 /** Run the matrix in process, against the policies the wrappers were built from. */
 export function runCases(review: Review, cases: readonly Case[]): CaseResult[] {
-  const policies = new Map<Tier, Policy>();
-  for (const tier of review.emit) policies.set(tier, toPolicy(review, tier));
+  const policies = new Map<string, Policy>();
+  for (const spec of review.wrappers) {
+    const policy = toPolicy(review, spec);
+    policies.set(policy.name, policy);
+  }
 
   return cases.map((c) => {
-    const policy = policies.get(c.tier);
+    const policy = policies.get(c.wrapper);
     if (!policy) {
       return {
         ...c,
         got: "refuse",
         ok: false,
-        detail: `no policy for tier ${c.tier}`,
+        detail: `no policy for ${c.wrapper}`,
       };
     }
     const verdict = validate(policy, c.argv);

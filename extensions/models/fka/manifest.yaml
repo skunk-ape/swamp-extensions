@@ -24,15 +24,29 @@ description: |
   whole argument vector and refuses anything not explicitly permitted. The
   namespace makes the rule short; the parser makes it true.
 
-  ## Four tiers
+  ## Aliases, not just tiers
 
-  - `read-safe` — changes nothing, reveals nothing confidential. The only tier
-    that runs unattended, and the only one that needs careful review.
-  - `read-private` — reads secrets, private source, identity, or billing.
-  - `modify` — changes state.
-  - `escape` — hands over arbitrary code execution, or names a program or
-    endpoint to reach. Options are tiered separately from their commands, so
-    `git log` can be read-safe while `git log --ext-diff` is not.
+  The move is to lift a fact out of the argument vector and into a command name.
+  Tiers are one use of it; pinning a subcommand or a flag is another. An alias is
+  named `fka-<segment>-<tool>`, with the segment from a closed set — `help`,
+  `safe`, `private`, `write`, `escape` — so permission rules key on the segment
+  and never on the tool:
+
+      "allow": ["Bash(fka-help:*)", "Bash(fka-safe:*)"]
+      "ask":   ["Bash(fka-private:*)", "Bash(fka-write:*)"]
+
+  Wrap another CLI tomorrow and that file does not change. `Bash(fka-help:*)` on
+  its own is the narrowest useful grant: the agent reads any command's
+  documentation and runs none of them.
+
+  Which aliases a tool gets is judgement about that tool, proposed by the
+  classifier against guidelines and settled at the review gate. A pinned alias
+  builds its own argument vector — `fka-help-git commit` runs `git commit
+  --help` because the alias adds the flag — which is a stronger guarantee than
+  permitting a flag and checking for it.
+
+  Options are tiered separately from their commands, so `git log` can be
+  read-safe while `git log --ext-diff` is not.
 
   ## Methods
 

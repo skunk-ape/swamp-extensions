@@ -32,11 +32,28 @@ function node(path: string[], options: string[] = [], ok = true): CrawlNode {
 
 const GLOBALS = JSON.stringify({ globalOptions: {}, envScrub: ["DEMO_PAGER"] });
 
-/** Answer the globals question once, then hand batch answers out in order. */
+const PLAN = JSON.stringify({
+  wrappers: [{
+    segment: "safe",
+    name: "demo",
+    admits: { maxTier: "read-safe" },
+  }],
+});
+
+/**
+ * Answer globals, then each batch in order, then the alias plan.
+ *
+ * The plan is asked last, so a caller that scripts N batch answers gets its
+ * plan reply without counting calls.
+ */
 function scripted(batches: string[]): Ask {
   let seen = 0;
   return (_system, _prompt) => {
-    const reply = seen === 0 ? GLOBALS : batches[seen - 1] ?? "{}";
+    const reply = seen === 0
+      ? GLOBALS
+      : seen <= batches.length
+      ? batches[seen - 1]
+      : PLAN;
     seen++;
     return Promise.resolve(reply);
   };
@@ -93,6 +110,7 @@ Deno.test("a classified command carries its tier and reasoning through", async (
     nodes,
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask: scripted([
       JSON.stringify({
         commands: [
@@ -119,6 +137,7 @@ Deno.test("a command the classifier skipped is noted, and gets no entry", async 
     nodes,
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask: scripted([
       JSON.stringify({
         commands: [{ path: ["list"], tier: "read-safe", why: "reads" }],
@@ -140,6 +159,7 @@ Deno.test("a command from outside the batch is discarded and noted", async () =>
     nodes: [node([]), node(["list"])],
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask: scripted([
       JSON.stringify({
         commands: [
@@ -173,6 +193,7 @@ Deno.test("a batch that never returns usable JSON costs its batch, not the run",
     nodes: [node([]), node(["list"]), node(["delete"])],
     batchSize: 2,
     docsMode: "none",
+    helpFlag: "--help",
     ask,
   });
 
@@ -201,6 +222,7 @@ Deno.test("a malformed reply is retried once with the parse error quoted back", 
     nodes: [node([]), node(["list"])],
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask,
   });
 
@@ -214,6 +236,7 @@ Deno.test("a command whose help failed is noted and never classified", async () 
     nodes: [node([]), node(["broken"], [], false)],
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask: scripted([JSON.stringify({ commands: [] })]),
   });
   assert(
@@ -233,11 +256,12 @@ Deno.test("the batch size is honoured, so a large tool is asked in pieces", asyn
     nodes: [node([]), node(["a"]), node(["b"]), node(["c"]), node(["d"])],
     batchSize: 2,
     docsMode: "none",
+    helpFlag: "--help",
     ask,
   });
 
-  // One globals call, then ceil(5 / 2) batches.
-  assertEquals(asked.length, 1 + 3);
+  // One globals call, ceil(5 / 2) batches, then one for the alias plan.
+  assertEquals(asked.length, 1 + 3 + 1);
   assertStringIncludes(asked[1], "Classify each of the following 2 command(s)");
 });
 
@@ -248,6 +272,7 @@ Deno.test("progress is reported against the number of commands, not batches", as
     nodes: [node([]), node(["a"]), node(["b"])],
     batchSize: 2,
     docsMode: "none",
+    helpFlag: "--help",
     ask: scripted([`{"commands":[]}`, `{"commands":[]}`]),
     onProgress: (done) => seen.push(done),
   });
@@ -260,6 +285,7 @@ Deno.test("no root help means no global options, and the run says so", async () 
     nodes: [node(["list"])],
     batchSize: 10,
     docsMode: "none",
+    helpFlag: "--help",
     ask: () =>
       Promise.resolve(
         JSON.stringify({
@@ -271,6 +297,116 @@ Deno.test("no root help means no global options, and the run says so", async () 
   assert(result.notes.some((n) => n.includes("no usable help at the root")));
 });
 
+// --- the alias plan ------------------------------------------------------
+
+Deno.test("the proposed plan is carried through", async () => {
+  const result = await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"])],
+    batchSize: 10,
+    docsMode: "none",
+    helpFlag: "--help",
+    ask: scripted([
+      JSON.stringify({
+        commands: [
+          { path: [], tier: "read-safe", why: "help" },
+          { path: ["list"], tier: "read-safe", why: "reads" },
+        ],
+      }),
+    ]),
+  });
+  assertEquals(result.wrappers.map((s) => s.segment), ["safe"]);
+  assertEquals(result.wrappers[0].name, "demo");
+});
+
+Deno.test("a plan the classifier could not produce falls back to the default", async () => {
+  let call = 0;
+  const ask: Ask = () => {
+    call++;
+    if (call === 1) return Promise.resolve(GLOBALS);
+    if (call === 2) {
+      return Promise.resolve(
+        JSON.stringify({
+          commands: [{ path: ["list"], tier: "read-safe", why: "reads" }],
+        }),
+      );
+    }
+    return Promise.resolve("no plan from me");
+  };
+
+  const result = await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"])],
+    batchSize: 10,
+    docsMode: "none",
+    helpFlag: "--help",
+    ask,
+  });
+
+  // Falling back beats shipping nothing: a review file with no aliases is a
+  // run that produced no wrappers, which is not fail-closed, just useless.
+  assertEquals(result.wrappers.map((s) => s.segment), [
+    "help",
+    "safe",
+    "private",
+    "write",
+  ]);
+  assert(result.notes.some((n) => n.includes("alias planning failed")));
+});
+
+Deno.test("an empty plan falls back too, and says so", async () => {
+  const result = await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"])],
+    batchSize: 10,
+    docsMode: "none",
+    helpFlag: "--help",
+    ask: (_s, prompt) =>
+      Promise.resolve(
+        prompt.includes("Classify each")
+          ? JSON.stringify({
+            commands: [{ path: ["list"], tier: "read-safe", why: "reads" }],
+          })
+          : prompt.includes("root help page")
+          ? GLOBALS
+          : JSON.stringify({ wrappers: [] }),
+      ),
+  });
+  assert(result.wrappers.length > 0);
+  assert(result.notes.some((n) => n.includes("proposed no aliases")));
+});
+
+Deno.test("the plan prompt shows the shape of the table, not the whole table", async () => {
+  const prompts: string[] = [];
+  await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"]), node(["delete"])],
+    batchSize: 10,
+    docsMode: "none",
+    helpFlag: "-h",
+    ask: (_s, prompt) => {
+      prompts.push(prompt);
+      return Promise.resolve(
+        prompts.length === 1 ? GLOBALS : prompts.length === 2
+          ? JSON.stringify({
+            commands: [
+              { path: ["list"], tier: "read-safe", why: "reads" },
+              { path: ["delete"], tier: "modify", why: "writes" },
+            ],
+          })
+          : PLAN,
+      );
+    },
+  });
+
+  const plan = prompts[prompts.length - 1];
+  assertStringIncludes(plan, "read-safe: 1");
+  assertStringIncludes(plan, "modify: 1");
+  assertStringIncludes(plan, "answers help with: -h");
+  // Guidelines, not rules: the classifier is told what an alias is for.
+  assertStringIncludes(plan, "Pinning beats permitting");
+});
+
 Deno.test("an ask that throws surfaces rather than producing a silent empty table", async () => {
   await assertRejects(
     () =>
@@ -279,6 +415,7 @@ Deno.test("an ask that throws surfaces rather than producing a silent empty tabl
         nodes: [node([])],
         batchSize: 10,
         docsMode: "none",
+        helpFlag: "--help",
         ask: () => Promise.reject(new Error("claude exited 1")),
       }),
     Error,

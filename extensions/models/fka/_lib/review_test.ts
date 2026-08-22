@@ -6,6 +6,7 @@ import {
 } from "jsr:@std/assert@1";
 import {
   checkAgainstSurface,
+  defaultWrappers,
   fromYaml,
   helpOptionsOf,
   pruneProblems,
@@ -17,9 +18,9 @@ import {
   toYaml,
   wrapperName,
 } from "./review.ts";
-import type { Review, ReviewCommand } from "./review.ts";
+import type { Review, ReviewCommand, WrapperSpec } from "./review.ts";
 import type { CrawlNode } from "./help.ts";
-import { validate } from "./validate.ts";
+import { effectiveArgv, validate } from "./validate.ts";
 
 // --- fixtures ------------------------------------------------------------
 
@@ -32,18 +33,42 @@ function command(
   return { path, tier, summary: "", why: "", options, dropped: {}, ...extra };
 }
 
+/** One alias spec, with the boilerplate filled in. */
+function spec(
+  segment: WrapperSpec["segment"],
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return { segment, name: "demo", ...extra };
+}
+
 function review(
   commands: ReviewCommand[],
-  extra: Partial<Review> = {},
+  extra: Record<string, unknown> = {},
 ): Review {
   return ReviewSchema.parse({
     cli: "demo",
     binary: "/usr/bin/demo",
     binaryVersion: "demo 1.0",
-    emit: ["read-safe", "read-private", "modify"],
+    wrappers: [
+      spec("safe", { admits: { maxTier: "read-safe" } }),
+      spec("private", { admits: { maxTier: "read-private" } }),
+      spec("write", { admits: { maxTier: "modify" } }),
+    ],
     commands,
     ...extra,
   });
+}
+
+/** The spec a review carries for one segment. */
+function at(r: Review, segment: WrapperSpec["segment"]): WrapperSpec {
+  const found = r.wrappers.find((s) => s.segment === segment);
+  if (!found) throw new Error(`no ${segment} alias in this fixture`);
+  return found;
+}
+
+/** Shorthand for the policy one segment's alias enforces. */
+function policyFor(r: Review, segment: WrapperSpec["segment"]) {
+  return toPolicy(r, at(r, segment));
 }
 
 // --- tier ordering -------------------------------------------------------
@@ -56,83 +81,79 @@ Deno.test("tiers are ordered least to most dangerous", () => {
 
 // --- naming --------------------------------------------------------------
 
-Deno.test("the tier leads the wrapper name, so a deny on the tool cannot match it", () => {
-  const safe = wrapperName("gh", "read-safe");
-  assertEquals(safe, "safe-gh");
-  // The whole reason for the ordering: Bash rules match by string prefix, so a
-  // name starting with the tool's own name would be caught by a deny on it.
-  assert(!safe.startsWith("gh"));
+Deno.test("a wrapper is named prefix, segment, then tool", () => {
+  assertEquals(wrapperName("fka", "safe", "gh"), "fka-safe-gh");
+  assertEquals(wrapperName("fka", "help", "gh-pr"), "fka-help-gh-pr");
 });
 
-Deno.test("a prefix collision between wrappers can only reach the same tier", () => {
-  // `safe-gh` is a prefix of `safe-ghi`, so an allow rule on the first also
-  // matches the second. Both are safe wrappers, which is what makes that
-  // survivable — the collision cannot cross into write or private.
-  assert(
-    wrapperName("ghi", "read-safe").startsWith(wrapperName("gh", "read-safe")),
-  );
-  assert(
-    !wrapperName("ghi", "modify").startsWith(wrapperName("gh", "read-safe")),
-  );
+Deno.test("one rule per segment covers every tool that segment ever wraps", () => {
+  // The point of the shared prefix. `Bash(fka-safe:*)` is a prefix of every
+  // safe alias for every tool, so wrapping another CLI needs no new rule.
+  for (const tool of ["gh", "git", "swamp"]) {
+    assert(wrapperName("fka", "safe", tool).startsWith("fka-safe"));
+  }
 });
 
-Deno.test("a path is reduced to the tool's own name", () => {
-  assertEquals(wrapperName("/opt/homebrew/bin/gh", "modify"), "write-gh");
+Deno.test("a segment rule cannot reach across into another segment", () => {
+  // The containment that makes one allow rule safe to write.
+  assert(!wrapperName("fka", "write", "gh").startsWith("fka-safe"));
+  assert(!wrapperName("fka", "help", "gh").startsWith("fka-safe"));
+});
+
+Deno.test("granting one tool does not grant a tool whose name extends it", () => {
+  // `fka-safe-gh` is a prefix of `fka-safe-ghi`, so the narrower rule
+  // over-matches. Both are safe aliases, which is what makes that survivable.
+  const gh = wrapperName("fka", "safe", "gh");
+  assert(wrapperName("fka", "safe", "ghi").startsWith(gh));
+  assert(!wrapperName("fka", "write", "ghi").startsWith(gh));
 });
 
 // --- policy derivation ---------------------------------------------------
 
-Deno.test("a wrapper admits its own tier and everything below it", () => {
+Deno.test("an alias admits its own tier and everything below it", () => {
   const r = review([
     command(["list"], "read-safe"),
     command(["whoami"], "read-private"),
     command(["delete"], "modify"),
   ]);
 
-  const safe = toPolicy(r, "read-safe");
-  assertEquals(safe.commands.map((c) => c.path.join(" ")), ["list"]);
-
-  const write = toPolicy(r, "modify");
-  assertEquals(write.commands.map((c) => c.path.join(" ")).sort(), [
-    "delete",
+  assertEquals(policyFor(r, "safe").commands.map((c) => c.path.join(" ")), [
     "list",
-    "whoami",
   ]);
+  assertEquals(
+    policyFor(r, "write").commands.map((c) => c.path.join(" ")).sort(),
+    ["delete", "list", "whoami"],
+  );
 });
 
-Deno.test("an escape command is absent from every wrapper below escape", () => {
+Deno.test("an escape command is absent from every alias below escape", () => {
   const r = review([command(["config"], "escape")]);
-  for (const tier of ["read-safe", "read-private", "modify"] as const) {
-    assertEquals(toPolicy(r, tier).commands, []);
+  for (const segment of ["safe", "private", "write"] as const) {
+    assertEquals(policyFor(r, segment).commands, []);
   }
-  assertEquals(toPolicy(r, "escape").commands.length, 1);
 });
 
 Deno.test("an option is tiered apart from its command", () => {
-  // The case the whole option-tier field exists for: `git log` is safe to run
-  // unattended, and `git log --ext-diff` runs a program of the caller's choosing.
+  // `git log` is safe to run unattended; `git log --ext-diff` runs a program
+  // of the caller's choosing.
   const r = review([
     command(["log"], "read-safe", {
       "--oneline": { arity: 0 },
       "--ext-diff": { arity: 0, tier: "escape" },
     }),
-  ], { emit: ["read-safe", "escape"] });
-
-  const safe = toPolicy(r, "read-safe");
+  ]);
+  const safe = policyFor(r, "safe");
   assertEquals(Object.keys(safe.commands[0].options), ["--oneline"]);
   assert(validate(safe, ["log", "--oneline"]).ok);
   assert(!validate(safe, ["log", "--ext-diff"]).ok);
-
-  const escape = toPolicy(r, "escape");
-  assert(validate(escape, ["log", "--ext-diff"]).ok);
 });
 
 Deno.test("an untiered option inherits its command's tier", () => {
   const r = review([command(["push"], "modify", { "--force": { arity: 0 } })]);
-  assertEquals(Object.keys(toPolicy(r, "modify").commands[0].options), [
+  assertEquals(Object.keys(policyFor(r, "write").commands[0].options), [
     "--force",
   ]);
-  assertEquals(toPolicy(r, "read-safe").commands.length, 0);
+  assertEquals(policyFor(r, "safe").commands.length, 0);
 });
 
 Deno.test("global options are filtered by tier too", () => {
@@ -142,9 +163,7 @@ Deno.test("global options are filtered by tier too", () => {
       "--config": { arity: 1, tier: "escape" },
     },
   });
-  assertEquals(Object.keys(toPolicy(r, "read-safe").globalOptions), [
-    "--no-color",
-  ]);
+  assertEquals(Object.keys(policyFor(r, "safe").globalOptions), ["--no-color"]);
 });
 
 Deno.test("positionals stay denied unless the table says otherwise", () => {
@@ -155,15 +174,184 @@ Deno.test("positionals stay denied unless the table says otherwise", () => {
       maxPositionals: 1,
     }),
   ]);
-  const safe = toPolicy(r, "read-safe");
+  const safe = policyFor(r, "safe");
   assert(!validate(safe, ["list", "anything"]).ok);
   assert(validate(safe, ["view", "thing"]).ok);
   assert(!validate(safe, ["view", "one", "two"]).ok);
 });
 
-Deno.test("the policy carries the wrapper's own name into refusal messages", () => {
-  const r = review([command(["list"], "read-safe")]);
-  assertEquals(toPolicy(r, "read-safe").name, "safe-demo");
+Deno.test("the policy carries the alias's own name into refusal messages", () => {
+  assertEquals(
+    policyFor(review([command(["list"], "read-safe")]), "safe").name,
+    "fka-safe-demo",
+  );
+});
+
+// --- pinned aliases ------------------------------------------------------
+
+Deno.test("a help alias reaches every command, whatever its tier", () => {
+  const r = review([
+    command(["list"], "read-safe"),
+    command(["delete"], "modify"),
+    command(["config"], "escape"),
+  ], {
+    wrappers: [
+      spec("help", { append: ["--help"], accepts: "path-only" }),
+      spec("safe", { admits: { maxTier: "read-safe" } }),
+    ],
+  });
+  const help = policyFor(r, "help");
+  assertEquals(help.commands.map((c) => c.path.join(" ")).sort(), [
+    "config",
+    "delete",
+    "list",
+  ]);
+  // Wider in coverage than the safe alias, and narrower in what it can do.
+  assert(validate(help, ["delete", "--help"]).ok);
+});
+
+Deno.test("a pinned flag is permitted without anyone allowlisting it", () => {
+  // The pin and its permission are derived together, so they cannot disagree.
+  const r = review([command(["delete"], "modify")], {
+    wrappers: [spec("help", { append: ["--help"], accepts: "path-only" })],
+  });
+  const help = policyFor(r, "help");
+  assertEquals(help.appendArgs, ["--help"]);
+  assertEquals(help.globalOptions["--help"], { arity: 0 });
+});
+
+Deno.test("a pinned option that takes a value is given arity 1", () => {
+  const r = review([command(["list"], "read-safe")], {
+    wrappers: [spec("safe", { append: ["--format", "json"] })],
+  });
+  assertEquals(policyFor(r, "safe").globalOptions["--format"], { arity: 1 });
+});
+
+Deno.test("path-only refuses every option and positional the table allows", () => {
+  const r = review([
+    command(["delete"], "modify", { "-f": { arity: 0 } }, {
+      positionals: "any",
+    }),
+  ], {
+    wrappers: [spec("help", { append: ["--help"], accepts: "path-only" })],
+  });
+  const help = policyFor(r, "help");
+  assert(validate(help, ["delete", "--help"]).ok);
+  assert(!validate(help, ["delete", "-f", "--help"]).ok);
+  assert(!validate(help, ["delete", "thing", "--help"]).ok);
+});
+
+Deno.test("a prepended subcommand becomes part of the effective vector", () => {
+  const r = review([
+    command(["pr", "list"], "read-safe"),
+    command(["issue", "list"], "read-safe"),
+  ], {
+    wrappers: [
+      spec("safe", { name: "demo-pr", prepend: ["pr"] }),
+    ],
+  });
+  const policy = toPolicy(r, r.wrappers[0]);
+  assertEquals(policy.name, "fka-safe-demo-pr");
+  assertEquals(policy.prependArgs, ["pr"]);
+  // The caller types `list`; the pin supplies `pr`.
+  assertEquals(effectiveArgv(policy, ["list"]), ["pr", "list"]);
+  assert(validate(policy, effectiveArgv(policy, ["list"])).ok);
+  // And cannot reach out of the subtree, because the pin is not theirs to drop.
+  assert(!validate(policy, effectiveArgv(policy, ["issue", "list"])).ok);
+});
+
+Deno.test("an explicit path list narrows an alias below its tier", () => {
+  const r = review([
+    command(["list"], "read-safe"),
+    command(["view"], "read-safe"),
+  ], {
+    wrappers: [
+      spec("safe", { admits: { maxTier: "read-safe", paths: [["list"]] } }),
+    ],
+  });
+  assertEquals(policyFor(r, "safe").commands.map((c) => c.path.join(" ")), [
+    "list",
+  ]);
+});
+
+// --- the default plan ----------------------------------------------------
+
+Deno.test("the default plan is three tiers and a help alias", () => {
+  const plan = defaultWrappers("gh", "--help");
+  assertEquals(plan.map((s) => s.segment), [
+    "help",
+    "safe",
+    "private",
+    "write",
+  ]);
+  // No escape alias: a wrapper for the commands that hand over execution is
+  // something an operator asks for, not something a default hands out.
+  assert(!plan.some((s) => s.segment === "escape"));
+});
+
+Deno.test("the default help alias pins the flag and takes a path only", () => {
+  const help = defaultWrappers("gh", "-h")[0];
+  assertEquals(help.append, ["-h"]);
+  assertEquals(help.accepts, "path-only");
+});
+
+Deno.test("no help alias is planned when no help flag was proven", () => {
+  const plan = defaultWrappers("gh", "");
+  assert(!plan.some((s) => s.segment === "help"));
+});
+
+// --- checking the plan ---------------------------------------------------
+
+Deno.test("two aliases with the same name are rejected", () => {
+  const r = review([command(["list"], "read-safe")], {
+    wrappers: [spec("safe"), spec("safe")],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assert(
+    problems.some((p) =>
+      p.kind === "bad-wrapper" && p.message.includes("both called")
+    ),
+  );
+});
+
+Deno.test("an alias that admits nothing is rejected, not shipped", () => {
+  // A wrapper that refuses everything is not fail-closed, it is a mistake
+  // somebody will spend an afternoon on.
+  const r = review([command(["delete"], "modify")], {
+    wrappers: [spec("safe", { admits: { maxTier: "read-safe" } })],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assert(
+    problems.some((p) =>
+      p.kind === "bad-wrapper" && p.message.includes("admits no command")
+    ),
+  );
+});
+
+Deno.test("an alias pinning a command the crawl never saw is rejected", () => {
+  const r = review([command(["list"], "read-safe")], {
+    wrappers: [spec("safe", { name: "demo-nope", prepend: ["nope"] })],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assert(
+    problems.some((p) =>
+      p.kind === "bad-wrapper" && p.message.includes("pins the command")
+    ),
+  );
+});
+
+Deno.test("a rejected alias is pruned out of the plan", () => {
+  // Nothing is read-safe here, so the safe alias admits nothing and goes. The
+  // write alias keeps `delete` and stays — tiers are cumulative downward, so a
+  // wider alias is never the empty one.
+  const r = review([command(["delete"], "modify")], {
+    wrappers: [
+      spec("safe", { admits: { maxTier: "read-safe" } }),
+      spec("write", { admits: { maxTier: "modify" } }),
+    ],
+  });
+  const pruned = pruneProblems(r, checkAgainstSurface(r, surfaceOf(crawled)));
+  assertEquals(pruned.wrappers.map((s) => s.segment), ["write"]);
 });
 
 // --- reading help ---------------------------------------------------------
@@ -344,7 +532,7 @@ Deno.test("pruning leaves a clean proposal untouched", () => {
 Deno.test("a pruned review admits nothing the crawl did not show", () => {
   const r = review([command(["nuke"], "read-safe")]);
   const pruned = pruneProblems(r, checkAgainstSurface(r, surfaceOf(crawled)));
-  assert(!validate(toPolicy(pruned, "read-safe"), ["nuke"]).ok);
+  assert(!validate(policyFor(pruned, "safe"), ["nuke"]).ok);
 });
 
 // --- the review file -----------------------------------------------------
@@ -363,7 +551,7 @@ Deno.test("the review file round-trips through YAML", () => {
   const back = fromYaml(toYaml(r));
   assertEquals(back.commands.length, 2);
   assertEquals(back.env.scrub, ["DEMO_PAGER"]);
-  assertEquals(toPolicy(back, "read-safe"), toPolicy(r, "read-safe"));
+  assertEquals(policyFor(back, "safe"), policyFor(r, "safe"));
 });
 
 Deno.test("read-safe is written first, because it is the block that must be read", () => {

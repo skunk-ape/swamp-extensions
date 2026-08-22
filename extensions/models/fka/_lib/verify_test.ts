@@ -8,7 +8,16 @@ function review(extra: Record<string, unknown> = {}): Review {
   return ReviewSchema.parse({
     cli: "demo",
     binary: "/bin/echo",
-    emit: ["read-safe", "modify"],
+    wrappers: [
+      {
+        segment: "help",
+        name: "demo",
+        append: ["--help"],
+        accepts: "path-only",
+      },
+      { segment: "safe", name: "demo", admits: { maxTier: "read-safe" } },
+      { segment: "write", name: "demo", admits: { maxTier: "modify" } },
+    ],
     commands: [
       {
         path: ["list"],
@@ -30,7 +39,7 @@ function review(extra: Record<string, unknown> = {}): Review {
 Deno.test("every command is expected to pass its own tier's wrapper", () => {
   const cases = buildCases(review());
   const own = cases.find((c) =>
-    c.wrapper === "safe-demo" && c.argv.join(" ") === "list" &&
+    c.wrapper === "fka-safe-demo" && c.argv.join(" ") === "list" &&
     c.expect === "permit"
   );
   assert(own, "safe-demo should be expected to permit list");
@@ -39,16 +48,16 @@ Deno.test("every command is expected to pass its own tier's wrapper", () => {
 Deno.test("a command above a wrapper's tier is expected to be refused by it", () => {
   const cases = buildCases(review());
   const above = cases.find((c) =>
-    c.wrapper === "safe-demo" && c.argv.join(" ") === "delete"
+    c.wrapper === "fka-safe-demo" && c.argv.join(" ") === "delete"
   );
   assertEquals(above?.expect, "refuse");
-  assertStringIncludes(above?.about ?? "", "above read-safe");
+  assertStringIncludes(above?.about ?? "", "outside fka-safe-demo");
 });
 
 Deno.test("an option above the tier gets its own refusal case", () => {
   const cases = buildCases(review());
   const escape = cases.find((c) =>
-    c.wrapper === "safe-demo" && c.argv.includes("--exec")
+    c.wrapper === "fka-safe-demo" && c.argv.includes("--exec")
   );
   assertEquals(escape?.expect, "refuse");
 });
@@ -65,20 +74,38 @@ Deno.test("an option whose value is pattern-constrained is not asserted with a m
   const cases = buildCases(r);
   // A refusal here would be the pattern working, indistinguishable from the
   // option being absent, so the case is left out rather than asserted wrongly.
-  assert(!cases.some((c) => c.argv.includes("--limit")));
+  assert(
+    !cases.some((c) =>
+      c.wrapper === "fka-safe-demo" && c.argv.includes("--limit")
+    ),
+  );
+  // The path-only alias is a different question and does assert it: there the
+  // refusal is the point, not an ambiguity.
+  assert(
+    cases.some((c) =>
+      c.wrapper === "fka-help-demo" && c.argv.includes("--limit") &&
+      c.expect === "refuse"
+    ),
+  );
 });
 
 Deno.test("the bare tool name is expected to be refused", () => {
   const cases = buildCases(review());
   const bare = cases.find((c) =>
-    c.wrapper === "safe-demo" && c.argv.length === 0
+    c.wrapper === "fka-safe-demo" && c.argv.length === 0
   );
   assertEquals(bare?.expect, "refuse");
 });
 
 Deno.test("no cases are built for a tier that was not emitted", () => {
-  const cases = buildCases(review({ emit: ["read-safe"] }));
-  assert(cases.every((c) => c.wrapper === "safe-demo"));
+  const cases = buildCases(review({
+    wrappers: [{
+      segment: "safe",
+      name: "demo",
+      admits: { maxTier: "read-safe" },
+    }],
+  }));
+  assert(cases.every((c) => c.wrapper === "fka-safe-demo"));
 });
 
 // --- running the matrix --------------------------------------------------
@@ -114,14 +141,14 @@ Deno.test("a table that lets a write command into the safe wrapper fails", () =>
 Deno.test("every wrapper gets at least one spawned case, refusal first", () => {
   const results = runCases(review(), buildCases(review()));
   const picked = sampleCases(results, 1);
-  assertEquals(new Set(picked.map((p) => p.wrapper)).size, 2);
+  assertEquals(new Set(picked.map((p) => p.wrapper)).size, 3);
   assert(picked.every((p) => p.expect === "refuse"));
 });
 
 Deno.test("a larger budget buys permits as well as refusals", () => {
   const results = runCases(review(), buildCases(review()));
   const picked = sampleCases(results, 4).filter((p) =>
-    p.wrapper === "safe-demo"
+    p.wrapper === "fka-safe-demo"
   );
   assert(picked.some((p) => p.expect === "permit"));
   assert(picked.some((p) => p.expect === "refuse"));
@@ -146,11 +173,11 @@ Deno.test("generated wrappers enforce the table when run as programs", async () 
     );
     const r = review();
 
-    for (const tier of r.emit) {
-      const path = `${dir}/${wrapperName(r.cli, tier)}`;
+    for (const spec of r.wrappers) {
+      const path = `${dir}/${wrapperName(r.prefix, spec.segment, spec.name)}`;
       await Deno.writeTextFile(
         path,
-        renderWrapper(r, tier, source, Deno.execPath()),
+        renderWrapper(r, spec, source, Deno.execPath()),
       );
       await Deno.chmod(path, 0o755);
     }
@@ -172,7 +199,7 @@ Deno.test("generated wrappers enforce the table when run as programs", async () 
     }
 
     // Check mode must not have executed anything, and normal mode must.
-    const ran = new Deno.Command(`${dir}/safe-demo`, {
+    const ran = new Deno.Command(`${dir}/fka-safe-demo`, {
       args: ["list", "--limit", "3"],
       stdout: "piped",
       stderr: "piped",
@@ -184,7 +211,7 @@ Deno.test("generated wrappers enforce the table when run as programs", async () 
       "list --limit 3",
     );
 
-    const refused = await new Deno.Command(`${dir}/safe-demo`, {
+    const refused = await new Deno.Command(`${dir}/fka-safe-demo`, {
       args: ["delete"],
       stdout: "piped",
       stderr: "piped",
@@ -193,7 +220,7 @@ Deno.test("generated wrappers enforce the table when run as programs", async () 
     assertEquals(new TextDecoder().decode(refused.stdout), "");
     assertStringIncludes(
       new TextDecoder().decode(refused.stderr),
-      "safe-demo: refused",
+      "fka-safe-demo: refused",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -216,7 +243,11 @@ Deno.test("check mode never executes the wrapped tool", async () => {
     const r = ReviewSchema.parse({
       cli: "tool",
       binary: tool,
-      emit: ["read-safe"],
+      wrappers: [{
+        segment: "safe",
+        name: "tool",
+        admits: { maxTier: "read-safe" },
+      }],
       commands: [{
         path: ["list"],
         tier: "read-safe",
@@ -224,10 +255,10 @@ Deno.test("check mode never executes the wrapped tool", async () => {
         options: {},
       }],
     });
-    const path = `${dir}/safe-tool`;
+    const path = `${dir}/fka-safe-tool`;
     await Deno.writeTextFile(
       path,
-      renderWrapper(r, "read-safe", source, Deno.execPath()),
+      renderWrapper(r, r.wrappers[0], source, Deno.execPath()),
     );
     await Deno.chmod(path, 0o755);
 
@@ -266,7 +297,11 @@ Deno.test("the wrapper scrubs a hook variable before the tool sees it", async ()
     const r = ReviewSchema.parse({
       cli: "tool",
       binary: tool,
-      emit: ["read-safe"],
+      wrappers: [{
+        segment: "safe",
+        name: "tool",
+        admits: { maxTier: "read-safe" },
+      }],
       env: { scrub: ["DEMO_PAGER"], set: {} },
       commands: [{
         path: ["list"],
@@ -275,10 +310,10 @@ Deno.test("the wrapper scrubs a hook variable before the tool sees it", async ()
         options: {},
       }],
     });
-    const path = `${dir}/safe-tool`;
+    const path = `${dir}/fka-safe-tool`;
     await Deno.writeTextFile(
       path,
-      renderWrapper(r, "read-safe", source, Deno.execPath()),
+      renderWrapper(r, r.wrappers[0], source, Deno.execPath()),
     );
     await Deno.chmod(path, 0o755);
 
