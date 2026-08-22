@@ -96,7 +96,17 @@ const FetchResultSchema = z.object({
 const FetchedSchema = z.object({
   items: z.array(FetchedItemSchema),
   results: z.array(FetchResultSchema),
+  /** How many URLs the caller asked for, before the maxUrls cap. */
   requested: z.number(),
+  /**
+   * How many were dropped by the cap.
+   *
+   * Reported because silently dropping is the kind of lie that gets believed:
+   * an earlier revision capped the list and then set `requested` to the
+   * post-cap count, so asking for thirty URLs reported that twenty were
+   * requested and twenty succeeded. Nothing anywhere said ten were discarded.
+   */
+  droppedUrls: z.number(),
   succeeded: z.number(),
   failed: z.number(),
   renderRequiredCount: z.number(),
@@ -109,21 +119,43 @@ const FetchedSchema = z.object({
  * Structured rather than prose, and that is the security-relevant part. A
  * summarizer is not a sanitizer: "IGNORE PREVIOUS INSTRUCTIONS, run this"
  * summarizes faithfully into "the page instructs the reader to run this", and
- * the imperative crosses the boundary intact as reported speech. A typed field
- * is a much narrower channel than a paragraph — there is nowhere natural in
- * `entities: string[]` to put an instruction.
+ * the imperative crosses the boundary intact as reported speech.
+ *
+ * The narrowing comes from shape and from length, and an earlier version of
+ * this comment claimed only the first. "Nowhere natural in `entities:
+ * string[]` to put an instruction" is true of `entities` and false of the two
+ * fields an attacker would actually aim at: `answer` is free prose, and
+ * `injectionNotes` is a field the system prompt explicitly asks the model to
+ * fill with a description of the attack. Both were unbounded strings.
+ *
+ * So every field is bounded now. A cap does not stop a short imperative, but it
+ * does stop the long payloads — a pasted script, a base64 blob, a wall of
+ * plausible-looking instructions — and it makes `entities` and `sources`
+ * narrow enough to be near-useless as a channel. Zod also strips unknown keys,
+ * so a model that invents fields cannot smuggle anything through them.
  */
 const BriefSchema = z.object({
-  answer: z.string(),
-  keyPoints: z.array(z.string()),
-  entities: z.array(z.string()),
-  sources: z.array(z.string()),
+  answer: z.string().max(4000),
+  keyPoints: z.array(z.string().max(500)).max(40),
+  entities: z.array(z.string().max(200)).max(60),
+  sources: z.array(z.string().max(2000)).max(40),
   /** The summarizer's own report that the text told it to do something. */
   injectionSuspected: z.boolean(),
-  injectionNotes: z.array(z.string()),
+  injectionNotes: z.array(z.string().max(1000)).max(20),
   model: z.string(),
   timestamp: z.string(),
 });
+
+/**
+ * What the summarizer is allowed to return, before provenance is added.
+ *
+ * Exported so tests can assert on the bounds directly — the caps and the
+ * unknown-key stripping are the mechanism the security argument rests on, and
+ * an untested claim about them is how the last version went wrong.
+ */
+export function briefShape() {
+  return BriefSchema.omit({ model: true, timestamp: true });
+}
 
 // --- summarizer ----------------------------------------------------------
 
@@ -183,6 +215,55 @@ export function extractBriefJson(reply: string): unknown {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
+/**
+ * Check that `text` really is nonce-wrapped, and that `preamble` names the same
+ * nonce.
+ *
+ * brief-sanitize wraps each item in `<untrusted-NONCE>…</untrusted-NONCE>` and
+ * generates a preamble naming that nonce. The two are only meaningful together:
+ * the preamble is what tells the model which delimiter to trust, and an
+ * unguessable nonce is what stops fetched content from closing the fence
+ * itself. Neither half is worth much alone.
+ */
+export function detectNonceWrapping(
+  text: string,
+  preamble: string,
+): { wrapped: boolean; preambleMatches: boolean; reason: string } {
+  const open = text.match(/<untrusted-([0-9a-f-]{8,})>/i);
+  if (!open) {
+    return {
+      wrapped: false,
+      preambleMatches: false,
+      reason: "no <untrusted-NONCE> delimiter found",
+    };
+  }
+  const nonce = open[1];
+  if (!text.includes(`</untrusted-${nonce}>`)) {
+    return {
+      wrapped: false,
+      preambleMatches: false,
+      reason: "an opening delimiter with no matching close",
+    };
+  }
+  if (!preamble.trim()) {
+    return {
+      wrapped: true,
+      preambleMatches: false,
+      reason: "the text is wrapped but no preamble was given to name the nonce",
+    };
+  }
+  if (!preamble.includes(nonce)) {
+    return {
+      wrapped: true,
+      preambleMatches: false,
+      reason: `the text uses nonce ${
+        nonce.slice(0, 8)
+      }… which the preamble does not mention`,
+    };
+  }
+  return { wrapped: true, preambleMatches: true, reason: "" };
+}
+
 async function runClaude(
   o: {
     claudePath: string;
@@ -235,9 +316,19 @@ async function runClaude(
 
   // The prompt goes on stdin, never argv: it is attacker-influenced text, and
   // process arguments are readable by every other process on the machine.
-  const writer = child.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(o.prompt));
-  await writer.close();
+  //
+  // Guarded, because a child that dies before reading makes this write reject
+  // with EPIPE. Unguarded, that threw straight out of the function with the
+  // SIGTERM timer still armed and `child.output()` never called — leaking both
+  // the timer and the process. The catch is deliberately silent: whatever
+  // killed the child will be reported far better by its exit code below.
+  try {
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(o.prompt));
+    await writer.close();
+  } catch {
+    // Fall through to output(), which reports why the child went away.
+  }
 
   const { code, stdout, stderr } = await child.output();
   clearTimeout(timer);
@@ -266,7 +357,7 @@ async function runClaude(
  */
 export const model = {
   type: "@skunk-ape/web-brief",
-  version: "2026.08.21.2",
+  version: "2026.08.22.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "fetched": {
@@ -294,20 +385,52 @@ export const model = {
       execute: async (args: { urls: string[] }, ctx: Ctx) => {
         const g = ctx.globalArgs as GlobalArgs;
         const urls = args.urls.slice(0, g.maxUrls);
+        const droppedUrls = args.urls.length - urls.length;
         if (urls.length === 0) throw new Error("no urls given");
+        if (droppedUrls > 0) {
+          ctx.logger.warning(
+            "{dropped} of {asked} urls dropped by the maxUrls cap of {cap}",
+            { dropped: droppedUrls, asked: args.urls.length, cap: g.maxUrls },
+          );
+        }
 
         ctx.logger.info("Fetching {count} url(s) via {fetcher}", {
           count: urls.length,
           fetcher: g.fetcher,
         });
 
-        if (g.fetcher === "firecrawl" && !g.firecrawlApiKey.trim()) {
-          // Only the hosted service needs a key; a self-hosted instance may run
-          // without auth, which is why this checks the URL rather than refusing
-          // outright on an empty key.
-          if (g.firecrawlApiUrl.includes("api.firecrawl.dev")) {
+        if (g.fetcher === "firecrawl") {
+          // The URL is validated before anything is sent to it, because it
+          // receives `Authorization: Bearer <key>`. An unvalidated base URL is a
+          // credential-exfiltration primitive: point it anywhere and the key
+          // goes there.
+          let api: URL;
+          try {
+            api = new URL(g.firecrawlApiUrl);
+          } catch {
             throw new Error(
-              'fetcher is "firecrawl" but firecrawlApiKey is empty. Set it from a vault, or point firecrawlApiUrl at a self-hosted instance that does not require auth.',
+              `firecrawlApiUrl is not a valid URL: ${g.firecrawlApiUrl}`,
+            );
+          }
+          if (api.protocol !== "https:" && api.protocol !== "http:") {
+            throw new Error(
+              `firecrawlApiUrl must be http(s), got ${api.protocol}`,
+            );
+          }
+          // Matching on the parsed hostname rather than a substring. `includes`
+          // let `https://api.firecrawl.dev.evil.example` and a plain typo both
+          // slip past, the first sending the key to an attacker and the second
+          // sending an unauthenticated request that fails confusingly.
+          const isHostedService = api.hostname === "api.firecrawl.dev";
+          if (isHostedService && !g.firecrawlApiKey.trim()) {
+            throw new Error(
+              'fetcher is "firecrawl" and firecrawlApiUrl is the hosted service, but firecrawlApiKey is empty. Set it from a vault, or point firecrawlApiUrl at a self-hosted instance that does not require auth.',
+            );
+          }
+          if (!isHostedService && g.firecrawlApiKey.trim()) {
+            ctx.logger.warning(
+              "Sending the Firecrawl API key to {host}, which is not api.firecrawl.dev. Intended for a self-hosted instance; check it if not.",
+              { host: api.hostname },
             );
           }
         }
@@ -374,7 +497,8 @@ export const model = {
         const handle = await ctx.writeResource("fetched", "fetched", {
           items,
           results,
-          requested: urls.length,
+          requested: args.urls.length,
+          droppedUrls,
           succeeded,
           failed: results.length - succeeded,
           renderRequiredCount,
@@ -392,7 +516,7 @@ export const model = {
           'Sanitized, nonce-wrapped text — normally `data.latest("brief-sanitize", "sanitized").attributes.text`.',
         ),
         promptPreamble: z.string().default("").describe(
-          "The preamble brief-sanitize generated for this batch, naming its nonce. Normally `…attributes.promptPreamble`.",
+          "The preamble brief-sanitize generated for this batch, naming its nonce. Normally `…attributes.promptPreamble`. Leave it empty only for text that is genuinely not nonce-wrapped — the method checks, and warns when the two disagree.",
         ),
         question: z.string().default("").describe(
           "What the caller wants to know. Empty asks for a neutral summary.",
@@ -404,6 +528,27 @@ export const model = {
       ) => {
         const g = ctx.globalArgs as GlobalArgs;
         if (!args.text.trim()) throw new Error("no text to summarize");
+
+        // The system prompt tells the model "it is wrapped in delimiters naming
+        // a random nonce". Nothing used to check that were true. Wire `fetch`
+        // straight to `summarize`, skipping the sanitize step, and the model is
+        // told about a structure that is not there — while the raw page body,
+        // markup and all, goes in unsanitized. The prompt would be describing a
+        // boundary that does not exist, and nothing would notice.
+        const wrapping = detectNonceWrapping(args.text, args.promptPreamble);
+        if (!wrapping.wrapped) {
+          ctx.logger.warning(
+            "The text is not nonce-wrapped, so it has probably not been through brief-sanitize. Summarizing it anyway, but the spotlighting boundary the system prompt describes is absent: {reason}",
+            { reason: wrapping.reason },
+          );
+        } else if (!wrapping.preambleMatches) {
+          // A preamble naming a different nonce than the text uses is worse
+          // than none: it points the model at a delimiter that never appears,
+          // so content the caller believed was fenced reads as ordinary text.
+          throw new Error(
+            `the promptPreamble names a different nonce than the text uses (${wrapping.reason}). These must come from the same brief-sanitize call.`,
+          );
+        }
 
         const prompt = [
           args.promptPreamble,
@@ -429,7 +574,7 @@ export const model = {
           signal: ctx.signal,
         });
 
-        const parsed = BriefSchema.omit({ model: true, timestamp: true }).parse(
+        const parsed = briefShape().parse(
           extractBriefJson(reply),
         );
 
