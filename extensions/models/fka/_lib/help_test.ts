@@ -89,30 +89,43 @@ Deno.test("section headings are classified by keyword, not exact match", () => {
   assertEquals(sectionKind("Examples"), "other");
 });
 
+Deno.test("a heading naming both wins for options", () => {
+  // jq heads its flag list "Command options:". Reading that as a command
+  // section costs every option jq has, and jq has no subcommands to gain.
+  assertEquals(sectionKind("Command options"), "options");
+  assertEquals(sectionKind("Options for commands"), "options");
+});
+
 // --- whole pages ---------------------------------------------------------
 
+// Real `gh pr --help`, abridged. Its headings carry no colon at all, which an
+// earlier version of this fixture got wrong — it added colons, so the suite
+// passed while `gh --help` yielded exactly one of gh's forty commands.
 const GH_STYLE = `
 Work with GitHub pull requests.
 
 USAGE
   gh pr <command> [flags]
 
-GENERAL COMMANDS:
+GENERAL COMMANDS
   create:      Create a pull request
   list:        List pull requests in a repository
   status:      Show status of relevant pull requests
 
-TARGETED COMMANDS:
+TARGETED COMMANDS
   checkout:    Check out a pull request in git
   close:       Close a pull request
   merge:       Merge a pull request
 
-FLAGS:
+FLAGS
   -R, --repo [HOST/]OWNER/REPO   Select another repository
   -w, --web                      Open in the browser
 
-INHERITED FLAGS:
+INHERITED FLAGS
   --help   Show help for command
+
+LEARN MORE
+  Use \`gh <command> [subcommand] --help\` for more information about a command.
 `;
 
 Deno.test("parses a multi-section cobra page", () => {
@@ -301,6 +314,50 @@ Options:
   --name NAME    The NAME to use
 `;
   assertEquals(looksLikeManPage(page), false);
+});
+
+Deno.test("a heading with no colon still opens a section", () => {
+  const p = parseHelp(GH_STYLE);
+  // USAGE and LEARN MORE are shaped exactly like CORE COMMANDS. Only the
+  // latter is followed by something that parses as an entry.
+  assertEquals(p.subcommands.map((c) => c.name), [
+    "create",
+    "list",
+    "status",
+    "checkout",
+    "close",
+    "merge",
+  ]);
+  assert(!p.subcommands.some((c) => c.name === "Use"));
+  assert(!p.subcommands.some((c) => c.name === "gh"));
+});
+
+Deno.test("jq's flag list survives its heading", () => {
+  const page = `jq - commandline JSON processor [version 1.8.2]
+
+Usage:\tjq [options] <jq filter> [file...]
+
+Command options:
+  -n, --null-input          use \`null\` as the single input value;
+  -r, --raw-output          output strings without escapes and quotes;
+      --indent n            use n spaces for indentation (max 7 spaces);
+      --arg name value      set $name to the string value;
+`;
+  const p = parseHelp(page);
+  const names = p.options.flatMap((o) => o.names);
+  assert(names.includes("--null-input"));
+  assert(names.includes("--raw-output"));
+  assertEquals(p.options.find((o) => o.names.includes("-n"))?.arity, 0);
+  assertEquals(p.subcommands, []);
+
+  // `--indent n` names its value with a single lowercase letter, which is
+  // shaped exactly like the first word of a description. Unknown, so it is
+  // dropped rather than guessed.
+  assertEquals(p.options.find((o) => o.names.includes("--indent"))?.arity, null);
+
+  // `--arg name value` takes two values, which a 0-or-1 arity cannot express
+  // at all. Recording it as 1 would leave the second token unchecked.
+  assertEquals(p.options.find((o) => o.names.includes("--arg"))?.arity, null);
 });
 
 Deno.test("a real section heading still ends a commands section", () => {

@@ -284,20 +284,29 @@ type SectionKind = "commands" | "options" | "other";
  * Matching on keywords rather than exact strings covers the whole spread of
  * headings in the wild — "Available Commands", "Core commands", "GitHub Actions
  * commands", "Flags", "Global Flags", "Inherited Flags", "Options".
+ *
+ * Options are tested first, and that order is not arbitrary. `jq` heads its
+ * flag list "Command options:", which under the other order reads as a command
+ * section and swallows every option jq has. A section that lists commands is
+ * essentially never titled with the word "options" or "flags"; a section that
+ * lists options is quite often titled "Command options".
  */
 export function sectionKind(heading: string): SectionKind {
   const h = heading.toLowerCase();
-  if (/\b(?:sub)?commands?\b/.test(h)) return "commands";
   if (/\b(?:flags?|options?|switches)\b/.test(h)) return "options";
+  if (/\b(?:sub)?commands?\b/.test(h)) return "commands";
   return "other";
 }
 
 /**
  * Parse a whole help page.
  *
- * Sections are delimited structurally — an unindented line ending in `:` opens
- * one — rather than by matching a fixed list of headings, because the set of
- * headings is open and every tool spells them differently.
+ * Sections are delimited structurally rather than by matching a fixed list of
+ * headings, because the set of headings is open and every tool spells them
+ * differently. An unindented line ending in `:` opens a section. So does an
+ * unindented line with no colon at all, if entries follow it — `gh` writes
+ * `CORE COMMANDS` and `FLAGS` bare, and requiring the colon found exactly one
+ * of gh's forty commands.
  */
 export function parseHelp(text: string): ParsedHelp {
   const lines = stripAnsi(text).split("\n");
@@ -310,22 +319,27 @@ export function parseHelp(text: string): ParsedHelp {
   let kind: SectionKind = "other";
 
   /**
-   * Does an indented command entry follow this line before the next blank run
-   * ends the block?
+   * Is the next non-blank line an indented entry — a command or an option?
    *
-   * Used to tell a group sub-heading from the end of a section. `git --help`
-   * opens one commands section and then divides it with unindented, uncolonned
-   * lines like "examine the history and state (see also: git help revisions)".
-   * Treating those as the end of the section loses every command git has.
+   * This is what tells a heading from a sentence when there is no colon to go
+   * by. Looking at what follows beats looking at the line itself: `USAGE` and
+   * `CORE COMMANDS` are shaped identically, and only the first is followed by
+   * something that parses as an entry.
    */
-  const groupHeadingAt = (start: number): boolean => {
+  const entryFollows = (start: number): boolean => {
     for (let j = start + 1; j < lines.length; j++) {
       const next = lines[j];
       if (next.trim() === "") continue;
       if (!/^\s/.test(next)) return false;
-      return parseSubcommandLine(next) !== null;
+      return parseSubcommandLine(next) !== null || parseOptionLine(next) !== null;
     }
     return false;
+  };
+
+  /** Short, and not punctuated like a sentence. Cheap guard against prose. */
+  const headingShaped = (line: string): boolean => {
+    const t = line.trim();
+    return t.length > 0 && t.length <= 60 && !/[.!?,]$/.test(t);
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -335,18 +349,31 @@ export function parseHelp(text: string): ParsedHelp {
     const indented = /^\s/.test(line);
 
     if (!indented) {
-      const heading = line.replace(/:\s*$/, "");
       if (/:\s*$/.test(line)) {
-        kind = sectionKind(heading);
+        kind = sectionKind(line.replace(/:\s*$/, ""));
         continue;
       }
-      if (/^usage:/i.test(line) && !usage) usage = line.trim();
+      if (/^usage:/i.test(line)) {
+        if (!usage) usage = line.trim();
+        continue;
+      }
       // An unindented, non-heading line ends the previous section — except for
-      // an option line, since some tools list flags flush left, and except for
-      // a sub-heading dividing a commands section that plainly continues.
+      // an option line, since some tools list flags flush left.
       if (!line.trim().startsWith("-")) {
-        if (kind === "commands" && groupHeadingAt(i)) continue;
-        if (!/^usage:/i.test(line)) kind = "other";
+        if (headingShaped(line) && entryFollows(i)) {
+          const named = sectionKind(line.trim());
+          if (named !== "other") {
+            kind = named;
+            continue;
+          }
+          // A heading this function cannot name, sitting inside a command
+          // list that plainly continues below it, is a group divider. `git`
+          // splits its commands with "examine the history and state (see
+          // also: git help revisions)"; ending the section there loses every
+          // command git has.
+          if (kind === "commands") continue;
+        }
+        kind = "other";
         continue;
       }
     }
