@@ -53,6 +53,8 @@ export function buildCases(review: Review): Case[] {
     if (!review.emit.includes(tier)) continue;
     const wrapper = wrapperName(review.cli, tier);
     const ceiling = tierRank(tier);
+    const helpReadable = review.helpOptions.length > 0 &&
+      tierRank(review.helpTier) <= ceiling;
 
     for (const cmd of review.commands) {
       const name = [review.cli, ...cmd.path].join(" ");
@@ -67,6 +69,19 @@ export function buildCases(review: Review): Case[] {
           ? `${name} is ${cmd.tier} and ${wrapper} covers that tier`
           : `${name} is ${cmd.tier}, which is above ${tier}`,
       });
+
+      // Reading what a command does is not doing it, so help stays reachable
+      // above the tier — and only with a help flag, which is the pair of
+      // assertions that makes that claim mean anything.
+      if (helpReadable) {
+        cases.push({
+          tier,
+          wrapper,
+          argv: [...cmd.path, review.helpOptions[0]],
+          expect: "permit",
+          about: `${name} can be asked for its help at ${tier}`,
+        });
+      }
 
       if (!within) continue;
 
@@ -110,6 +125,15 @@ export function buildCases(review: Review): Case[] {
         expect: "refuse",
         about: `${review.cli} on its own is not a permitted command`,
       });
+      if (helpReadable) {
+        cases.push({
+          tier,
+          wrapper,
+          argv: [review.helpOptions[0]],
+          expect: "permit",
+          about: `${review.cli} can be asked for its own help at ${tier}`,
+        });
+      }
     }
   }
 

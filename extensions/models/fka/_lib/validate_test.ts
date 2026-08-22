@@ -331,3 +331,58 @@ Deno.test("refusal messages name the tier and never claim success", () => {
   const p = policy([{ path: ["list"], options: {} }], {}, "read-safe");
   assertStringIncludes(refuses(p, ["delete"]), "read-safe");
 });
+
+// --- requireOneOf ---------------------------------------------------------
+
+Deno.test("a rule requiring an option does not match without it", () => {
+  // How a command above the tier stays reachable for its help and nothing
+  // else. Without the requirement the same rule would let bare `demo delete`
+  // through, and for `git commit` that means an editor opening unattended.
+  const p = policy([{
+    path: ["delete"],
+    options: { "--help": flag },
+    requireOneOf: ["--help"],
+  }]);
+  allows(p, ["delete", "--help"]);
+  assertStringIncludes(refuses(p, ["delete"]), "only with --help");
+});
+
+Deno.test("any one of the required options satisfies the rule", () => {
+  const p = policy([{
+    path: ["delete"],
+    options: { "--help": flag, "-h": flag },
+    requireOneOf: ["--help", "-h"],
+  }]);
+  allows(p, ["delete", "-h"]);
+  allows(p, ["delete", "--help"]);
+});
+
+Deno.test("a required option counts when it arrives in a cluster or with =", () => {
+  const p = policy([{
+    path: ["delete"],
+    options: { "-h": flag, "-v": flag, "--help": flag },
+    requireOneOf: ["-h", "--help"],
+  }]);
+  allows(p, ["delete", "-vh"]);
+  allows(p, ["delete", "--help=true"]);
+});
+
+Deno.test("a required option is not satisfied by an option of another name", () => {
+  const p = policy([{
+    path: ["delete"],
+    options: { "--help": flag, "--verbose": flag },
+    requireOneOf: ["--help"],
+  }]);
+  assertStringIncludes(refuses(p, ["delete", "--verbose"]), "only with --help");
+});
+
+Deno.test("a required option does not leak permission to a sibling path", () => {
+  // The help rule for `delete` must not make `remove` reachable, and the
+  // options it carries must not become available where no rule grants them.
+  const p = policy([
+    { path: ["delete"], options: { "--help": flag }, requireOneOf: ["--help"] },
+    { path: ["remove"], options: {} },
+  ]);
+  allows(p, ["remove"]);
+  assertStringIncludes(refuses(p, ["remove", "--help"]), "not permitted");
+});

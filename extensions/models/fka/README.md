@@ -47,6 +47,28 @@ one dangerous option in forty pushes the whole command out of the safe wrapper.
 `read-safe` is the only tier that runs unattended. That one fact drives the rest
 of the design.
 
+## Help is not a tier
+
+Asking a tool to describe itself changes nothing, so help works everywhere. The
+help flag reaches every command in the table, including the ones the wrapper
+will not run:
+
+```bash
+safe-git commit --help    # prints
+safe-git commit           # refused: reachable only with --help or -h
+```
+
+The second line is what makes the first one safe. The path opens for the
+question and closes again for everything else: no positional arguments, no other
+options, and no match at all without a help flag. Bare `git commit` opens an
+editor and waits, so a rule that lets it through is worse than no rule.
+
+The spellings come from the tool. `fka` reads them from the option tables. It
+also takes the flag the crawl itself ran and got an answer from. That second
+source is how `git` gets help at all, because git names `--help` only inside its
+usage line. A bare `-h` is never assumed to mean help, because `sort -h` and
+`du -h` do not.
+
 ## The stages
 
 ```

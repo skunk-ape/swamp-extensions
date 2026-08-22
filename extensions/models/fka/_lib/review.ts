@@ -133,6 +133,26 @@ export const ReviewSchema = z.object({
     scrub: z.array(z.string()).default([]),
     set: z.record(z.string(), z.string()).default({}),
   }).default({ scrub: [], set: {} }),
+  /**
+   * Option spellings that only make the tool describe itself.
+   *
+   * Reading help is the one thing an agent does constantly that cannot change
+   * anything, and a wrapper that refuses it is a wrapper nobody can use. These
+   * are permitted everywhere at {@link Review.helpTier}, and they also make a
+   * command *above* that tier reachable for help alone — see {@link toPolicy}.
+   *
+   * Populated from the crawl, so nothing here is a spelling the tool did not
+   * print. Empty the list to turn the whole mechanism off.
+   */
+  helpOptions: z.array(z.string()).default([]),
+  /**
+   * Tier at which help is readable.
+   *
+   * `read-safe` on the assumption that a tool which does damage when asked to
+   * describe itself is already beyond help. Raise it if you do not believe
+   * that of some particular tool.
+   */
+  helpTier: TierSchema.default("read-safe"),
   globalOptions: z.record(z.string(), GlobalOptionSchema).default({}),
   commands: z.array(ReviewCommandSchema).default([]),
 });
@@ -163,11 +183,34 @@ function optionTier(o: ReviewOption, fallback: Tier): Tier {
  */
 export function toPolicy(review: Review, tier: Tier): Policy {
   const ceiling = tierRank(tier);
+  const helpReadable = review.helpOptions.length > 0 &&
+    tierRank(review.helpTier) <= ceiling;
 
   const globalOptions: Record<string, OptionSpec> = {};
   for (const [name, opt] of Object.entries(review.globalOptions)) {
     if (tierRank(opt.tier) <= ceiling) globalOptions[name] = toSpec(opt);
   }
+  if (helpReadable) {
+    for (const name of review.helpOptions) {
+      globalOptions[name] ??= { arity: 0 };
+    }
+  }
+
+  /**
+   * A path reachable only to ask for help.
+   *
+   * Options are the help flags and nothing else, positionals are refused, and
+   * `requireOneOf` means the rule does not match without one of them. So
+   * `safe-gh pr close --help` prints and `safe-gh pr close` is still refused.
+   */
+  const helpOnly = (path: string[]) => ({
+    path,
+    options: Object.fromEntries(
+      review.helpOptions.map((n) => [n, { arity: 0 as const }]),
+    ),
+    positionals: "none" as const,
+    requireOneOf: [...review.helpOptions],
+  });
 
   const commands = review.commands
     .filter((c) => tierRank(c.tier) <= ceiling)
@@ -191,6 +234,20 @@ export function toPolicy(review: Review, tier: Tier): Policy {
       };
     });
 
+  if (helpReadable) {
+    const covered = new Set(commands.map((c) => c.path.join(" ")));
+    // Every command the table names but this tier does not admit stays
+    // reachable for its help alone. Reading what `gh pr close` does is not
+    // the same act as closing a pull request.
+    for (const c of review.commands) {
+      if (!covered.has(c.path.join(" "))) commands.push(helpOnly(c.path));
+    }
+    // And the bare tool, so `safe-gh --help` works even when nothing tiered
+    // the root. `requireOneOf` keeps bare `safe-gh` refused, which also stops
+    // a wrapper for a filter-shaped tool from sitting on stdin forever.
+    if (!covered.has("")) commands.push(helpOnly([]));
+  }
+
   return {
     cli: review.cli,
     name: wrapperName(review.cli, tier),
@@ -213,14 +270,50 @@ export interface Surface {
   optionsByPath: Map<string, Set<string>>;
   /** Options the crawl saw at the root, which most tools accept anywhere. */
   rootOptions: Set<string>;
+  /**
+   * Flags the crawl ran the tool with and got help back from.
+   *
+   * Observed rather than read off a page, so these are legal spellings even
+   * when the tool never prints them in an option table.
+   */
+  provenFlags: Set<string>;
+}
+
+/**
+ * The tool's own spellings for "describe yourself".
+ *
+ * Anchored on `--help`, and every other name printed on the same help line
+ * comes with it — that is how `-h` gets in without guessing. `-h` on its own
+ * is never taken, because it means human-readable sizes to `du`, `sort`, and
+ * `ls`, and a wrapper that treats `sort -h` as a help request has mis-modelled
+ * an option rather than allowlisted one.
+ */
+export function helpOptionsOf(nodes: readonly CrawlNode[]): string[] {
+  const found = new Set<string>();
+  for (const node of nodes) {
+    if (!node.ok) continue;
+    // The flag the crawl actually used is the strongest evidence there is: the
+    // tool was run with it and answered. `git` never lists `--help` among its
+    // options, so the option tables alone would find git no help flag.
+    if (node.helpFlagUsed) found.add(node.helpFlagUsed);
+    for (const opt of node.parsed.options) {
+      if (!opt.names.includes("--help")) continue;
+      // A help flag that takes a value is not a help flag we understand.
+      if (opt.arity === 1) continue;
+      for (const name of opt.names) found.add(name);
+    }
+  }
+  return [...found].sort();
 }
 
 export function surfaceOf(nodes: readonly CrawlNode[]): Surface {
   const paths = new Set<string>();
   const optionsByPath = new Map<string, Set<string>>();
   let rootOptions = new Set<string>();
+  const provenFlags = new Set<string>();
   for (const node of nodes) {
     if (!node.ok) continue;
+    if (node.helpFlagUsed) provenFlags.add(node.helpFlagUsed);
     const key = node.path.join(" ");
     paths.add(key);
     const names = new Set<string>();
@@ -230,7 +323,7 @@ export function surfaceOf(nodes: readonly CrawlNode[]): Surface {
     optionsByPath.set(key, names);
     if (node.path.length === 0) rootOptions = names;
   }
-  return { paths, optionsByPath, rootOptions };
+  return { paths, optionsByPath, rootOptions, provenFlags };
 }
 
 /**
@@ -246,6 +339,7 @@ export type Problem =
   | { kind: "duplicate-command"; path: string[]; message: string }
   | { kind: "unknown-option"; path: string[]; option: string; message: string }
   | { kind: "unknown-global-option"; option: string; message: string }
+  | { kind: "unknown-help-option"; option: string; message: string }
   | { kind: "bad-pattern"; pattern: string; message: string };
 
 /**
@@ -270,6 +364,26 @@ export function checkAgainstSurface(
         option,
         message:
           `global option "${option}" was never seen in ${review.cli} --help`,
+      });
+    }
+  }
+
+  // Help options are permitted at every command, so a spelling the tool never
+  // printed would be an allowlist entry nobody grounded.
+  const everySeen = new Set<string>([
+    ...surface.rootOptions,
+    ...surface.provenFlags,
+  ]);
+  for (const names of surface.optionsByPath.values()) {
+    for (const name of names) everySeen.add(name);
+  }
+  for (const option of review.helpOptions) {
+    if (!everySeen.has(option)) {
+      problems.push({
+        kind: "unknown-help-option",
+        option,
+        message:
+          `help option "${option}" was never seen in ${review.cli}'s help output`,
       });
     }
   }
@@ -346,6 +460,7 @@ export function pruneProblems(
 ): Review {
   const dropCommands = new Set<string>();
   const dropGlobals = new Set<string>();
+  const dropHelp = new Set<string>();
   const dropOptions = new Map<string, Set<string>>();
 
   for (const problem of problems) {
@@ -356,6 +471,9 @@ export function pruneProblems(
         break;
       case "unknown-global-option":
         dropGlobals.add(problem.option);
+        break;
+      case "unknown-help-option":
+        dropHelp.add(problem.option);
         break;
       case "unknown-option": {
         const key = problem.path.join(" ");
@@ -392,7 +510,9 @@ export function pruneProblems(
       return { ...c, options: Object.fromEntries(kept), dropped };
     });
 
-  return { ...review, globalOptions, commands };
+  const helpOptions = review.helpOptions.filter((n) => !dropHelp.has(n));
+
+  return { ...review, globalOptions, helpOptions, commands };
 }
 
 function* patternsIn(review: Review): Generator<string> {

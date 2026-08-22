@@ -50,6 +50,16 @@ export interface CrawlNode {
   error: string;
   /** Raw help text, ANSI-stripped and truncated. */
   helpText: string;
+  /**
+   * The flag that actually produced this page.
+   *
+   * Proof rather than inference: the crawl ran the tool with this flag and got
+   * readable help back, so the tool accepts it. That matters because a tool
+   * need not list its own help flag among its options — `git` mentions
+   * `[-h | --help]` only inside its usage line, so reading the option tables
+   * alone finds git no help flag at all.
+   */
+  helpFlagUsed: string;
   parsed: ParsedHelp;
 }
 
@@ -331,7 +341,8 @@ export function parseHelp(text: string): ParsedHelp {
       const next = lines[j];
       if (next.trim() === "") continue;
       if (!/^\s/.test(next)) return false;
-      return parseSubcommandLine(next) !== null || parseOptionLine(next) !== null;
+      return parseSubcommandLine(next) !== null ||
+        parseOptionLine(next) !== null;
     }
     return false;
   };
@@ -533,9 +544,11 @@ async function runHelp(
 async function readHelp(
   o: CrawlOptions,
   path: string[],
-): Promise<{ ok: boolean; text: string; error: string }> {
+): Promise<{ ok: boolean; text: string; error: string; flag: string }> {
   const first = await runHelp(o, path);
-  if (!first.ok || !looksLikeManPage(first.text)) return first;
+  if (!first.ok || !looksLikeManPage(first.text)) {
+    return { ...first, flag: first.ok ? o.helpFlag : "" };
+  }
 
   const name = [".", ...path].join(" ").slice(2);
   const what = name ? `"${name}"` : "the root command";
@@ -543,16 +556,20 @@ async function readHelp(
     return {
       ok: false,
       text: "",
+      flag: "",
       error:
         `${o.helpFlag} on ${what} opened a man page, which cannot be parsed for option arity`,
     };
   }
 
   const second = await runHelp(o, path, o.fallbackHelpFlag);
-  if (second.ok && !looksLikeManPage(second.text)) return second;
+  if (second.ok && !looksLikeManPage(second.text)) {
+    return { ...second, flag: o.fallbackHelpFlag };
+  }
   return {
     ok: false,
     text: "",
+    flag: "",
     error:
       `${o.helpFlag} on ${what} opened a man page and ${o.fallbackHelpFlag} did not help; ` +
       `set helpFlag to whatever prints this tool's short usage`,
@@ -582,11 +599,18 @@ export async function crawl(o: CrawlOptions): Promise<CrawlNode[]> {
     const path = queue.shift()!;
     if (o.signal?.aborted) break;
 
-    const { ok, text, error } = await readHelp(o, path);
+    const { ok, text, error, flag } = await readHelp(o, path);
     const parsed = ok
       ? parseHelp(text)
       : { usage: "", subcommands: [], options: [] };
-    const node: CrawlNode = { path, ok, error, helpText: text, parsed };
+    const node: CrawlNode = {
+      path,
+      ok,
+      error,
+      helpText: text,
+      helpFlagUsed: flag,
+      parsed,
+    };
     nodes.push(node);
     o.onNode?.(node);
 

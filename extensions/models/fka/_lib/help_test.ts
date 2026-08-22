@@ -353,7 +353,10 @@ Command options:
   // `--indent n` names its value with a single lowercase letter, which is
   // shaped exactly like the first word of a description. Unknown, so it is
   // dropped rather than guessed.
-  assertEquals(p.options.find((o) => o.names.includes("--indent"))?.arity, null);
+  assertEquals(
+    p.options.find((o) => o.names.includes("--indent"))?.arity,
+    null,
+  );
 
   // `--arg name value` takes two values, which a 0-or-1 arity cannot express
   // at all. Recording it as 1 would leave the second token unchecked.

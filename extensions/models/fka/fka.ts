@@ -43,6 +43,7 @@ import {
   baseName,
   checkAgainstSurface,
   fromYaml,
+  helpOptionsOf,
   pruneProblems,
   ReviewSchema,
   surfaceOf,
@@ -532,6 +533,9 @@ export const model = {
           generatedAt: new Date().toISOString(),
           emit: g.emit,
           env: { scrub, set: {} },
+          // Taken from the crawl rather than from the classifier: what the
+          // tool calls its help flag is ground truth, not a judgement.
+          helpOptions: helpOptionsOf(crawled.nodes),
           globalOptions: result.globalOptions,
           commands: result.commands,
         });

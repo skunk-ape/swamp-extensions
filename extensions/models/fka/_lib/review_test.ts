@@ -7,6 +7,7 @@ import {
 import {
   checkAgainstSurface,
   fromYaml,
+  helpOptionsOf,
   pruneProblems,
   ReviewSchema,
   sortCommands,
@@ -165,6 +166,153 @@ Deno.test("the policy carries the wrapper's own name into refusal messages", () 
   assertEquals(toPolicy(r, "read-safe").name, "safe-demo");
 });
 
+// --- reading help ---------------------------------------------------------
+
+/** A crawled page listing one option, and by default naming no proven flag. */
+function helpNode(
+  path: string[],
+  names: string[],
+  arity: 0 | 1 = 0,
+  helpFlagUsed = "",
+): CrawlNode {
+  return {
+    path,
+    ok: true,
+    error: "",
+    helpText: "",
+    helpFlagUsed,
+    parsed: {
+      usage: "",
+      subcommands: [],
+      options: [{ names, arity, valueHint: "", summary: "", source: "" }],
+    },
+  };
+}
+
+Deno.test("help spellings are taken from the tool, anchored on --help", () => {
+  assertEquals(helpOptionsOf([helpNode([], ["-h", "--help"])]), [
+    "--help",
+    "-h",
+  ]);
+});
+
+Deno.test("the flag the crawl actually used counts as proof", () => {
+  // git never lists --help among its options; it appears only inside the usage
+  // line. But the crawl ran `git --help` and git answered, which settles it.
+  assertEquals(helpOptionsOf([helpNode([], ["--version"], 0, "--help")]), [
+    "--help",
+  ]);
+});
+
+Deno.test("a fallback flag that worked is proof for that page", () => {
+  // `git log --help` opens man and `git log -h` prints usage, so -h is the
+  // proven spelling there even though nothing lists it.
+  assertEquals(
+    helpOptionsOf([
+      helpNode([], ["--version"], 0, "--help"),
+      helpNode(["log"], ["--oneline"], 0, "-h"),
+    ]),
+    ["--help", "-h"],
+  );
+});
+
+Deno.test("a bare -h is never assumed to mean help", () => {
+  // `sort -h` compares human-readable numbers and `du -h` prints sizes. Taking
+  // -h as help wherever it appears mis-models the option rather than
+  // allowlisting one, which is the arity bug in a different costume.
+  assertEquals(helpOptionsOf([helpNode([], ["-h"])]), []);
+});
+
+Deno.test("a help flag that takes a value is not treated as help", () => {
+  assertEquals(helpOptionsOf([helpNode([], ["--help"], 1)]), []);
+});
+
+Deno.test("help reaches a command that sits above the tier", () => {
+  const r = review([
+    command(["list"], "read-safe"),
+    command(["delete"], "modify", { "-f": { arity: 0 } }),
+  ], { helpOptions: ["--help", "-h"] });
+  const safe = toPolicy(r, "read-safe");
+
+  // Reading what `demo delete` does is not deleting anything.
+  assert(validate(safe, ["delete", "--help"]).ok);
+  assert(validate(safe, ["delete", "-h"]).ok);
+});
+
+Deno.test("a help-only path is unreachable without a help flag", () => {
+  // The pairing that makes the previous test safe. Without it, `safe-git
+  // commit` would run git commit and sit in an editor.
+  const r = review([command(["delete"], "modify")], {
+    helpOptions: ["--help"],
+  });
+  const safe = toPolicy(r, "read-safe");
+  const verdict = validate(safe, ["delete"]);
+  assert(!verdict.ok);
+  const reason = verdict.ok ? "" : verdict.reason;
+  assertStringIncludes(reason, "only with --help");
+});
+
+Deno.test("a help-only path admits nothing but help", () => {
+  const r = review([
+    command(["delete"], "modify", { "-f": { arity: 0 } }, {
+      positionals: "any",
+    }),
+  ], { helpOptions: ["--help"] });
+  const safe = toPolicy(r, "read-safe");
+
+  assert(!validate(safe, ["delete", "--help", "-f"]).ok);
+  assert(!validate(safe, ["delete", "--help", "thing"]).ok);
+  assert(!validate(safe, ["delete", "-f", "--help"]).ok);
+});
+
+Deno.test("the bare tool answers for its own help but does nothing else", () => {
+  const r = review([command(["list"], "read-safe")], {
+    helpOptions: ["--help"],
+  });
+  const safe = toPolicy(r, "read-safe");
+  assert(validate(safe, ["--help"]).ok);
+  // Refusing the bare invocation also keeps a filter-shaped tool from sitting
+  // on stdin forever when someone runs the wrapper with no arguments.
+  assert(!validate(safe, []).ok);
+});
+
+Deno.test("help is readable at every tier once it is readable at the lowest", () => {
+  const r = review([command(["delete"], "modify")], {
+    helpOptions: ["--help"],
+    emit: ["read-safe", "modify"],
+  });
+  assert(validate(toPolicy(r, "read-safe"), ["delete", "--help"]).ok);
+  assert(validate(toPolicy(r, "modify"), ["delete", "--help"]).ok);
+  // At its own tier the command is fully reachable, help flag or not.
+  assert(validate(toPolicy(r, "modify"), ["delete"]).ok);
+});
+
+Deno.test("raising helpTier withdraws help from the tiers below it", () => {
+  const r = review([command(["delete"], "modify")], {
+    helpOptions: ["--help"],
+    helpTier: "modify",
+  });
+  assert(!validate(toPolicy(r, "read-safe"), ["delete", "--help"]).ok);
+  assert(!validate(toPolicy(r, "read-safe"), ["--help"]).ok);
+  assert(validate(toPolicy(r, "modify"), ["delete", "--help"]).ok);
+});
+
+Deno.test("an empty help list turns the whole mechanism off", () => {
+  const r = review([command(["delete"], "modify")], { helpOptions: [] });
+  const safe = toPolicy(r, "read-safe");
+  assertEquals(safe.commands, []);
+  assert(!validate(safe, ["--help"]).ok);
+});
+
+Deno.test("a help spelling the crawl never saw is rejected and pruned", () => {
+  const r = review([command(["list"], "read-safe")], {
+    helpOptions: ["--help", "--explain-yourself"],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assertEquals(problems.map((p) => p.kind), ["unknown-help-option"]);
+  assertEquals(pruneProblems(r, problems).helpOptions, ["--help"]);
+});
+
 // --- checking against the crawl -----------------------------------------
 
 function node(path: string[], options: string[][]): CrawlNode {
@@ -173,6 +321,7 @@ function node(path: string[], options: string[][]): CrawlNode {
     ok: true,
     error: "",
     helpText: "",
+    helpFlagUsed: "--help",
     parsed: {
       usage: "",
       subcommands: [],
@@ -188,7 +337,7 @@ function node(path: string[], options: string[][]): CrawlNode {
 }
 
 const crawled = [
-  node([], [["--no-color"]]),
+  node([], [["--no-color"], ["--help"]]),
   node(["list"], [["--limit"]]),
   node(["delete"], []),
 ];

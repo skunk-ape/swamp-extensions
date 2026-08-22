@@ -15,6 +15,7 @@ function node(path: string[], options: string[] = [], ok = true): CrawlNode {
     ok,
     error: ok ? "" : "help produced no output",
     helpText: "",
+    helpFlagUsed: "--help",
     parsed: {
       usage: "",
       subcommands: [],

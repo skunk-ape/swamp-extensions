@@ -203,6 +203,24 @@ Deno.test("the skill uses real commands from the table, never invented ones", ()
   assertStringIncludes(skill, "write-demo delete");
 });
 
+Deno.test("the skill says help works at every tier, with a real example", () => {
+  const withHelp = ReviewSchema.parse({
+    ...review,
+    helpOptions: ["--help", "-h"],
+  });
+  const skill = renderSkill(withHelp, "/tmp/bin");
+  assertStringIncludes(skill, "Help always works");
+  // The example has to use a command the safe wrapper will NOT run, or it
+  // demonstrates nothing.
+  assertStringIncludes(skill, "safe-demo delete --help");
+  assertStringIncludes(skill, "refused again");
+});
+
+Deno.test("the skill says nothing about help when there is none to offer", () => {
+  const skill = renderSkill(review, "/tmp/bin");
+  assert(!skill.includes("Help always works"));
+});
+
 Deno.test("the skill explains what a refusal means and what not to do about it", () => {
   const skill = renderSkill(review, "/tmp/bin");
   assertStringIncludes(skill, String(REFUSED_EXIT));

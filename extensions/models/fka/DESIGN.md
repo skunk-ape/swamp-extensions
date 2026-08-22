@@ -75,6 +75,39 @@ policy for a wrapper is built by filtering twice — commands, then each survivi
 command's options — and `git log` reaches `safe-git` with forty options and
 without that one.
 
+### Help is not a tier
+
+Asking a tool to describe itself is the one thing an agent does constantly that
+cannot change anything, and the first version of the tier model refused it. A
+help flag was classified like any other option, so nothing guaranteed it landed
+in `read-safe`; `safe-gh --help` failed outright because no rule existed for the
+bare root path; and `safe-gh pr close --help` failed because `gh pr close` sits
+above the tier — even though reading its help does nothing at all.
+
+That last one is the case agents hit hourly, and the cost of getting it wrong is
+not a refusal. It is an agent that escalates a tier, or guesses at arguments, to
+find out what a command takes.
+
+So help is orthogonal to the tier ladder. `helpOptions` in the review file lists
+the tool's own spellings, and every command in the table — including the ones a
+wrapper will not run — carries a **help-only rule** at `helpTier`: the help
+flags permitted, no positionals, no other options, and `requireOneOf` so the
+rule does not match at all without one of them.
+
+That last condition is the load-bearing half. Without it the same rule would let
+bare `safe-git commit` through, and `git commit` with no arguments opens an
+editor and waits. Requiring the flag also means the only argument vector that
+ever reaches the tool is `commit --help`, so the residual risk — a tool that
+does not short-circuit on its help flag — has nothing to act on.
+
+The spellings come from the crawl, never from the classifier, and from two
+sources. Options named `--help` in a table, and **the flag the crawl actually
+ran and got an answer from**. The second exists because the first does not cover
+`git`: git mentions `[-h | --help]` only inside its usage line, so reading
+option tables alone finds git no help flag at all. A bare `-h` is never assumed
+to mean help — `sort -h` and `du -h` mean human-readable — unless the crawl
+itself used it successfully.
+
 ## Why the tier leads the name
 
 `gh-safe` is the better-reading name and it cannot be made to work.

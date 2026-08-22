@@ -27,6 +27,17 @@ whole tier — and the wrapper re-parses every argument, so the rule is true.
 permission snippet and asking them to merge it. Do not edit `settings.json`
 yourself, and do not use the `update-config` skill to do it for you.
 
+## Help always works
+
+Reading a tool's help changes nothing, so the help flag reaches every command in
+the table — including the ones the safe wrapper will not run. Read the help
+rather than escalating a tier to find out what a command takes.
+
+```bash
+safe-gh pr close --help   # prints, even though safe-gh will not close a PR
+safe-gh pr close          # refused: reachable only with --help
+```
+
 ## When a wrapper refuses
 
 A refusal exits 126 and names the token at fault. It means the argument is
