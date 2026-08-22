@@ -62,19 +62,97 @@ function isBlockedIPv4(ip: string): boolean {
   if (a === 192 && b === 168) return true; // RFC1918
   if (a === 192 && b === 0) return true; // IETF protocol assignments
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+  if (a === 192 && b === 88 && p[2] === 99) return true; // 6to4 relay anycast
   if (a >= 224) return true; // multicast and reserved
   return false;
 }
 
+/**
+ * Expand an IPv6 literal to its eight 16-bit groups, or null if unparseable.
+ *
+ * Necessary because prefix-matching the text form does not work. The WHATWG URL
+ * parser canonicalizes a host before anything here sees it, so
+ * `http://[::ffff:127.0.0.1]/` arrives as `[::ffff:7f00:1]` — the dotted tail
+ * is gone and a regex looking for it never fires. An earlier revision had
+ * exactly that bug, and its test passed only because it called this module
+ * directly with the dotted string, never through the parser that production
+ * always uses. Numbers do not have spellings; parse to numbers.
+ */
+export function parseIPv6(ip: string): number[] | null {
+  let s = ip.toLowerCase().split("%")[0].replace(/^\[|\]$/g, "");
+
+  // A trailing dotted quad (::ffff:127.0.0.1, ::127.0.0.1) becomes two groups.
+  const dotted = s.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const octets = dotted[2].split(".").map(Number);
+    if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+      return null;
+    }
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    s = `${dotted[1]}${hi}:${lo}`;
+  }
+
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string) =>
+    part === "" ? [] : part.split(":").map((h) => {
+      if (!/^[0-9a-f]{1,4}$/.test(h)) return NaN;
+      return parseInt(h, 16);
+    });
+
+  const head = parse(halves[0]);
+  const tail = halves.length === 2 ? parse(halves[1]) : [];
+  if ([...head, ...tail].some((n) => Number.isNaN(n))) return null;
+
+  let groups: number[];
+  if (halves.length === 2) {
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    groups = [...head, ...Array(fill).fill(0), ...tail];
+  } else {
+    groups = head;
+  }
+  return groups.length === 8 ? groups : null;
+}
+
+/**
+ * True when an IPv6 address is not safe to connect to.
+ *
+ * Checked numerically against prefixes rather than against text, and the
+ * embedded-IPv4 forms are unwrapped and re-checked as IPv4 so a v4 address
+ * wearing a v6 costume gets the same answer as itself.
+ */
 function isBlockedIPv6(ip: string): boolean {
-  const s = ip.toLowerCase().split("%")[0];
-  if (s === "::1" || s === "::") return true; // loopback, unspecified
-  if (s.startsWith("fe80")) return true; // link-local
-  if (s.startsWith("fc") || s.startsWith("fd")) return true; // unique local
-  if (s.startsWith("ff")) return true; // multicast
-  // IPv4-mapped (::ffff:127.0.0.1) — check the embedded address.
-  const mapped = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped) return isBlockedIPv4(mapped[1]);
+  const g = parseIPv6(ip);
+  if (g === null) return true; // Unparseable is not provably public.
+
+  const isZero = (n: number) => g.slice(0, n).every((x) => x === 0);
+
+  if (isZero(7) && g[7] === 1) return true; // ::1/128 loopback
+  if (isZero(8)) return true; // ::/128 unspecified
+  if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+  if ((g[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  if ((g[0] & 0xfffe) === 0x0100) return true; // 100::/64 discard-only
+
+  // Forms that carry an IPv4 address inside them. Each is a way of reaching a
+  // v4 destination, so each is unwrapped and judged as that destination.
+  const embedded = (hi: number, lo: number) =>
+    isBlockedIPv4(
+      [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join("."),
+    );
+
+  // ::ffff:0:0/96 IPv4-mapped — this is the one that was exploitable.
+  if (isZero(5) && g[5] === 0xffff) return embedded(g[6], g[7]);
+  // ::/96 IPv4-compatible (deprecated, still routable by some stacks).
+  if (isZero(6) && !(g[6] === 0 && g[7] === 0)) return embedded(g[6], g[7]);
+  // 64:ff9b::/96 and 64:ff9b:1::/48 NAT64.
+  if (g[0] === 0x0064 && g[1] === 0xff9b) return embedded(g[6], g[7]);
+  // 2002::/16 6to4 carries the v4 address in the next two groups.
+  if (g[0] === 0x2002) return embedded(g[1], g[2]);
+
   return false;
 }
 
@@ -208,11 +286,22 @@ export async function fetchOne(
       }
     }
 
+    // One deadline covering headers *and* body. Clearing it once the headers
+    // arrive — as an earlier revision did — bounds only the handshake: a server
+    // that dribbles a byte a minute then holds the connection open stalls the
+    // read loop below forever. Fetches here are serial, so one such URL hangs
+    // the whole method.
     const timer = new AbortController();
     const abort = setTimeout(() => timer.abort(), o.timeoutMs);
-    if (o.signal) {
-      o.signal.addEventListener("abort", () => timer.abort(), { once: true });
-    }
+    // Removed in the finally, because this listener is attached per redirect
+    // hop per URL on a signal owned by the caller. Leaving them attached piles
+    // up dead listeners for the lifetime of the method.
+    const onOuterAbort = () => timer.abort();
+    o.signal?.addEventListener("abort", onOuterAbort, { once: true });
+    const release = () => {
+      clearTimeout(abort);
+      o.signal?.removeEventListener("abort", onOuterAbort);
+    };
 
     let res: Response;
     try {
@@ -226,19 +315,22 @@ export async function fetchOne(
         },
       });
     } catch (e) {
-      clearTimeout(abort);
+      release();
       const reason = e instanceof Error ? e.message : String(e);
+      const timedOut = timer.signal.aborted;
       return {
         ...base,
         finalUrl: current.href,
-        error: `fetch failed: ${reason}`,
+        error: timedOut
+          ? `timed out after ${o.timeoutMs}ms`
+          : `fetch failed: ${reason}`,
       };
     }
-    clearTimeout(abort);
 
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location");
-      await res.body?.cancel();
+      await res.body?.cancel().catch(() => {});
+      release();
       if (!location) {
         return {
           ...base,
@@ -263,34 +355,60 @@ export async function fetchOne(
     const contentType = res.headers.get("content-type") ?? "";
     // Read with a byte cap rather than res.text(), so a multi-gigabyte body
     // cannot be pulled into memory before anyone notices.
-    const reader = res.body?.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
+    //
+    // Wrapped, because this is where a mid-body connection reset lands. An
+    // earlier revision left it outside the try, so a reset threw out of
+    // fetchOne entirely — and since the caller writes its resource once at the
+    // end, a flake on the fifteenth of twenty URLs discarded the first
+    // fourteen. Every other failure here is a soft per-URL error; this one was
+    // silently different.
+    let body = "";
+    let bytes = 0;
     let truncated = false;
-    if (reader) {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        total += value.length;
-        if (total > o.maxBytes) {
-          chunks.push(
-            value.slice(0, Math.max(0, value.length - (total - o.maxBytes))),
-          );
-          truncated = true;
-          await reader.cancel();
-          break;
+    try {
+      const reader = res.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!value) continue;
+          total += value.length;
+          if (total > o.maxBytes) {
+            chunks.push(
+              value.slice(0, Math.max(0, value.length - (total - o.maxBytes))),
+            );
+            truncated = true;
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          chunks.push(value);
         }
-        chunks.push(value);
       }
+      const buf = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
+      let at = 0;
+      for (const c of chunks) {
+        buf.set(c, at);
+        at += c.length;
+      }
+      bytes = buf.length;
+      body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      const timedOut = timer.signal.aborted;
+      release();
+      return {
+        ...base,
+        finalUrl: current.href,
+        status: res.status,
+        contentType,
+        error: timedOut
+          ? `timed out after ${o.timeoutMs}ms while reading the body`
+          : `body read failed: ${reason}`,
+      };
     }
-    const buf = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
-    let at = 0;
-    for (const c of chunks) {
-      buf.set(c, at);
-      at += c.length;
-    }
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    release();
 
     return {
       url: rawUrl,
@@ -298,7 +416,7 @@ export async function fetchOne(
       ok: res.ok,
       status: res.status,
       contentType,
-      bytes: buf.length,
+      bytes,
       body,
       error: res.ok ? "" : `HTTP ${res.status}`,
       renderRequired: looksLikeAppShell(body),

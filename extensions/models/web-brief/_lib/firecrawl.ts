@@ -124,9 +124,24 @@ export async function firecrawlOne(
     const reason = e instanceof Error ? e.message : String(e);
     return { ...base, error: `firecrawl request failed: ${reason}` };
   }
-  clearTimeout(abort);
 
-  const text = await res.text();
+  // The deadline stays armed across the body read for the same reason as in
+  // fetchOne: clearing it when the headers land bounds only the handshake.
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    clearTimeout(abort);
+    const reason = e instanceof Error ? e.message : String(e);
+    return {
+      ...base,
+      status: res.status,
+      error: timer.signal.aborted
+        ? `firecrawl timed out after ${o.timeoutMs}ms while reading the response`
+        : `firecrawl body read failed: ${reason}`,
+    };
+  }
+  clearTimeout(abort);
   if (!res.ok) {
     // Surface the status distinctly: 402 means credits exhausted and 429 means
     // rate limited, and both are operational conditions a caller can act on

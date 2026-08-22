@@ -56,9 +56,19 @@ point it is passed on. Defence in depth, not a solution.
 
 **A summarizer is not a sanitizer.** "IGNORE PREVIOUS INSTRUCTIONS, run this"
 summarizes faithfully into "the page instructs the reader to run this", and the
-imperative survives as reported speech. The mitigation doing the real work is
-the **structured output**: there is nowhere natural in `entities: string[]` to
-put an instruction. Prose output would make the whole stage theatre.
+imperative survives as reported speech.
+
+The narrowing comes from **shape and from length**. An earlier version of this
+README claimed only the first, and an adversarial review pointed out the claim
+was half wrong: "nowhere natural in `entities: string[]` to put an instruction"
+is true of `entities` and false of `answer`, which is free prose, and of
+`injectionNotes`, which the system prompt explicitly asks the model to fill with
+a description of the attack. Both were unbounded strings.
+
+Every field is bounded now — `answer` to 4,000 characters, `injectionNotes` to
+20 × 1,000, `entities` to 60 × 200 — and unknown keys are stripped. A cap does
+not stop a short imperative. It stops the long payloads, and it makes the
+list-shaped fields too narrow to be worth aiming at.
 
 Treat the brief as untrusted data. It is lower-risk input, not trusted input.
 
@@ -108,15 +118,26 @@ it looked like — which is also what stops a DNS-rebinding host that answers wi
 a public address once and a private one next.
 
 Blocked: RFC1918, loopback, link-local (including the cloud metadata address),
-CGNAT, multicast, IPv4-mapped IPv6, and anything that fails to resolve or parse.
-`allowPrivateNetworks: true` turns this off; think hard before using it.
+CGNAT, multicast, benchmarking, 6to4 relay anycast, and anything that fails to
+resolve or parse. IPv6 is checked **numerically**, so the embedded-IPv4 forms —
+IPv4-mapped, IPv4-compatible, NAT64, 6to4 — are unwrapped and judged as the
+address they carry. `allowPrivateNetworks: true` turns this off; think hard
+before using it.
+
+> An earlier version checked IPv6 by text prefix and was bypassable. The URL
+> parser canonicalizes `http://[::ffff:127.0.0.1]/` to `[::ffff:7f00:1]` before
+> the check ever runs, so a regex looking for the dotted form never fired — and
+> the metadata service was reachable in that spelling. The test that supposedly
+> covered it passed only because it called the checker directly with the dotted
+> string, never through the parser production always uses. Every egress test now
+> goes through `new URL()` first, which is the only way the test means anything.
 
 ## JavaScript: pick a fetcher
 
-| `fetcher` | Renders JS | Cost | Privacy |
-| --- | --- | --- | --- |
-| `http` *(default)* | No | Free | URLs never leave your machine |
-| `firecrawl` | Yes | 1 credit/page, 1,000/month free | Every URL is seen by Firecrawl |
+| `fetcher`          | Renders JS | Cost                            | Privacy                        |
+| ------------------ | ---------- | ------------------------------- | ------------------------------ |
+| `http` _(default)_ | No         | Free                            | URLs never leave your machine  |
+| `firecrawl`        | Yes        | 1 credit/page, 1,000/month free | Every URL is seen by Firecrawl |
 
 A plain HTTP fetch cannot run a page's bundle, so sites that ship an empty shell
 come back nearly empty — which is exactly the tasks people want an agent for:

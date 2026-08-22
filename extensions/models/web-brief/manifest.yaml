@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@skunk-ape/web-brief"
-version: 2026.08.21.2
+version: 2026.08.22.1
 description: |
   Give an autonomous agent web access without giving it a browser.
 
@@ -34,8 +34,13 @@ description: |
   - `summarize` — reduce sanitized text to a structured brief in a session run
     with no tools. Only a reply that parses against the schema is returned.
 
-  Between them, run `@mgreten/brief-sanitize`'s `sanitize`. The shipped workflow
-  chains all three.
+  Between them, run `@mgreten/brief-sanitize`'s `sanitize`. The README shows the
+  three calls; chaining them in a workflow is a few lines and worth doing, since
+  `fetch` emits items in exactly the shape `sanitize` consumes.
+
+  No workflow ships with the extension. An earlier version of this text claimed
+  one did — it does not, and the sanitize stage the whole security argument
+  rests on is left to the caller to wire.
 
   ## No JavaScript
 
