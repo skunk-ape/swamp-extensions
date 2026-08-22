@@ -1,0 +1,104 @@
+manifestVersion: 1
+name: "@skunk-ape/fka"
+version: 2026.08.22.1
+description: |
+  Formerly known as. Wrap a CLI in the permission tier it deserves.
+
+  Take a command-line tool the agent already has, work out which of its commands
+  are safe to run unattended, and generate a wrapper that enforces the answer.
+  The wrapper is named for the tool and the tier: `gh` becomes `safe-gh`,
+  `private-gh`, `write-gh`. The tier moves out of the argument list and into the
+  command name, which is the one part of a shell command a permission rule can
+  match cheaply and exactly.
+
+  ## The problem
+
+  Claude Code grants Bash permission by prefix match, and for a real command
+  tree both answers are bad. `Bash(gh:*)` includes `gh repo delete`. Enumerating
+  `Bash(gh pr list:*)` and its forty siblings goes stale on every upgrade and is
+  still only a prefix match — it cannot see options, and options are where the
+  danger is. `gh api` issues any HTTP verb you ask for. `sort` writes files with
+  `-o`. `git log` runs arbitrary code through `--ext-diff`.
+
+  So a generated wrapper is not a namespace. It is a parser that re-reads the
+  whole argument vector and refuses anything not explicitly permitted. The
+  namespace makes the rule short; the parser makes it true.
+
+  ## Four tiers
+
+  - `read-safe` — changes nothing, reveals nothing confidential. The only tier
+    that runs unattended, and the only one that needs careful review.
+  - `read-private` — reads secrets, private source, identity, or billing.
+  - `modify` — changes state.
+  - `escape` — hands over arbitrary code execution, or names a program or
+    endpoint to reach. Options are tiered separately from their commands, so
+    `git log` can be read-safe while `git log --ext-diff` is not.
+
+  ## Methods
+
+  - `discover` — recursively read `<cli> --help` and record the command tree,
+    the option spellings, and each option's arity. Deterministic. Runs the tool
+    only with its help flag, through argv rather than a shell, under a depth
+    cap, a command cap, and a per-call timeout.
+  - `classify` — a model session proposes a tier per command, an option
+    allowlist, and an environment scrub list, then writes a commented review
+    file. Its output is checked back against the crawl, so it can re-tier what
+    discover found but never invent a command or an option.
+  - `generate` — read back the edited review file and render the wrappers, the
+    permission snippet, and the skill snippet. One method, because they are
+    three views of one fact.
+  - `verify` — prove every wrapper permits its own tier and refuses everything
+    above it, using a check mode that never executes the wrapped tool.
+
+  ## The human gate
+
+  `classify` writes a proposal. It grants nothing. A person edits the review
+  file, approves the workflow's `review` step, and `generate` reads the edited
+  file rather than the proposal. Anything the classifier was unsure of is not
+  read-safe, and anything absent from the table is refused.
+
+  ## The tested parser is the shipped parser
+
+  The wrapper is TypeScript on Deno so the argument parser can be unit-tested —
+  it is the security boundary, and an untested parser guarding an `allow` rule
+  is worse than no rule. `generate` pastes `_lib/validate.ts` verbatim into each
+  wrapper, so the code that runs on disk is the module the suite exercises and
+  only the policy data differs.
+
+  ## What it does not do
+
+  It does not sandbox. A wrapper controls the argument vector and nothing else:
+  an allowlisted `git log` still reads `~/.gitconfig`, and a `[diff] external`
+  hook there still runs. It does not install its own output — nothing here
+  writes `settings.json`. And it does not help against a hostile CLI, since
+  `discover` runs the binary to read its help.
+
+  ## Prerequisites
+
+  - swamp initialized in the repository (`swamp repo init`)
+  - the CLI you want to wrap, on PATH
+  - Claude Code on PATH, for `classify` only
+repository: "https://github.com/skunk-ape/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - fka.ts
+workflows:
+  - workflow-fka.yaml
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills:
+  - fka
+additionalFiles:
+  - LICENSE
+  - README.md
+  - _lib/validate.ts
+labels:
+  - security
+  - permissions
+  - cli
+  - agent
+  - wrapper
+dependencies: []
