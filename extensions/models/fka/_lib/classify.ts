@@ -114,8 +114,26 @@ How to decide:
   writes a file (-o, --output, --write), or edits configuration that supplies
   any of those later. An option that changes only what is printed is usually the
   same tier as its command.
-- read-private, not read-safe, when the output can carry secrets, tokens,
-  private source, personal identity, or billing and cost data.
+- read-private, not read-safe, when the output WIDENS WHO CAN SEE SOMETHING.
+  Ask whether the caller could already obtain it without this tool. Local files,
+  local history, and local state in a directory the caller is working in are
+  read-safe: printing them discloses nothing new. Reserve read-private for
+  output the caller does not otherwise hold — credentials and tokens, another
+  account's or tenant's data, remote identity, billing and cost figures.
+
+  Worked contrast, because this is the line that goes wrong most often. Both of
+  these "read private data", and only one is read-private:
+
+    git log          read-safe.    It prints commit history and patches, all of
+                                   which is in the repository the caller is
+                                   already standing in. Reading it out loud
+                                   tells nobody anything they could not read
+                                   from the files themselves.
+    gh auth token    read-private. It prints a credential. Nothing else the
+                                   caller has gives them that string.
+
+  The same test settles the rest: \`git status\` and \`git diff\` are read-safe,
+  \`gh api /user\` and \`aws ce get-cost-and-usage\` are read-private.
 - Free positional arguments are refused unless you say otherwise, and that
   default is usually right. Set "positionals": "any" only when the command is
   useless without one, and prefer a "positionalPattern" that constrains it.

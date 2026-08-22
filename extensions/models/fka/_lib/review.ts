@@ -35,11 +35,21 @@ export function tierRank(tier: Tier): number {
   return TIERS.indexOf(tier);
 }
 
+/**
+ * What each tier means, in the words a reviewer reads.
+ *
+ * The line between the first two is drawn on *disclosure*, not on whether the
+ * output contains private bytes. An earlier wording said `read-private` was for
+ * anything reading "private source", which is true of `git log` and put every
+ * local command out of reach — the classifier obeyed it and produced a table
+ * with nothing safe in it. The question that matters is whether the caller
+ * could already obtain the output without the tool.
+ */
 export const TIER_MEANING: Record<Tier, string> = {
   "read-safe":
-    "Changes nothing, reveals nothing confidential. The only tier that runs unattended.",
+    "Changes nothing, and reveals nothing the caller could not already obtain. The only tier that runs unattended.",
   "read-private":
-    "Changes nothing, but reads secrets, private source, identity, or billing.",
+    "Changes nothing, but widens who can see something: credentials, another account's data, remote identity, billing.",
   "modify": "Changes state — local files, remote resources, money.",
   "escape":
     "Hands over arbitrary code execution, or names a program or endpoint to reach.",
@@ -81,9 +91,10 @@ export const SEGMENT_BUCKET: Record<Segment, "allow" | "ask"> = {
 export const SEGMENT_MEANING: Record<Segment, string> = {
   help:
     "Asks the tool to describe itself. Runs no command and reads nothing else.",
-  safe: "Changes nothing, reveals nothing confidential. Runs unattended.",
+  safe:
+    "Changes nothing, and reveals nothing the caller could not already obtain. Runs unattended.",
   private:
-    "Changes nothing, but reads secrets, private source, identity, or billing.",
+    "Changes nothing, but widens who can see something: credentials, another account's data, remote identity, billing.",
   write: "Changes state — local files, remote resources, money.",
   escape:
     "Hands over arbitrary code execution, or names a program or endpoint to reach.",

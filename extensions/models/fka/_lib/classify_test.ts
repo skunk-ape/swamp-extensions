@@ -100,6 +100,24 @@ Deno.test("both prompts forbid inventing commands and guessing arity", () => {
   }
 });
 
+Deno.test("read-private is defined by disclosure, not by private bytes", () => {
+  // The earlier wording said read-private covered anything reading "private
+  // source". That is true of `git log`, and the classifier obeyed it: git came
+  // back with zero read-safe commands and a safe alias that admitted nothing.
+  const prompt = systemPrompt("none");
+  assertStringIncludes(prompt, "WIDENS WHO CAN SEE SOMETHING");
+  assertStringIncludes(prompt, "could already obtain it without this tool");
+  assert(!prompt.includes("output can carry secrets"));
+});
+
+Deno.test("the prompt works the contrast that goes wrong most", () => {
+  // Two commands that both read private data, on opposite sides of the line.
+  // Stating the rule abstractly was not enough the first time.
+  const prompt = systemPrompt("none");
+  assertStringIncludes(prompt, "git log          read-safe");
+  assertStringIncludes(prompt, "gh auth token    read-private");
+});
+
 // --- driving the batches -------------------------------------------------
 
 const nodes = [node([]), node(["list"]), node(["delete"])];
