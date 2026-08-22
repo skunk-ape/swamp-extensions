@@ -86,7 +86,9 @@ const RUNTIME = `
  * exercise a whole policy without side effects.
  */
 async function main(): Promise<number> {
-  const argv = Deno.args;
+  // Whatever this wrapper pins is folded in before anything is judged, so the
+  // vector that gets checked is the vector that runs.
+  const argv = effectiveArgv(POLICY, Deno.args);
   const verdict = validate(POLICY, argv);
 
   if (Deno.env.get("FKA_CHECK") === "1") {
@@ -290,7 +292,6 @@ responses: rerun on the next tier up, or tell the user the tier table needs an
 edit. Do not route around a refusal by calling \`${cli}\` directly or by its
 absolute path.
 
-${helpNote(review)}
 To ask whether a command would be permitted without running it:
 
 \`\`\`bash
@@ -298,45 +299,6 @@ FKA_CHECK=1 ${
     wrapperName(review.cli, "read-safe")
   } <args>   # prints the verdict, execs nothing
 \`\`\`
-`;
-}
-
-/**
- * Say that help is always available, since the tier table alone implies it is
- * not.
- *
- * Worth spelling out: an agent that reads "safe-gh covers read-safe commands"
- * reasonably concludes it cannot ask about the others, and then either guesses
- * at their arguments or escalates a tier to read a help page.
- */
-function helpNote(review: Review): string {
-  if (review.helpOptions.length === 0) return "";
-  const cli = baseName(review.cli);
-  const safe = wrapperName(review.cli, "read-safe");
-  const flag = review.helpOptions.includes("--help")
-    ? "--help"
-    : review.helpOptions[0];
-  // The most dangerous command in the table makes the point best: if help
-  // reaches that one, the reader stops wondering which ones it reaches.
-  const above = review.commands
-    .filter((c) => c.path.length > 0 && c.tier !== "read-safe")
-    .sort((a, b) => tierRank(b.tier) - tierRank(a.tier))[0];
-  const example = above
-    ? `${safe} ${above.path.join(" ")} ${flag}`
-    : `${safe} ${flag}`;
-
-  return `
-**Help always works, at every tier.** Asking ${cli} to describe itself changes
-nothing, so ${flag} reaches every command — including the ones this wrapper
-will not run.
-
-\`\`\`bash
-${example}
-\`\`\`
-
-The path opens for the question and nothing else: drop the ${flag} and the same
-command is refused again. Read the help here rather than escalating a tier to
-find out what a command takes.
 `;
 }
 

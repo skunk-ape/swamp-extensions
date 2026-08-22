@@ -134,25 +134,13 @@ export const ReviewSchema = z.object({
     set: z.record(z.string(), z.string()).default({}),
   }).default({ scrub: [], set: {} }),
   /**
-   * Option spellings that only make the tool describe itself.
+   * The tool's own spellings for "describe yourself".
    *
-   * Reading help is the one thing an agent does constantly that cannot change
-   * anything, and a wrapper that refuses it is a wrapper nobody can use. These
-   * are permitted everywhere at {@link Review.helpTier}, and they also make a
-   * command *above* that tier reachable for help alone — see {@link toPolicy}.
-   *
-   * Populated from the crawl, so nothing here is a spelling the tool did not
-   * print. Empty the list to turn the whole mechanism off.
+   * A fact about the tool rather than a policy: observed by the crawl, recorded
+   * for whoever plans the wrappers. An alias that pins one of these is how help
+   * becomes reachable, and that decision belongs in the plan, not here.
    */
   helpOptions: z.array(z.string()).default([]),
-  /**
-   * Tier at which help is readable.
-   *
-   * `read-safe` on the assumption that a tool which does damage when asked to
-   * describe itself is already beyond help. Raise it if you do not believe
-   * that of some particular tool.
-   */
-  helpTier: TierSchema.default("read-safe"),
   globalOptions: z.record(z.string(), GlobalOptionSchema).default({}),
   commands: z.array(ReviewCommandSchema).default([]),
 });
@@ -183,34 +171,11 @@ function optionTier(o: ReviewOption, fallback: Tier): Tier {
  */
 export function toPolicy(review: Review, tier: Tier): Policy {
   const ceiling = tierRank(tier);
-  const helpReadable = review.helpOptions.length > 0 &&
-    tierRank(review.helpTier) <= ceiling;
 
   const globalOptions: Record<string, OptionSpec> = {};
   for (const [name, opt] of Object.entries(review.globalOptions)) {
     if (tierRank(opt.tier) <= ceiling) globalOptions[name] = toSpec(opt);
   }
-  if (helpReadable) {
-    for (const name of review.helpOptions) {
-      globalOptions[name] ??= { arity: 0 };
-    }
-  }
-
-  /**
-   * A path reachable only to ask for help.
-   *
-   * Options are the help flags and nothing else, positionals are refused, and
-   * `requireOneOf` means the rule does not match without one of them. So
-   * `safe-gh pr close --help` prints and `safe-gh pr close` is still refused.
-   */
-  const helpOnly = (path: string[]) => ({
-    path,
-    options: Object.fromEntries(
-      review.helpOptions.map((n) => [n, { arity: 0 as const }]),
-    ),
-    positionals: "none" as const,
-    requireOneOf: [...review.helpOptions],
-  });
 
   const commands = review.commands
     .filter((c) => tierRank(c.tier) <= ceiling)
@@ -234,24 +199,12 @@ export function toPolicy(review: Review, tier: Tier): Policy {
       };
     });
 
-  if (helpReadable) {
-    const covered = new Set(commands.map((c) => c.path.join(" ")));
-    // Every command the table names but this tier does not admit stays
-    // reachable for its help alone. Reading what `gh pr close` does is not
-    // the same act as closing a pull request.
-    for (const c of review.commands) {
-      if (!covered.has(c.path.join(" "))) commands.push(helpOnly(c.path));
-    }
-    // And the bare tool, so `safe-gh --help` works even when nothing tiered
-    // the root. `requireOneOf` keeps bare `safe-gh` refused, which also stops
-    // a wrapper for a filter-shaped tool from sitting on stdin forever.
-    if (!covered.has("")) commands.push(helpOnly([]));
-  }
-
   return {
     cli: review.cli,
     name: wrapperName(review.cli, tier),
     tier,
+    prependArgs: [],
+    appendArgs: [],
     binary: review.binary,
     binaryVersion: review.binaryVersion,
     globalOptions,
