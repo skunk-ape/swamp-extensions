@@ -294,8 +294,11 @@ export function parseKv(stdout: string): Record<string, string> {
  * Build a script fragment that writes `content` to `pathWord` with `mode`.
  *
  * The content is base64-encoded into the script body, which is itself fed over
- * stdin, so the plaintext never reaches a command argument and never touches a
- * temporary file on disk. This is the only supported way to place a secret.
+ * stdin, so the plaintext never reaches a command argument. It does land in a
+ * temporary file on the target for the width of one rename — an earlier version
+ * of this comment claimed otherwise, which stopped being true when atomic
+ * writes were added and is corrected here. That temp file is the reason the
+ * implementation below is careful about how it is created.
  *
  * `pathWord` is an already-quoted shell word rather than a plain string,
  * because the destination is usually only known on the target — `~` has to
@@ -326,31 +329,39 @@ export function writeFileScript(
   // theoretical here — `service` restarts the gateway immediately after
   // `configure` writes the .env, and the gateway reads that file at startup.
   //
-  // The temp lives beside the destination rather than in /tmp so the rename
-  // stays within one filesystem. Borrowed from @mgreten/hermes-env, which got
-  // this right first.
+  // The temp name comes from mktemp rather than from the destination plus $$,
+  // and that is the whole security of this function. A predictable name is
+  // pre-plantable: `ln -s /elsewhere "$dst.tmp.<pid>"` makes the redirection
+  // below follow the link and write the plaintext wherever the attacker chose,
+  // and the subsequent `mv -f` then leaves the destination a symlink so every
+  // later run does it again. An earlier revision had exactly that hole.
+  //
+  // The attacker to picture is not another Unix user. It is the autonomous
+  // agent this model hands shell access, passwordless root, and a writable data
+  // directory, harvesting each rotated key straight past the 0600.
+  //
+  // mktemp creates with O_EXCL at 0600, so it cannot open an existing path and
+  // cannot follow a link. It runs in the destination directory so the rename
+  // stays within one filesystem.
   return [
     `__hermes_dst=${pathWord}`,
-    `__hermes_tmp="$__hermes_dst.tmp.$$"`,
-    `mkdir -p "$(dirname "$__hermes_dst")"`,
-    `: > "$__hermes_tmp"`,
+    `__hermes_dir="$(dirname "$__hermes_dst")"`,
+    `mkdir -p "$__hermes_dir"`,
+    `__hermes_tmp="$(mktemp "$__hermes_dir/.hermes-write.XXXXXXXXXX")"`,
     `chmod ${mode} "$__hermes_tmp"`,
     `if ! printf '%s' ${shellEsc(b64)} | base64 -d > "$__hermes_tmp"; then`,
     `  rm -f "$__hermes_tmp"`,
     `  echo "failed writing $__hermes_dst" >&2`,
     `  exit 1`,
     `fi`,
+    // rename(2) onto a symlink replaces the link itself rather than its target,
+    // so a pre-planted destination link is destroyed here rather than followed.
     `mv -f "$__hermes_tmp" "$__hermes_dst"`,
   ].join("\n");
 }
 
-/**
- * Wrap a command in a remote `timeout(1)`.
- *
- * Nothing else bounds wall-clock time, and the heavy install steps look
- * identical to a hang while they are working. A stall should fail on a
- * schedule rather than block the run forever.
- */
-export function withTimeout(seconds: number, command: string): string {
-  return `timeout ${seconds} ${command}`;
-}
+// `withTimeout(seconds, command)` used to live here and was called by nothing,
+// including its own tests. `install` writes its `timeout` invocation inline
+// because it also needs to inspect exit code 124, which this helper hid. An
+// exported helper nobody calls is a claim about the module's shape that the
+// module does not keep, so it is gone rather than left as scaffolding.

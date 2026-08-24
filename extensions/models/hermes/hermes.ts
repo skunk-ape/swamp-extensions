@@ -89,7 +89,12 @@ const GlobalArgsSchema = z.object({
     "Run `loginctl enable-linger` so the gateway user unit starts at boot and survives logout. Needs passwordless sudo. Without it the gateway only runs while a session is open, which upstream mentions in a hint and then leaves to the reader.",
   ),
   env: z.record(z.string(), z.string()).default({}).describe(
-    'Environment written to the Hermes .env. Source secrets from a vault, e.g. { ANTHROPIC_API_KEY: \'${{ vault.get("hermes", "anthropic-key") }}\' }. Keep every vault reference static and literal — a dynamically constructed reference forfeits the per-step secret allowlist. The gateway enables a messaging platform when its token is present here, so there is no separate platform list.',
+    // No quote characters in here. The published metadata truncated this
+    // description at the first escaped quote, cutting it off mid-example and
+    // losing everything after — including the sentence about static vault
+    // references, which is the only safety-critical one. A consumer running
+    // `swamp model type describe` saw the fragment and nothing else.
+    "Environment written to the Hermes .env, as a map of variable name to value. Source secrets from a vault with a vault.get expression. Keep every vault reference static and literal: a dynamically constructed reference forfeits the per-step secret allowlist swamp applies to dispatched methods. The gateway enables a messaging platform when it finds that platform token here, so there is no separate platform list — and a platform token with no matching allowlist is rejected, because it would otherwise produce a bot that connects and silently ignores you.",
   ),
   minDiskGb: z.number().default(20).describe(
     "Free space preflight requires. Chromium, Node, and a Python toolchain are the bulk of it, so a smaller floor is reasonable with installBrowser false.",
@@ -186,14 +191,35 @@ const VerifySchema = z.object({
  * `^{}` line is preferred over the bare one — recording the tag object SHA
  * would make `verify`'s comparison against `git rev-parse HEAD` fail forever.
  *
- * Resolving here also means a typo'd ref fails against the remote before
- * anything is installed, which is the point of `preflight`.
+ * Resolving here means a typo'd tag or branch fails against the remote before
+ * anything is installed, which is the point of `preflight`. That is **not**
+ * true of a full 40-character SHA: a commit that is not a ref tip cannot be
+ * confirmed with `ls-remote` at all, so one is taken as given and reported as
+ * unverified rather than silently treated as checked. The real confirmation is
+ * the fetch `install` does. An earlier version of this comment claimed a typo
+ * always failed here, and for SHAs it did not — `"a"×40` resolved to itself and
+ * preflight reported success for a commit that exists nowhere.
+ *
+ * Glob characters are rejected outright, because `git ls-remote` matches
+ * patterns rather than names.
  */
 export function resolveCommitFragment(ref: string): string {
   return `
 REF=${shellEsc(ref)}
+# A ref must name one thing. git ls-remote takes *patterns*, so an unfiltered
+# value turns this resolver into a lucky dip: "*" and "v*" resolve to whichever
+# tag sorts first, and "?ain" resolves to main. Nothing downstream would notice
+# — the installer would be handed a real commit, just not the one anyone chose.
+if printf '%s' "$REF" | grep -qE '[*?[]|\\\\'; then
+  echo "ref '$REF' contains a glob character. git ls-remote matches patterns, so this would silently resolve to whichever ref happened to match first." >&2
+  exit 1
+fi
 if printf '%s' "$REF" | grep -qE '^[0-9a-fA-F]{40}$'; then
+  # Used as given. A commit that is not a ref tip cannot be confirmed with
+  # ls-remote, and the only real check is the fetch the installer does — so
+  # preflight reports this one unverified rather than pretending otherwise.
   COMMIT="$REF"
+  SHA_UNVERIFIED=yes
 else
   LS="$(git ls-remote ${
     shellEsc(REPO_URL)
@@ -561,6 +587,7 @@ if [ -d "$INSTALL_DIR/.git" ]; then echo "EXISTING=yes"; else echo "EXISTING=no"
 
 ${resolveCommitFragment(g.ref)}
 echo "COMMIT=\${COMMIT:-}"
+echo "SHA_UNVERIFIED=\${SHA_UNVERIFIED:-no}"
 `;
 
         const { stdout } = await runScript(script, {
@@ -669,6 +696,11 @@ echo "COMMIT=\${COMMIT:-}"
             "no egress to github.com, so the clone and the toolchain downloads would fail.",
           );
         }
+        if (kv.SHA_UNVERIFIED === "yes") {
+          ctx.logger.warning(
+            "ref is a full SHA, which cannot be confirmed against the remote here — a commit that is not a ref tip is invisible to ls-remote. It is checked when install fetches it.",
+          );
+        }
         if (!resolvedCommit) {
           failures.push(
             `ref ${
@@ -774,28 +806,29 @@ if [ -z "\${COMMIT:-}" ]; then
 fi
 echo "COMMIT=$COMMIT"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  case ${shellEsc(g.onExisting)} in
-    fail)
-      echo "a checkout already exists at $INSTALL_DIR and onExisting is 'fail'" >&2
-      exit 1
-      ;;
-    fresh)
-      # Only the code is replaced. dataDir holds the learned skills, the
-      # sessions, and the memory, and none of that is reconstructible.
-      MOVED="$INSTALL_DIR.replaced-$(date -u +%Y%m%d-%H%M%S)"
-      echo "moving the existing checkout to $MOVED" >&2
-      mv "$INSTALL_DIR" "$MOVED"
-      echo "MOVED=$MOVED"
-      ;;
-  esac
+if [ -d "$INSTALL_DIR/.git" ] && [ ${shellEsc(g.onExisting)} = "fail" ]; then
+  echo "a checkout already exists at $INSTALL_DIR and onExisting is 'fail'" >&2
+  exit 1
 fi
 
+# Fetched before anything is destroyed. The reverse order — which this method
+# used to do — moves the working checkout aside and only then discovers the
+# network is down, leaving the host with no old install and no new one. Nothing
+# here is reversible enough to be casual about the sequence.
 INSTALLER="$(mktemp "\${TMPDIR:-/tmp}/hermes-install.XXXXXX")"
 trap 'rm -f "$INSTALLER"' EXIT
 curl -fsSL --max-time 120 -o "$INSTALLER" ${
           shellEsc(RAW_BASE)
         }/"$COMMIT"/scripts/install.sh
+
+if [ -d "$INSTALL_DIR/.git" ] && [ ${shellEsc(g.onExisting)} = "fresh" ]; then
+  # Only the code is replaced. dataDir holds the learned skills, the sessions,
+  # and the memory, and none of that is reconstructible.
+  MOVED="$INSTALL_DIR.replaced-$(date -u +%Y%m%d-%H%M%S)"
+  echo "moving the existing checkout to $MOVED" >&2
+  mv "$INSTALL_DIR" "$MOVED"
+  echo "MOVED=$MOVED"
+fi
 
 # The transcript goes to a log file on the target rather than to this script's
 # stderr, and is tailed back afterwards. That is deliberate: the installer's
@@ -851,14 +884,11 @@ echo "INSTALL_DIR=$INSTALL_DIR"
 
         const commit = kv.COMMIT ?? "";
         const head = kv.HEAD ?? "";
-        if (head && commit && head !== commit) {
-          // Worth failing on rather than recording quietly. It means the
-          // checkout is not at the ref that was asked for, so every later
-          // method would be configuring code nobody chose.
-          throw new Error(
-            `the installer left ${installDir} at ${head}, not the requested ${commit}. The install is not at the pinned ref.`,
-          );
-        }
+        // Checked below rather than here. The installer has already run by this
+        // point — the host is changed — and throwing before the resource write
+        // meant the one transition worth recording was the one never recorded.
+        // Write what happened first, then fail.
+        const commitMismatch = Boolean(head && commit && head !== commit);
 
         const tail = stripAnsi(stderr).trimEnd().split("\n").slice(-5).join(
           "\n",
@@ -901,6 +931,15 @@ echo "INSTALL_DIR=$INSTALL_DIR"
           logPath: kv.LOG ?? "",
           timestamp: new Date().toISOString(),
         });
+
+        if (commitMismatch) {
+          // Still a failure: the checkout is not at the ref anyone asked for,
+          // so every later method would configure code nobody chose. But the
+          // resource above now records that it happened.
+          throw new Error(
+            `the installer left ${installDir} at ${head}, not the requested ${commit}. The install is not at the pinned ref. The install resource records this run.`,
+          );
+        }
         return { dataHandles: [handle] };
       },
     },
@@ -1059,10 +1098,20 @@ echo "ACTIVE=$(systemctl --user is-active ${GATEWAY_UNIT} 2>/dev/null || echo un
 journalctl --user -u ${GATEWAY_UNIT} -n 20 --no-pager 2>&1 || true`,
             { signal: ctx.signal, transport: transportFor(g) },
           );
+          // The journal is logged rather than thrown. This unit was started
+          // seconds ago with the contents of .env in its environment, and a
+          // Python traceback from a bad token routinely quotes the value it
+          // choked on. An Error message travels further than a log line — into
+          // run records, reports, and whatever renders them — so the diagnosis
+          // goes to the log and the exception stays short.
+          ctx.logger.warning(
+            "Last {unit} log lines:\n{logs}",
+            { unit: GATEWAY_UNIT, logs: stripAnsi(logs).trimEnd() },
+          );
           throw new Error(
             `${GATEWAY_UNIT} is ${
               kv.ACTIVE ?? "unknown"
-            }, not active. Last log lines:\n${stripAnsi(logs).trimEnd()}`,
+            }, not active. Its recent journal output was logged above — read it there rather than from this message, because it can contain values from the .env.`,
           );
         }
 

@@ -40,8 +40,10 @@ mounts: []
 
 vmType: vz
 
-# Chromium, Node, and Python all land in this VM. 4 GiB is the Lima default and
-# is believed to be tight rather than wrong; revise once the install is measured.
+# Chromium, Node, and Python all land in this VM. Lima's default is 4 GiB, which
+# is why this asks for 8 — the comment here used to state the default and sit
+# directly above a different number, which reads as a contradiction rather than
+# a reason. Measured install peak is unknown; 8 has been enough so far.
 cpus: 4
 memory: 8GiB
 disk: 60GiB

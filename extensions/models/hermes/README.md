@@ -33,10 +33,10 @@ those.
 **Decide where the install lands.** There are three ways, and the default is the
 one that surprises people:
 
-| `transport` | Where it installs | When |
-| --- | --- | --- |
-| `local` *(default)* | Wherever the method executes | A swamp worker is enrolled on the target, or swamp is installed on it |
-| `ssh` | The `sshHost` you name | One orchestrator driving a host it is not running on |
+| `transport`         | Where it installs            | When                                                                  |
+| ------------------- | ---------------------------- | --------------------------------------------------------------------- |
+| `local` _(default)_ | Wherever the method executes | A swamp worker is enrolled on the target, or swamp is installed on it |
+| `ssh`               | The `sshHost` you name       | One orchestrator driving a host it is not running on                  |
 
 With `transport: local` and no worker placement, **it installs onto the machine
 you ran it from.** `preflight` refuses on macOS because it checks the OS, so a
@@ -79,11 +79,11 @@ Configure it, sourcing every secret from a vault:
 
 ```yaml
 globalArguments:
-  ref: v2026.8.18           # required, with no default — tracking main is the
-                            # upstream behaviour this model replaces
+  ref: v2026.8.18 # required, with no default — tracking main is the
+  # upstream behaviour this model replaces
   dataDir: ~/.hermes
   installSystemPackages: true
-  installBrowser: true      # Playwright and Chromium; most of minDiskGb
+  installBrowser: true # Playwright and Chromium; most of minDiskGb
   onExisting: update
   installGatewayService: true
   enableLinger: true
@@ -99,26 +99,26 @@ the environment. Putting a token in `env` is how you enable it.
 ### Optional keys worth knowing about
 
 `env` is an open map, so any variable Hermes reads works here — these are just
-the ones people actually reach for. Upstream's `.env.example` is *not* a
+the ones people actually reach for. Upstream's `.env.example` is _not_ a
 complete index, incidentally: `TAVILY_API_KEY`, `DISCORD_BOT_TOKEN`, and
 `OPENAI_API_KEY` are all live in the code and absent from that file, so the
 source is the authority.
 
-| Key | What it unlocks |
-| --- | --- |
-| `GITHUB_TOKEN` | Skills Hub search and install. Without it you get GitHub's 60 requests/hour anonymous limit |
-| `TELEGRAM_BOT_TOKEN` | Telegram gateway. From @BotFather |
-| `TELEGRAM_ALLOWED_USERS` | **Required in practice** — see below |
-| `TELEGRAM_HOME_CHANNEL` | Default chat for scheduled/cron delivery |
-| `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` | Slack gateway. Both are needed |
-| `DISCORD_BOT_TOKEN` | Discord gateway |
-| `EMAIL_ADDRESS` + `EMAIL_PASSWORD` | Email gateway, plus `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` |
-| `EXA_API_KEY` | AI-native web search |
-| `TAVILY_API_KEY` | Web search |
-| `FIRECRAWL_API_KEY` | Web search, extract, and crawl |
-| `PARALLEL_API_KEY` | Web search and extract |
-| `FAL_KEY` | Image generation |
-| `HONCHO_API_KEY` | Cross-session user modelling |
+| Key                                   | What it unlocks                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN`                        | Skills Hub search and install. Without it you get GitHub's 60 requests/hour anonymous limit |
+| `TELEGRAM_BOT_TOKEN`                  | Telegram gateway. From @BotFather                                                           |
+| `TELEGRAM_ALLOWED_USERS`              | **Required in practice** — see below                                                        |
+| `TELEGRAM_HOME_CHANNEL`               | Default chat for scheduled/cron delivery                                                    |
+| `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` | Slack gateway. Both are needed                                                              |
+| `DISCORD_BOT_TOKEN`                   | Discord gateway                                                                             |
+| `EMAIL_ADDRESS` + `EMAIL_PASSWORD`    | Email gateway, plus `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST`                                   |
+| `EXA_API_KEY`                         | AI-native web search                                                                        |
+| `TAVILY_API_KEY`                      | Web search                                                                                  |
+| `FIRECRAWL_API_KEY`                   | Web search, extract, and crawl                                                              |
+| `PARALLEL_API_KEY`                    | Web search and extract                                                                      |
+| `FAL_KEY`                             | Image generation                                                                            |
+| `HONCHO_API_KEY`                      | Cross-session user modelling                                                                |
 
 Upstream supports twenty-two messaging platforms in total, along with about
 fifteen alternative LLM providers. The rest are configured the same way — put
@@ -131,8 +131,7 @@ denies unknown senders by default, so it connects, reports itself healthy, and
 silently drops every message. The only trace is one warning line in the
 gateway's own startup log.
 
-So `preflight` and `configure` both fail when a platform token has no
-allowlist:
+So `preflight` and `configure` both fail when a platform token has no allowlist:
 
 ```yaml
 env:
@@ -158,9 +157,9 @@ swamp model @skunk-ape/hermes method run verify    hermes
 Each one stands alone and re-runs cleanly, so rotating a key is `configure` plus
 `service` rather than a rebuild. `preflight` writes what it found and fails with
 every reason the host is not ready rather than the first one, and it resolves
-`ref` against the remote, so a typo fails before anything is downloaded. A
-vault reference that names a missing vault or key fails earlier still — swamp
-resolves those before the method runs at all.
+`ref` against the remote, so a typo fails before anything is downloaded. A vault
+reference that names a missing vault or key fails earlier still — swamp resolves
+those before the method runs at all.
 
 > Keep every vault reference static and literal. A dynamically constructed
 > reference forfeits the per-step secret allowlist that swamp applies to
@@ -169,10 +168,11 @@ resolves those before the method runs at all.
 ### Two fields that do not mean what they look like
 
 - **`installSystemPackages: false` is an assertion, not a switch.** The upstream
-  installer has no flag to decline ripgrep and ffmpeg; it decides by `command
-  -v` and installs them through sudo when they are missing. The only honest way
-  to hold it to this choice is to require that it finds nothing to do, so
-  `preflight` fails unless both are already present.
+  installer has no flag to decline ripgrep and ffmpeg; it decides by
+  `command
+  -v` and installs them through sudo when they are missing. The only
+  honest way to hold it to this choice is to require that it finds nothing to
+  do, so `preflight` fails unless both are already present.
 - **`ref` should be a tag or a commit, not a branch.** A branch resolves to a
   different commit on each run, which is the upstream behaviour this model
   exists to replace, and it makes `install` and `verify` disagree legitimately.
@@ -189,9 +189,9 @@ and browser tools do not work. Upstream treats the step as non-fatal so the
 install itself still succeeds.
 
 Turning it off costs a capability that was not working anyway, and removes the
-largest single reason a dispatched install approaches the fifteen-minute
-ceiling below. See `DESIGN.md`, "The Playwright failure is not the distro", for
-the evidence and for the manual recipe if you want the browser regardless.
+largest single reason a dispatched install approaches the fifteen-minute ceiling
+below. See `DESIGN.md`, "The Playwright failure is not the distro", for the
+evidence and for the manual recipe if you want the browser regardless.
 
 **A dispatched install must finish inside fifteen minutes.** When these methods
 run as placed workflow steps on a worker, swamp's dispatch credential expires
@@ -205,12 +205,20 @@ cannot help, because the ceiling is in the transport rather than in the script.
 
 ## Running it on a worker
 
-[`workflow-hermes-install.yaml`](../../../workflows/workflow-hermes-install.yaml)
-drives the five methods in order as placed steps. It sets `affinity: true`,
-which is load-bearing rather than an optimisation: install, configure, service,
-and verify all address one host's filesystem and one host's systemd, so a run
-that spread them over two workers would report success for a machine that was
-never assembled.
+No workflow ships with this extension — an earlier version of this section
+linked to one that does not exist here. Chaining the five methods is a few
+lines, and one field in it is load-bearing:
+
+```yaml
+affinity: true
+labels:
+  role: hermes
+```
+
+`affinity` is not an optimisation. `install`, `configure`, `service`, and
+`verify` all address one host's filesystem and one host's systemd, so a run that
+spread them across two workers would report success for a machine that was never
+assembled.
 
 ## Target
 
@@ -232,14 +240,14 @@ limactl autostart hermes
 
 The template pins `mounts: []` rather than inheriting a base that mounts the
 host home directory, and grants passwordless sudo inside the VM. Those two go
-together: an agent that writes its own skills will need to install things
-nobody anticipated, and the VM boundary is what makes granting that reasonable.
-An autonomous agent with shell access and your home directory mounted is not
+together: an agent that writes its own skills will need to install things nobody
+anticipated, and the VM boundary is what makes granting that reasonable. An
+autonomous agent with shell access and your home directory mounted is not
 isolated.
 
-The honest limitation is that a laptop VM suspends on sleep, so scheduled
-skills do not fire overnight. That is the argument for moving the same install
-to a always-on host later, which the target contract makes cheap.
+The honest limitation is that a laptop VM suspends on sleep, so scheduled skills
+do not fire overnight. That is the argument for moving the same install to a
+always-on host later, which the target contract makes cheap.
 
 ## License
 

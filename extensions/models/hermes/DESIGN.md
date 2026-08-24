@@ -1,8 +1,8 @@
 # @skunk-ape/hermes — design
 
 Status: all five methods implemented and verified end to end against a Lima VM
-on 2026-08-20, driven as placed steps on an enrolled worker. Both transports
-are implemented: local (shape C) and ssh. The sections after "What the upstream
+on 2026-08-20, driven as placed steps on an enrolled worker. Both transports are
+implemented: local (shape C) and ssh. The sections after "What the upstream
 source changed" were written after the code and record where this document was
 wrong.
 
@@ -54,11 +54,11 @@ create the machine and holds no opinion about where it came from, but it does
 require the ability to run a shell there — and it does not open that connection
 itself unless told to. Three ways to satisfy that:
 
-| `transport` | How the target is reached |
-| --- | --- |
-| `local`, with a **swamp worker enrolled on the target** | The methods are dispatched to the worker and run locally on it. `lima-hermes.yaml` enrols one on first boot. |
-| `local`, with **swamp installed on the target** | Run the methods there directly. Simplest for a machine you already sit on, and the shape the "Rejected" section calls shape B. |
-| `ssh`, with **`sshHost`** | The same scripts run over an ssh connection. Added 2026-08-21 — see "The SSH transport, and what reading a neighbour changed" at the end. |
+| `transport`                                             | How the target is reached                                                                                                                 |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `local`, with a **swamp worker enrolled on the target** | The methods are dispatched to the worker and run locally on it. `lima-hermes.yaml` enrols one on first boot.                              |
+| `local`, with **swamp installed on the target**         | Run the methods there directly. Simplest for a machine you already sit on, and the shape the "Rejected" section calls shape B.            |
+| `ssh`, with **`sshHost`**                               | The same scripts run over an ssh connection. Added 2026-08-21 — see "The SSH transport, and what reading a neighbour changed" at the end. |
 
 `local` is the default, and it is the one that surprises people: run a method
 with no worker and no placement and it installs Hermes onto whatever machine the
@@ -130,11 +130,11 @@ An agent with root that mutates its own machine for months produces a VM whose
 drifted state is not reconstructible. So the model is not "back up the machine."
 It is:
 
-| Class | Examples | Intended handling |
-| --- | --- | --- |
-| Regenerable | `.env`, API keys | Rebuilt from swamp vault by `configure`. **Never backed up.** |
-| Irreplaceable | learned skills, memory, sessions | Should be backed up. The only thing that must survive. |
-| Disposable | OS packages, drift, logs | Rebuilt by `install`. |
+| Class         | Examples                         | Intended handling                                             |
+| ------------- | -------------------------------- | ------------------------------------------------------------- |
+| Regenerable   | `.env`, API keys                 | Rebuilt from swamp vault by `configure`. **Never backed up.** |
+| Irreplaceable | learned skills, memory, sessions | Should be backed up. The only thing that must survive.        |
+| Disposable    | OS packages, drift, logs         | Rebuilt by `install`.                                         |
 
 Backing up `~/.hermes` wholesale would walk the secrets straight back across the
 isolation boundary. Splitting it makes restore mean "fresh host, plus vault,
@@ -180,20 +180,20 @@ installed**, and they fall into two distinct layers:
 
 **Manage an existing install**
 
-| Extension | Methods | Downloads |
-| --- | --- | --- |
-| `@mgreten/hermes-env` | `listKeys`, `setEnv`, `removeEnv`, `rotateSwampKey`, `restartGateway` | 11 |
-| `@mgreten/hermes-config` | `getConfig`, `setMainModel`, `setAuxiliaryModels`, `restartGateway` | 12 |
+| Extension                | Methods                                                               | Downloads |
+| ------------------------ | --------------------------------------------------------------------- | --------- |
+| `@mgreten/hermes-env`    | `listKeys`, `setEnv`, `removeEnv`, `rotateSwampKey`, `restartGateway` | 11        |
+| `@mgreten/hermes-config` | `getConfig`, `setMainModel`, `setAuxiliaryModels`, `restartGateway`   | 12        |
 
 **Use the running agent**
 
-| Extension | Methods | Downloads |
-| --- | --- | --- |
-| `@webframp/hermes-journal-writer` | `write_daily_entry` | 30 |
-| `@mgreten/hermes-review-kit` | `collect`, plus workflows and reports | 14 |
-| `@mgreten/cron-builder` | `build`, `validate` — cron specs, touches no host | 9 |
-| `@webframp/hermes-kanban-orchestrator` | `new_task`, `list_recent` | 8 |
-| `@mgreten/hermes-interest-signals` | `aggregate` | 1 |
+| Extension                              | Methods                                           | Downloads |
+| -------------------------------------- | ------------------------------------------------- | --------- |
+| `@webframp/hermes-journal-writer`      | `write_daily_entry`                               | 30        |
+| `@mgreten/hermes-review-kit`           | `collect`, plus workflows and reports             | 14        |
+| `@mgreten/cron-builder`                | `build`, `validate` — cron specs, touches no host | 9         |
+| `@webframp/hermes-kanban-orchestrator` | `new_task`, `list_recent`                         | 8         |
+| `@mgreten/hermes-interest-signals`     | `aggregate`                                       | 1         |
 
 **Nobody has published the install, and the re-survey strengthens rather than
 weakens that claim** — the ecosystem has doubled and still nothing occupies the
@@ -202,7 +202,7 @@ configure, then use, with seven extensions crowded into the top two tiers.
 
 The overlap with this model is therefore narrow and worth stating precisely.
 `preflight`, `install`, and `verify` are unserved entirely. `configure` overlaps
-`@mgreten/hermes-env`, and `service` overlaps the `restartGateway` that *both*
+`@mgreten/hermes-env`, and `service` overlaps the `restartGateway` that _both_
 `hermes-env` and `hermes-config` implement — three implementations of "restart
 the gateway" now exist, which is a small duplication signal the ecosystem might
 eventually want to collapse.
@@ -231,11 +231,11 @@ may already solve the port, identity, and stdin problems that ruled out
 Driving the host over SSH is not the only option. Swamp could instead run on the
 VM, and the install could be a local run. Three shapes:
 
-| | Control plane | Execution | SSH transport needed |
-| --- | --- | --- | --- |
-| **A. Remote-drive** | Mac | Remote, over SSH | Yes |
-| **B. Swamp on the VM** | The VM itself | Local | No |
-| **C. Worker enrollment** | Mac | Local on the VM | No |
+|                          | Control plane | Execution        | SSH transport needed |
+| ------------------------ | ------------- | ---------------- | -------------------- |
+| **A. Remote-drive**      | Mac           | Remote, over SSH | Yes                  |
+| **B. Swamp on the VM**   | The VM itself | Local            | No                   |
+| **C. Worker enrollment** | Mac           | Local on the VM  | No                   |
 
 **B is genuinely tempting.** Every sharp edge in the next section disappears:
 port, identity, stdin, `BatchMode`, host keys, the unenforced timeout, shell
@@ -289,9 +289,9 @@ the orchestrator. Two paths exist, and neither puts the vault on the worker:
 
 **Confirmed by running it, not only by reading it.** A worker was enrolled with
 an isolated `HOME`, a working directory outside the repository, and therefore no
-access to `.swamp/secrets/local_encryption/<vault>/.key`. A workflow step
-placed on that worker by label ran `@skunk-ape/stef.lint` over text sourced from
-a vault reference, and succeeded:
+access to `.swamp/secrets/local_encryption/<vault>/.key`. A workflow step placed
+on that worker by label ran `@skunk-ape/stef.lint` over text sourced from a
+vault reference, and succeeded:
 
 ```
 Dispatch 322be8f0: @skunk-ape/stef.lint (probe-c-vault › lint-the-secret) succeeded in 501ms
@@ -305,8 +305,8 @@ VM, while running the work locally on it.** That is the goal shape. Four
 findings qualify it, and all four are design constraints rather than blockers:
 
 - **The orchestrator ships its entire process environment with every dispatch.**
-  It overlays the worker's environment, minus a fixed denylist that protects
-  the worker's own `HOME`, `PATH`, `SHELL`, `TMPDIR`, `XDG_*`, `DENO_*`, and
+  It overlays the worker's environment, minus a fixed denylist that protects the
+  worker's own `HOME`, `PATH`, `SHELL`, `TMPDIR`, `XDG_*`, `DENO_*`, and
   `SWAMP_*`. The design record names this as the deliberate injection path for
   ambient credentials, and records per-label environment scoping as unbuilt.
   **Consequence: whatever shell runs `swamp serve` becomes ambient credentials
@@ -316,19 +316,20 @@ findings qualify it, and all four are design constraints rather than blockers:
   different door.
 - **The per-step secret allowlist has a bypass.** `resolveSecret` enforces an
   allowlist built from the vault references in the dispatched step's arguments,
-  but `capability_service.ts` returns early when
-  `allowedSecrets.hasDynamicRefs` is true. A dynamically constructed vault
-  reference therefore forfeits the allowlist for that dispatch. **Keep every
-  vault reference in this model static and literal.**
+  but `capability_service.ts` returns early when `allowedSecrets.hasDynamicRefs`
+  is true. A dynamically constructed vault reference therefore forfeits the
+  allowlist for that dispatch. **Keep every vault reference in this model static
+  and literal.**
 - **`putSecret` has no allowlist at all**, only the infrastructure-key denylist.
   A dispatched method can overwrite any non-infrastructure secret. Worth knowing
   before granting anything write access.
-- **No vault read audit entry appeared** for the probe. `swamp vault
-  audit-trail` reported none afterwards. Expected, most likely, because
-  expression-based resolution happens orchestrator-side and never becomes a
-  `resolveSecret` capability call, which is what the trail appears to record.
-  Do not rely on the audit trail to see secrets consumed by dispatched steps
-  without confirming what it covers.
+- **No vault read audit entry appeared** for the probe.
+  `swamp vault
+  audit-trail` reported none afterwards. Expected, most likely,
+  because expression-based resolution happens orchestrator-side and never
+  becomes a `resolveSecret` capability call, which is what the trail appears to
+  record. Do not rely on the audit trail to see secrets consumed by dispatched
+  steps without confirming what it covers.
 
 Infrastructure keys are denied to dispatched methods outright, `server-token-*`
 and `worker-token-*` among them, so the specific chain that ruled out shape B —
@@ -345,14 +346,14 @@ rather than in a missing method, and `sshExec` builds its argv inline, so
 `export const extension` cannot reach them. Read from
 `.swamp/pulled-extensions/@keeb/ssh/models/lib/ssh.ts`:
 
-| Gap | Consequence here |
-| --- | --- |
-| No `port`. Target is `user@host` with no `-p`. | Cannot reach a Lima VM, which listens on `127.0.0.1:<random high port>`. |
-| No identity file and no `-F` config file. | Lima's key is `~/.lima/_config/user`, not a default key name. |
-| `exec` passes the command in argv, with no stdin. | A secret cannot be written safely. `upload` is no escape, because it needs a local file, which puts the secret on local disk. |
-| `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null`, both hardcoded. | No host key verification at all, ever, and not configurable. Tolerable for a loopback VM. Not tolerable for EC2. |
-| `timeout` is accepted but never enforced. Its own skill documents this. | The Hermes install pulls Node 26, Chromium, and Python. A hang has no cap. |
-| `exec` throws on any non-zero exit. `sshExecRaw` exists but is not exposed. | Every probe must be written to always exit 0 and put its answer on stdout. |
+| Gap                                                                            | Consequence here                                                                                                              |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| No `port`. Target is `user@host` with no `-p`.                                 | Cannot reach a Lima VM, which listens on `127.0.0.1:<random high port>`.                                                      |
+| No identity file and no `-F` config file.                                      | Lima's key is `~/.lima/_config/user`, not a default key name.                                                                 |
+| `exec` passes the command in argv, with no stdin.                              | A secret cannot be written safely. `upload` is no escape, because it needs a local file, which puts the secret on local disk. |
+| `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null`, both hardcoded. | No host key verification at all, ever, and not configurable. Tolerable for a loopback VM. Not tolerable for EC2.              |
+| `timeout` is accepted but never enforced. Its own skill documents this.        | The Hermes install pulls Node 26, Chromium, and Python. A hang has no cap.                                                    |
+| `exec` throws on any non-zero exit. `sshExecRaw` exists but is not exposed.    | Every probe must be written to always exit 0 and put its answer on stdout.                                                    |
 
 **Decision: author a minimal `_lib/ssh.ts` modeled on
 `@magistr/observability-agent`.** Its helper solves each of the above:
@@ -393,31 +394,31 @@ setup step rather than shelling out to `limactl`.
 Every method reaches the host through the one `runScript` seam, so every host
 type and every transport shape looks identical to the install logic.
 
-| Method | What it does |
-| --- | --- |
+| Method      | What it does                                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `preflight` | Assert OS and arch, systemd present, passwordless sudo, disk space, network egress. Validate the whole config, including every vault reference. Change nothing. |
-| `install` | Clone at a pinned ref and run the installer fully non-interactively. Idempotent. |
-| `configure` | Render `~/.hermes/.env` from vault. Mode 0600, written over stdin. |
-| `service` | Install and enable the systemd unit for the gateway. |
-| `verify` | Confirm Hermes actually answers. Not "the installer exited 0." |
+| `install`   | Clone at a pinned ref and run the installer fully non-interactively. Idempotent.                                                                                |
+| `configure` | Render `~/.hermes/.env` from vault. Mode 0600, written over stdin.                                                                                              |
+| `service`   | Install and enable the systemd unit for the gateway.                                                                                                            |
+| `verify`    | Confirm Hermes actually answers. Not "the installer exited 0."                                                                                                  |
 
 ### Rules the method split has to honor
 
 - **Validate before touching the host.** A mistyped ref or a malformed
   environment key must fail in `preflight`, not after Chromium has downloaded.
   This is cheap to build and it is most of the felt quality difference. Note
-  that swamp gets there first for the specific case this rule was written
-  about: a vault reference naming a missing vault or key fails the run before
-  the method executes at all, which was verified rather than assumed.
+  that swamp gets there first for the specific case this rule was written about:
+  a vault reference naming a missing vault or key fails the run before the
+  method executes at all, which was verified rather than assumed.
 - **Never assume a TTY, and fail rather than hang.** The upstream prompts block
   on a non-TTY SSH pipe. `BatchMode=yes` turns a block into an immediate error,
   which is the safety net. Drive with `--skip-setup` and answer the package
-  prompt explicitly so the net is never needed. Detect an existing install
-  first and choose update or fresh deliberately, so a re-run is idempotent by
-  design rather than by luck.
+  prompt explicitly so the net is never needed. Detect an existing install first
+  and choose update or fresh deliberately, so a re-run is idempotent by design
+  rather than by luck.
 - **Cap every long step remotely.** `ssh` enforces no wall-clock limit, and the
-  Chromium and Node steps are slow enough to look identical to a hang. Wrap
-  them in a remote `timeout(1)` so a stall fails on a schedule.
+  Chromium and Node steps are slow enough to look identical to a hang. Wrap them
+  in a remote `timeout(1)` so a stall fails on a schedule.
 - **Keep install-time and runtime config separate.** Which packages and which
   ref are one-time and shape the box. Which API key and which gateway platforms
   change often. If `configure` runs without a reinstall, rotating a key takes
@@ -433,14 +434,14 @@ type and every transport shape looks identical to the install logic.
 ## Open questions
 
 1. **Playwright and Chromium on arm64 Linux under Lima `vz`.** Partly answered:
-   the installer does *not* pull them unconditionally — `--skip-browser` exists
+   the installer does _not_ pull them unconditionally — `--skip-browser` exists
    and is now the `installBrowser` field. Whether they work on arm64 still needs
    a real run.
 2. **QR pairing for WhatsApp and Signal on a headless host.** Pairing is
-   normally an ASCII QR in the terminal, which SSH carries, but confirm it.
-   Note that the installer's own pairing prompt is skipped under
-   `--non-interactive`, and it says so, so pairing is a deliberate later step
-   rather than something this model can drive.
+   normally an ASCII QR in the terminal, which SSH carries, but confirm it. Note
+   that the installer's own pairing prompt is skipped under `--non-interactive`,
+   and it says so, so pairing is a deliberate later step rather than something
+   this model can drive.
 3. **Egress policy for the VM.** Hermes needs outbound to model APIs and to
    messaging platforms. Decide what else, if anything.
 4. **Gateway inbound.** Most messaging platforms are outbound-only. Anything
@@ -512,9 +513,9 @@ hides three real requirements:
   `service` would have fixed one step later, so the check only fires when
   nothing later will create one.
 
-The model reuses `hermes gateway install` rather than writing its own unit
-file. Carrying a second copy of a unit that upstream also generates is a
-guaranteed future drift for no gain.
+The model reuses `hermes gateway install` rather than writing its own unit file.
+Carrying a second copy of a unit that upstream also generates is a guaranteed
+future drift for no gain.
 
 ### The installer is better than its reputation, in specific ways
 
@@ -522,26 +523,26 @@ The design above describes an installer that "prompts about system packages,
 about PATH edits, and about what to do with an existing install". The prompts
 are real, but there is more machinery to drive them than assumed:
 
-| Assumed | Actually |
-| --- | --- |
-| Only `--skip-setup` to work with | `--non-interactive` also exists, and makes every remaining `prompt_yes_no` take its default instead of reading `/dev/tty` |
-| Tracks `main` | `--commit <sha>` pins the checkout, and `--force-commit` makes the pin authoritative even when it moves an install backwards |
-| Chromium is unconditional | `--skip-browser` and `--skip-computer-use` exist |
-| Bundled skills are unconditional | `--no-skills` exists, and is a one-way door: it writes `<dataDir>/.no-bundled-skills`, which later runs honour |
+| Assumed                          | Actually                                                                                                                     |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Only `--skip-setup` to work with | `--non-interactive` also exists, and makes every remaining `prompt_yes_no` take its default instead of reading `/dev/tty`    |
+| Tracks `main`                    | `--commit <sha>` pins the checkout, and `--force-commit` makes the pin authoritative even when it moves an install backwards |
+| Chromium is unconditional        | `--skip-browser` and `--skip-computer-use` exist                                                                             |
+| Bundled skills are unconditional | `--no-skills` exists, and is a one-way door: it writes `<dataDir>/.no-bundled-skills`, which later runs honour               |
 
 Two of these matter beyond convenience. `--non-interactive` is a stronger
 guarantee than `BatchMode=yes`, because it removes the prompt rather than
-turning a hang into an error — the design above treats `BatchMode` as the
-safety net, and it still is, but the net is now much less likely to be needed.
-And `--force-commit` is load-bearing: without it, the installer *silently
-ignores* a pin that would move an existing checkout backwards, so a rollback
-would appear to succeed and change nothing.
+turning a hang into an error — the design above treats `BatchMode` as the safety
+net, and it still is, but the net is now much less likely to be needed. And
+`--force-commit` is load-bearing: without it, the installer _silently ignores_ a
+pin that would move an existing checkout backwards, so a rollback would appear
+to succeed and change nothing.
 
 ### `--commit` takes a SHA, so a tag has to be peeled
 
 `--commit` rejects anything that is not 7-40 hex characters, so the model
-resolves `ref` with `git ls-remote` first. An annotated tag resolves to a *tag
-object*, not a commit, and `v2026.8.18` is annotated. Recording the tag object
+resolves `ref` with `git ls-remote` first. An annotated tag resolves to a _tag
+object_, not a commit, and `v2026.8.18` is annotated. Recording the tag object
 SHA would make `verify`'s comparison against `git rev-parse HEAD` fail forever,
 so the peeled `refs/tags/<ref>^{}` line is preferred over the bare one.
 
@@ -552,28 +553,27 @@ downloaded.
 ### The installer itself is now pinned, not just the code
 
 The design objects to `curl … | bash` for tracking `main`, and then proposes
-pinning the *repository* ref. That pins the smaller half. The script that does
+pinning the _repository_ ref. That pins the smaller half. The script that does
 the installing is still whatever was published a moment ago.
 
 So `install` resolves the commit first and then fetches
-`raw.githubusercontent.com/NousResearch/hermes-agent/<sha>/scripts/install.sh`
-— a URL whose path *is* the git commit, and therefore an immutable object. The
+`raw.githubusercontent.com/NousResearch/hermes-agent/<sha>/scripts/install.sh` —
+a URL whose path _is_ the git commit, and therefore an immutable object. The
 installer and the code it installs are the same reviewed revision.
 `scripts/install.sh` sources nothing, so one file is the whole installer.
 
 ### Two configured fields could not mean what they said
 
-- **`gatewayPlatforms` was a fiction, and is removed.** There is no
-  platform list anywhere upstream. `gateway/config.py` enables a platform when
-  it finds that platform's token in the environment. A field that silently did
-  nothing is worse than no field, so putting a token in `env` is now the whole
-  mechanism.
+- **`gatewayPlatforms` was a fiction, and is removed.** There is no platform
+  list anywhere upstream. `gateway/config.py` enables a platform when it finds
+  that platform's token in the environment. A field that silently did nothing is
+  worse than no field, so putting a token in `env` is now the whole mechanism.
 - **`installSystemPackages: false` became an assertion.** There is no flag to
-  decline. The installer decides by `command -v` and installs ripgrep and
-  ffmpeg through sudo when they are missing. The only honest enforcement is to
-  require that it finds nothing to do, so `preflight` fails unless both are
-  already present. The alternative — accepting the field and letting sudo run
-  anyway — would be a lie in a security-relevant direction.
+  decline. The installer decides by `command -v` and installs ripgrep and ffmpeg
+  through sudo when they are missing. The only honest enforcement is to require
+  that it finds nothing to do, so `preflight` fails unless both are already
+  present. The alternative — accepting the field and letting sudo run anyway —
+  would be a lie in a security-relevant direction.
 
 ### `.env` is authoritative, which is better than expected
 
@@ -584,10 +584,9 @@ into it — means removing a key from the model definition really does remove it
 from the running agent. That is the property that makes a declarative
 environment worth having, and it happens to be what upstream already does.
 
-Values are double-quoted and escaped for `\\`, `"`, `\n`, and `\r`, which is
-the subset python-dotenv unescapes inside double quotes. A single quote needs
-no escaping there, which the tests are careful to distinguish from bash's
-`$'...'`.
+Values are double-quoted and escaped for `\\`, `"`, `\n`, and `\r`, which is the
+subset python-dotenv unescapes inside double quotes. A single quote needs no
+escaping there, which the tests are careful to distinguish from bash's `$'...'`.
 
 ### `hermes doctor` cannot be the verdict
 
@@ -617,12 +616,12 @@ Install directory: /home/agent/.hermes/hermes-agent
 e624e9fde561e1add9388384012b295fde669ade
 ```
 
-That commit is exactly the peeled `refs/tags/v2026.8.18^{}`, so the annotated-tag
-peeling written from reading `install.sh` is right in practice. Chromium
-downloaded and extracted on arm64 under `vz`, which is most of open question 1.
-`preflight` passed on Linux. The vault-sourced `.env` value resolved on the
-orchestrator and arrived at a worker that holds no vault, which is the shape C
-claim, now observed rather than argued.
+That commit is exactly the peeled `refs/tags/v2026.8.18^{}`, so the
+annotated-tag peeling written from reading `install.sh` is right in practice.
+Chromium downloaded and extracted on arm64 under `vz`, which is most of open
+question 1. `preflight` passed on Linux. The vault-sourced `.env` value resolved
+on the orchestrator and arrived at a worker that holds no vault, which is the
+shape C claim, now observed rather than argued.
 
 ### A timeout does not bound wall-clock time if you read to EOF
 
@@ -654,7 +653,7 @@ that hold the pipe.
 
 Fixed twice over, deliberately:
 
-- **At the seam.** `runScriptRaw` now waits for the process to *exit*, drains
+- **At the seam.** `runScriptRaw` now waits for the process to _exit_, drains
   the pipes for a two-second grace, then cancels the readers. A stray orphan
   costs two seconds instead of the rest of the run. This is the general fix, and
   it covers scripts nobody has written yet.
@@ -771,10 +770,11 @@ under `vz` — that half of open question 1 is answered — and then hangs in
 `--with-deps`, every time, until upstream's own cap kills it. The install
 succeeds anyway because upstream treats that step as non-fatal, so browser tools
 are the casualty rather than the install. Ten of the seventeen minutes are spent
-waiting for a step that never succeeds, which is also what puts a browser-bearing
-install uncomfortably near the fifteen-minute dispatch ceiling. `installBrowser:
-false` avoids both, and on current evidence is the better default for a
-dispatched install.
+waiting for a step that never succeeds, which is also what puts a
+browser-bearing install uncomfortably near the fifteen-minute dispatch ceiling.
+`installBrowser:
+false` avoids both, and on current evidence is the better
+default for a dispatched install.
 
 **A note on `doctorIssues`.** `verify` recorded 2; running `hermes doctor` by
 hand a few minutes later reported 4, the extra two being npm audit findings that
@@ -785,8 +785,8 @@ that is the right weight to give it.
 
 ## The Playwright failure is not the distro
 
-Recorded after the 24.04 rebuild, because it corrects a confident prediction made
-one section above and acted on.
+Recorded after the 24.04 rebuild, because it corrects a confident prediction
+made one section above and acted on.
 
 The theory was: Ubuntu 26.04 is newer than any Playwright build, so pinning the
 Lima base image to 24.04 — which Playwright supports natively — would make
@@ -820,12 +820,12 @@ reaching the network.
 
 Both symptoms are one bug, and neither is about Ubuntu:
 
-| Observed | Actual |
-| --- | --- |
-| "Hangs during `--with-deps`" | Hangs *after* a successful component install, in any mode |
-| "Re-downloads Chromium every run" | The completion marker is never written, because the process never exits cleanly |
-| "Fixed by a newer/older distro" | Identical on 26.04 and 24.04 |
-| "Second run hangs on the download" | Second run never downloads; it blocks on the stale `__dirlock` |
+| Observed                           | Actual                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------- |
+| "Hangs during `--with-deps`"       | Hangs _after_ a successful component install, in any mode                       |
+| "Re-downloads Chromium every run"  | The completion marker is never written, because the process never exits cleanly |
+| "Fixed by a newer/older distro"    | Identical on 26.04 and 24.04                                                    |
+| "Second run hangs on the download" | Second run never downloads; it blocks on the stale `__dirlock`                  |
 
 The install completes regardless, because upstream treats the browser step as
 non-fatal. The cost is about ten minutes per install buying a component set that
@@ -840,8 +840,8 @@ ceiling, and loses only a capability that was not working anyway.
 A manual recipe does exist for anyone who wants the browser: remove
 `~/.cache/ms-playwright/__dirlock`, run `playwright install chromium` under a
 timeout, kill it when it stalls after the download, remove the lock again, and
-repeat until all three components are present. That is not something to
-automate blindly, and it is not something this model should pretend to do.
+repeat until all three components are present. That is not something to automate
+blindly, and it is not something this model should pretend to do.
 
 ### On the distro question more generally
 
@@ -863,7 +863,7 @@ one:
   approach. It will not run unpatched prebuilt dynamic binaries, so Node, uv's
   Python, and Chromium would each need patchelf or nix-ld. Upstream ships
   `flake.nix` and `services.hermes-agent.enable`, which is a genuinely better
-  path *if* NixOS is the target — and it would make this extension redundant
+  path _if_ NixOS is the target — and it would make this extension redundant
   there, because that module already is the declaration this extension exists to
   produce. Tellingly, upstream's own NixOS module offers `container.enable`,
   documented as "OCI container mode (**Ubuntu base**, full self-modification
@@ -885,8 +885,8 @@ out of that, one of which corrects this document.
 ### The gap list against `@keeb/ssh` was partly wrong
 
 The Transport section above disqualifies `@keeb/ssh` on six counts, and the
-first two — "no port" and "no identity file" — do not hold up. `hermes-env`
-does not implement them either. It passes its host string to `ssh` verbatim and
+first two — "no port" and "no identity file" — do not hold up. `hermes-env` does
+not implement them either. It passes its host string to `ssh` verbatim and
 stops.
 
 That is the correct design, and this document already knew it in a different
@@ -900,7 +900,7 @@ place and as an elegant non-problem in another.
 What genuinely disqualifies `@keeb/ssh` is narrower and worse than the list
 suggested: it hardcodes `StrictHostKeyChecking=no` **and**
 `UserKnownHostsFile=/dev/null`. That does not merely skip verification, it
-*overrides* whatever the user configured, for every connection, with no way to
+_overrides_ whatever the user configured, for every connection, with no way to
 turn it back on. For a model that installs software with sudo on a remote host,
 silently disabling host-key verification is the one thing that must not happen.
 `hermes-env` avoids it by not setting it — safer through doing less.
@@ -913,7 +913,7 @@ Two options, and no more:
   nobody is watching. The safety net behind the installer's `--non-interactive`.
 - `ConnectTimeout` — an unreachable host fails on a schedule.
 
-Everything else is inherited. The tests assert on the *absence* of
+Everything else is inherited. The tests assert on the _absence_ of
 `StrictHostKeyChecking`, `UserKnownHostsFile`, `-p`, `-i` and `-F`, because
 those absences are decisions rather than omissions and a future edit should have
 to argue with a failing test before adding them.
@@ -934,7 +934,7 @@ were already shell fed over stdin and none of them named a host. That is exactly
 the property the seam was introduced for, and it is the first time it has been
 tested by an actual architecture change rather than asserted.
 
-Notably this model's shape is *stronger* than the neighbour it learned from.
+Notably this model's shape is _stronger_ than the neighbour it learned from.
 `hermes-env` puts its command in argv (`ssh host "sudo tee … && chmod …"`) and
 pipes only the payload over stdin, so the command line is visible in `ps` on
 both machines. Feeding the entire script to `bash -s` over stdin keeps

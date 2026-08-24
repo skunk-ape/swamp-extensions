@@ -1,5 +1,5 @@
 manifestVersion: 1
-name: '@skunk-ape/hermes'
+name: "@skunk-ape/hermes"
 version: 2026.08.21.1
 description: |
   Install and configure the Hermes agent (https://hermes-agent.org/) on a Linux
@@ -86,7 +86,7 @@ description: |
     enable-linger`. `installSystemPackages: false` avoids the first only when
     ripgrep and ffmpeg are already installed, which `preflight` checks.
   - A vault holding whatever API keys Hermes needs.
-repository: 'https://github.com/skunk-ape/swamp-extensions'
+repository: "https://github.com/skunk-ape/swamp-extensions"
 
 # Everything for this extension lives beside this manifest, so typed entries
 # and additionalFiles both resolve from here rather than from extensions/models/.

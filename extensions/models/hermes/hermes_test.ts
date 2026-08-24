@@ -154,6 +154,52 @@ Deno.test("writeFileScript handles non-Latin-1 content", async () => {
   await Deno.remove(dir, { recursive: true });
 });
 
+Deno.test("writeFileScript refuses a pre-planted temp symlink", async () => {
+  // The attack an earlier revision was open to, and the reason mktemp is used
+  // instead of "$dst.tmp.$$". With a predictable temp name, the agent this
+  // model gives shell access and a writable data directory can plant a symlink
+  // and have every rotated secret written wherever it likes — past the 0600,
+  // and permanently, because the following mv leaves the destination a link.
+  //
+  // Asserting on behaviour rather than on the absence of ".tmp.$$" in the
+  // script, so a different predictable scheme fails this too.
+  const dir = await Deno.makeTempDir();
+  const victim = `${dir}/victim.txt`;
+  await Deno.writeTextFile(victim, "ORIGINAL");
+  const dst = `${dir}/.env`;
+
+  // Plant every temp name the old scheme could have produced. $$ inside the
+  // script is bash's pid, so cover a generous range of plausible pids.
+  const { stdout: pidOut } = await runScript(`echo "PID=$$"`);
+  const shellPid = Number(parseKv(pidOut).PID);
+  for (let p = shellPid - 50; p <= shellPid + 200; p++) {
+    try {
+      await Deno.symlink(victim, `${dst}.tmp.${p}`);
+    } catch { /* already exists, or not permitted — fine */ }
+  }
+
+  await runScript(writeFileScript(shellEsc(dst), "SECRET-API-KEY\n", "0600"));
+
+  assertEquals(
+    await Deno.readTextFile(victim),
+    "ORIGINAL",
+    "the secret was written through a planted symlink",
+  );
+  assertEquals(await Deno.readTextFile(dst), "SECRET-API-KEY\n");
+  const info = await Deno.lstat(dst);
+  assert(!info.isSymlink, "the destination must not be left as a symlink");
+  await Deno.remove(dir, { recursive: true });
+});
+
+Deno.test("writeFileScript leaves no temp file behind", async () => {
+  const dir = await Deno.makeTempDir();
+  await runScript(writeFileScript(shellEsc(`${dir}/.env`), "x\n", "0600"));
+  const left = [];
+  for await (const e of Deno.readDir(dir)) left.push(e.name);
+  assertEquals(left, [".env"]);
+  await Deno.remove(dir, { recursive: true });
+});
+
 Deno.test("writeFileScript never exposes the content before chmod", () => {
   // The file must exist at 0600 before anything is written into it, so the
   // secret is never briefly world-readable.
@@ -532,4 +578,46 @@ Deno.test("HERMES_BIN_FRAGMENT reports empty when nothing is installed", async (
     `PATH=/nonexistent\nHOME=/nonexistent\n${HERMES_BIN_FRAGMENT}\necho "HERMES_BIN=$HERMES_BIN"`,
   );
   assertEquals(parseKv(stdout).HERMES_BIN, "");
+});
+
+// --- ref resolution ------------------------------------------------------
+
+Deno.test("a glob ref is rejected rather than resolved to something", async () => {
+  // git ls-remote matches patterns, so an unfiltered ref is a lucky dip: "*"
+  // and "v*" resolve to whichever tag sorts first and "?ain" resolves to main.
+  // Nothing downstream would notice — the installer gets a real commit, just
+  // not the one anyone chose.
+  for (const ref of ["*", "v*", "?ain", "v2026.8.[0-9]"]) {
+    const { code, stderr } = await runProbe(
+      `${resolveCommitFragment(ref)}\necho "COMMIT=\${COMMIT:-}"`,
+    );
+    assert(code !== 0, `ref ${ref} should be rejected`);
+    assertStringIncludes(stderr, "glob character");
+  }
+});
+
+Deno.test("an ordinary ref is unaffected by the glob check", async () => {
+  const { stdout, code } = await runProbe(
+    `${resolveCommitFragment("v2026.8.18")}\necho "COMMIT=\${COMMIT:-}"`,
+  );
+  assertEquals(code, 0);
+  assertEquals(
+    parseKv(stdout).COMMIT,
+    "e624e9fde561e1add9388384012b295fde669ade",
+    "the peeled commit for the annotated tag",
+  );
+});
+
+Deno.test("a full SHA is reported as unverified, not silently trusted", async () => {
+  // A commit that is not a ref tip is invisible to ls-remote, so it cannot be
+  // confirmed here. Previously "a"x40 resolved to itself and preflight reported
+  // success for a commit that exists nowhere.
+  const { stdout } = await runProbe(
+    `${resolveCommitFragment("a".repeat(40))}
+echo "COMMIT=\${COMMIT:-}"
+echo "SHA_UNVERIFIED=\${SHA_UNVERIFIED:-no}"`,
+  );
+  const kv = parseKv(stdout);
+  assertEquals(kv.COMMIT, "a".repeat(40));
+  assertEquals(kv.SHA_UNVERIFIED, "yes");
 });
