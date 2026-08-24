@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@skunk-ape/fka"
-version: 2026.08.22.1
+version: 2026.08.24.1
 description: |
   Formerly known as. Wrap a CLI in the permission tier it deserves.
 

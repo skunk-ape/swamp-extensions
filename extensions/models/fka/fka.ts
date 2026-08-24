@@ -481,7 +481,7 @@ export async function ownedWrappers(
  */
 export const model = {
   type: "@skunk-ape/fka",
-  version: "2026.08.22.1",
+  version: "2026.08.24.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "surface": {

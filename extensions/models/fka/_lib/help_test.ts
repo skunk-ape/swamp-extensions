@@ -1,8 +1,10 @@
 import { assert, assertEquals } from "jsr:@std/assert@1";
 import {
+  crawl,
   looksLikeManPage,
   parseHelp,
   parseOptionLine,
+  resolveBinary,
   sectionKind,
   stripAnsi,
 } from "./help.ts";
@@ -376,4 +378,238 @@ Options:
   const p = parseHelp(page);
   assertEquals(p.subcommands.map((c) => c.name), ["list", "show"]);
   assertEquals(p.options.map((o) => o.names[0]), ["--json"]);
+});
+
+// --- crawling ------------------------------------------------------------
+//
+// Everything above is fed text. `crawl` is the part that decides which text to
+// go and get: how deep to descend, when to stop, what to skip, and what to do
+// with a command whose help fails. None of that can be tested with a fixture
+// string, and none of it can be tested reliably against a real tool either —
+// asserting on `git --help` is asserting on whichever git is installed, so the
+// test would break when git changes rather than when fka does.
+//
+// Hence a fake CLI, which is the only way to get a known depth, a known
+// command count, and a command that fails on demand. The last test uses a real
+// binary, for the one claim a fake cannot make.
+
+/** A cobra-shaped page listing `commands` as subcommands. */
+function cobraPage(name: string, commands: string[]): string {
+  const lines = ["Usage:", `  ${name} [command]`, ""];
+  if (commands.length > 0) {
+    lines.push("Available Commands:");
+    for (const c of commands) lines.push(`  ${c}    the ${c} command`);
+    lines.push("");
+  }
+  lines.push("Flags:", "  -v, --verbose   be loud");
+  return lines.join("\n");
+}
+
+/** A `printf` reproducing `text` exactly, quoted for sh. */
+function shq(text: string): string {
+  return `printf '%s\\n' '${text.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
+ * A CLI whose tree we chose: three subtrees, one four deep, one that fails.
+ *
+ *   demo ├── alpha ── one ── deep
+ *        │      └── two
+ *        ├── beta
+ *        └── broken   (exits non-zero, prints nothing)
+ */
+async function fakeCli(): Promise<{ binary: string; dir: string }> {
+  const dir = await Deno.makeTempDir();
+  const binary = `${dir}/demo`;
+  const script = `#!/bin/sh
+case "$*" in
+  "--help") ${shq(cobraPage("demo", ["alpha", "beta", "broken"]))} ;;
+  "alpha --help") ${shq(cobraPage("demo alpha", ["one", "two"]))} ;;
+  "alpha one --help") ${shq(cobraPage("demo alpha one", ["deep"]))} ;;
+  "alpha one deep --help") ${shq(cobraPage("demo alpha one deep", []))} ;;
+  "alpha two --help") ${shq(cobraPage("demo alpha two", []))} ;;
+  "beta --help") ${shq(cobraPage("demo beta", []))} ;;
+  *) exit 1 ;;
+esac
+`;
+  await Deno.writeTextFile(binary, script);
+  await Deno.chmod(binary, 0o755);
+  return { binary, dir };
+}
+
+function crawlOpts(binary: string, over: Record<string, unknown> = {}) {
+  return {
+    binary,
+    helpFlag: "--help",
+    fallbackHelpFlag: "",
+    maxDepth: 3,
+    maxCommands: 100,
+    timeoutMs: 5000,
+    include: [],
+    exclude: [],
+    maxHelpBytes: 100_000,
+    ...over,
+  };
+}
+
+Deno.test("a crawl walks the whole tree it is given", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary));
+    assertEquals(
+      nodes.map((n) => n.path.join(" ")).sort(),
+      [
+        "",
+        "alpha",
+        "alpha one",
+        "alpha one deep",
+        "alpha two",
+        "beta",
+        "broken",
+      ],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("maxDepth stops the descent without stopping the crawl", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary, { maxDepth: 1 }));
+    // Depth 1 is still read; its children are never queued.
+    assertEquals(
+      nodes.map((n) => n.path.join(" ")).sort(),
+      ["", "alpha", "beta", "broken"],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("maxCommands is a hard ceiling on how often the tool runs", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    assertEquals(
+      (await crawl(crawlOpts(binary, { maxCommands: 3 }))).length,
+      3,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("exclude prunes the subtree, not just the command naming it", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary, { exclude: ["alpha"] }));
+    assert(!nodes.some((n) => n.path[0] === "alpha"));
+    assert(nodes.some((n) => n.path.join(" ") === "beta"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("include scopes the crawl to the subtrees named", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary, { include: ["beta"] }));
+    assertEquals(nodes.map((n) => n.path.join(" ")).sort(), ["", "beta"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a command whose help fails is recorded, not dropped and not fatal", async () => {
+  // Recorded so the reviewer learns the crawl could not see it, and
+  // contributing nothing to the surface — a command nobody could read is not a
+  // command anybody should allowlist.
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary));
+    const broken = nodes.find((n) => n.path.join(" ") === "broken");
+    assertEquals(broken?.ok, false);
+    assert((broken?.error ?? "") !== "");
+    assertEquals(broken?.parsed.subcommands, []);
+    // And the crawl completed around it.
+    assert(nodes.some((n) => n.path.join(" ") === "alpha one deep"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("an aborted crawl stops early rather than running to completion", async () => {
+  const { binary, dir } = await fakeCli();
+  const controller = new AbortController();
+  try {
+    const nodes = await crawl(
+      crawlOpts(binary, {
+        signal: controller.signal,
+        onNode: () => controller.abort(),
+      }),
+    );
+    assertEquals(nodes.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * The one claim a fake CLI cannot make.
+ *
+ * Everything above proves the crawl does what the crawl was told. It cannot
+ * prove that a real tool's real output survives the round trip, because the
+ * fake prints pages this repository wrote — a parser that only ever reads its
+ * own fixtures is agreeing with itself.
+ *
+ * `git` is the right witness rather than `swamp`, for two reasons. It is on
+ * more machines, including a bare CI where someone pulls this extension and
+ * runs `deno test`. And it is the tool the man-page fallback exists for:
+ * `git log --help` runs `man git-log`, so this asserts the documented retry
+ * actually fires against the actual program, which is the part most likely to
+ * rot quietly. The assertions stay structural — a count, a flag — so a new git
+ * release rewording its help does not fail this.
+ */
+const gitBinary = await resolveBinary("git").catch(() => "");
+
+Deno.test({
+  name: "a real tool crawls, and git's man page triggers the documented retry",
+  ignore: gitBinary === "",
+  fn: async () => {
+    const nodes = await crawl(crawlOpts(gitBinary, {
+      fallbackHelpFlag: "-h",
+      maxDepth: 1,
+      maxCommands: 4,
+      include: ["log"],
+      timeoutMs: 15_000,
+    }));
+
+    const root = nodes.find((n) => n.path.length === 0);
+    assertEquals(root?.ok, true);
+    assertEquals(root?.helpFlagUsed, "--help");
+    assert((root?.parsed.subcommands.length ?? 0) > 0);
+
+    // `git log --help` is roff. The crawl must notice and ask again with -h,
+    // because a man page read as help text yields confident nonsense — an
+    // option that takes a value coming back as a flag is the arity bypass the
+    // wrapper exists to prevent.
+    const log = nodes.find((n) => n.path.join(" ") === "log");
+    assertEquals(log?.ok, true);
+    assertEquals(log?.helpFlagUsed, "-h");
+    assert((log?.parsed.options.length ?? 0) > 0);
+  },
+});
+
+Deno.test("resolveBinary takes a path as given and refuses one that is not there", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    assertEquals(await resolveBinary(binary), await Deno.realPath(binary));
+    let threw = "";
+    await resolveBinary(`${binary}-nope`).catch((e) => {
+      threw = e instanceof Error ? e.message : String(e);
+    });
+    assert(threw.includes("no such binary"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

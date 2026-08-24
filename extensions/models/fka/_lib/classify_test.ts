@@ -59,6 +59,19 @@ function scripted(batches: string[]): Ask {
   };
 }
 
+/** Like `scripted`, but keeps the system prompt each call was given. */
+function recording(batches: string[]): { ask: Ask; systems: string[] } {
+  const systems: string[] = [];
+  const inner = scripted(batches);
+  return {
+    systems,
+    ask: (system, prompt) => {
+      systems.push(system);
+      return inner(system, prompt);
+    },
+  };
+}
+
 // --- reading the reply ---------------------------------------------------
 
 Deno.test("a bare JSON object is read", () => {
@@ -91,6 +104,58 @@ Deno.test("the injection warning appears only when the classifier can reach the 
   assertStringIncludes(systemPrompt("web"), "trying to attack");
   assert(!systemPrompt("none").includes("trying to attack"));
   assertStringIncludes(systemPrompt("none"), "no tools");
+});
+
+Deno.test("every call gets the docs-aware prompt, not just the first", async () => {
+  // The tests above prove systemPrompt() returns the right string. They cannot
+  // prove classifyAll hands that string to each call, and for a while it did
+  // not: the globals and plan calls were given the docs-aware prompt while the
+  // per-command batch — the one call that actually assigns tiers — was handed
+  // the bare constant. Under docsMode "web" that dropped the injection warning
+  // from the only prompt where it does any work, and every other test passed
+  // because they all run with docsMode "none", where the two strings differ by
+  // a clause nobody was asserting on.
+  const { ask, systems } = recording([
+    JSON.stringify({
+      commands: [{ path: ["list"], tier: "read-safe", why: "reads" }],
+    }),
+  ]);
+  await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"])],
+    ask,
+    batchSize: 10,
+    docsMode: "web",
+    helpFlag: "--help",
+  });
+
+  // Globals, one batch, and the plan: three calls, and the warning belongs on
+  // all of them because any of them can be steered by a page the tool linked.
+  assertEquals(systems.length, 3);
+  for (const system of systems) {
+    assertStringIncludes(system, "trying to attack");
+  }
+});
+
+Deno.test("docsMode none keeps the network clause off every call", async () => {
+  const { ask, systems } = recording([
+    JSON.stringify({
+      commands: [{ path: ["list"], tier: "read-safe", why: "reads" }],
+    }),
+  ]);
+  await classifyAll({
+    cli: "demo",
+    nodes: [node([]), node(["list"])],
+    ask,
+    batchSize: 10,
+    docsMode: "none",
+    helpFlag: "--help",
+  });
+  assertEquals(systems.length, 3);
+  for (const system of systems) {
+    assert(!system.includes("trying to attack"));
+    assertStringIncludes(system, "no tools");
+  }
 });
 
 Deno.test("both prompts forbid inventing commands and guessing arity", () => {
