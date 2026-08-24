@@ -12,11 +12,3 @@
 .claude/scheduled_tasks.lock
 .claude/scheduled_tasks.json
 # END swamp managed section
-
-# fka workspaces. review.yaml is the reviewed artifact and is worth
-# committing; everything else is regenerated and carries absolute paths from
-# the machine that generated it.
-.fka/*/bin/
-.fka/*/surface.json
-.fka/*/settings.snippet.json
-.fka/*/SKILL.snippet.md

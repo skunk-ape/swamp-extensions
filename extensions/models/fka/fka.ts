@@ -70,8 +70,22 @@ declare const Deno: any;
 // ---------------------------------------------------------------------------
 
 const GlobalArgsSchema = z.object({
-  /** Where each tool's workspace lives, relative to the repository root. */
-  workRoot: z.string().default(".fka"),
+  /**
+   * Where the workspaces live. Empty means `$XDG_CONFIG_HOME/fka`, falling
+   * back to `~/.config/fka`.
+   *
+   * The default is the user's home rather than the repository, because a
+   * wrapper is invoked by bare name and so lives in the machine's namespace,
+   * not a project's. Two repos wrapping `gh` would each render an executable
+   * called `fka-safe-gh`, and only one of them can be on PATH. The rest of the
+   * design already assumed this — one permission rule per segment, written
+   * once for every tool ever wrapped — and this was the last part that did not.
+   *
+   * An absolute path is used as given. A relative one is resolved against the
+   * repository root, which is the escape hatch for anyone who wants a
+   * project-local workspace and accepts that the alias names are still global.
+   */
+  workRoot: z.string().default(""),
 
   // --- discover ------------------------------------------------------------
   /** How the tool is asked for help. `--help` for almost everything. */
@@ -277,12 +291,45 @@ function dataName(spec: string, cli: string): string {
   return `${spec}-${baseName(cli)}`;
 }
 
-/** The per-tool workspace. One directory holds the review, the wrappers, and the snippets. */
+/**
+ * The root every workspace hangs off.
+ *
+ * Defaults to the user's config directory, because what a wrapper encodes is a
+ * judgement about a binary installed on this machine — `git log` is read-safe
+ * in every repository you own — and because the wrapper has to reach PATH,
+ * which no per-project directory does.
+ */
+export function workRoot(repoDir: string, g: GlobalArgs): string {
+  if (g.workRoot.startsWith("/")) return g.workRoot;
+  if (g.workRoot !== "") return `${repoDir}/${g.workRoot}`;
+
+  const xdg = Deno.env.get("XDG_CONFIG_HOME");
+  if (xdg && xdg.startsWith("/")) return `${xdg}/fka`;
+  const home = Deno.env.get("HOME");
+  if (home) return `${home}/.config/fka`;
+
+  throw new Error(
+    "could not find a home directory for the fka workspace — set the " +
+      "workRoot global argument to an absolute path.",
+  );
+}
+
+/** The per-tool workspace. Holds the crawl and the review file for one CLI. */
 function workspace(repoDir: string, g: GlobalArgs, cli: string): string {
-  const root = g.workRoot.startsWith("/")
-    ? g.workRoot
-    : `${repoDir}/${g.workRoot}`;
-  return `${root}/${baseName(cli)}`;
+  return `${workRoot(repoDir, g)}/${baseName(cli)}`;
+}
+
+/**
+ * Where every wrapper for every tool is written.
+ *
+ * Shared rather than per-tool, and that is the whole ergonomic point. The
+ * permission rules are one per segment no matter how many tools you wrap; a
+ * per-tool `bin` would have made PATH grow by one entry per tool anyway, which
+ * gives back what the segment-keyed rules just bought. One directory, one PATH
+ * line, forever.
+ */
+function binDirFor(repoDir: string, g: GlobalArgs): string {
+  return `${workRoot(repoDir, g)}/bin`;
 }
 
 async function ensureDir(path: string): Promise<void> {
@@ -639,7 +686,7 @@ export const model = {
         const denoPath = await resolveDeno(g.denoPath);
         ctx.logger.info("Wrappers will run under {deno}", { deno: denoPath });
 
-        const binDir = `${dir}/bin`;
+        const binDir = binDirFor(ctx.repoDir, g);
         await ensureDir(binDir);
 
         const wrappers: {
@@ -699,8 +746,9 @@ export const model = {
             nextAction:
               `Run verify, then hand the contents of ${settingsPath} to the person ` +
               `driving this and let them merge it into .claude/settings.json. ` +
-              `Nothing here edits that file. Add ${binDir} to PATH so the wrappers ` +
-              `resolve by name.`,
+              `Nothing here edits that file. If ${binDir} is not already on PATH, ` +
+              `add it once — every wrapper for every tool is written there, so no ` +
+              `later run asks for another PATH entry.`,
           },
         );
         return { dataHandles: [handle, settingsHandle, skillHandle] };
@@ -745,7 +793,7 @@ export const model = {
         let mismatches = 0;
         const spawnFailures: CaseResult[] = [];
         for (const c of sample) {
-          const path = `${dir}/bin/${c.wrapper}`;
+          const path = `${binDirFor(ctx.repoDir, g)}/${c.wrapper}`;
           try {
             const { got, output } = await spawnCheck(
               path,

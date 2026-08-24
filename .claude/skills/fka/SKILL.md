@@ -143,8 +143,9 @@ unattended with no further approval. The review gate is the only thing in
 between. Offer `Bash(fka-help:*)` alone as a first step for anyone who wants to
 go slowly — the agent reads documentation and runs nothing.
 
-Then offer the skill snippet for the project that will use the wrappers, and
-tell them the wrappers need to be on `PATH`:
+Then offer the skill snippet for the project that will use the wrappers. Check
+whether `binDir` is on `PATH` and say so if it is not — it is one directory
+shared by every tool, so this comes up on the first run and never again:
 
 ```
 swamp data get fka-<cli> generated-<cli> --json | jq -r '.content.skillSnippet'

@@ -113,8 +113,10 @@ jobs:
         task:
           type: manual_approval
           prompt: >-
-            Read the review file this run wrote, at
-            .fka/<cli>/review.yaml, and edit it before approving.
+            Read the review file this run wrote, and edit it before approving.
+            By default it is at ~/.config/fka/${{ inputs.cli }}/review.yaml —
+            `swamp data get fka-${{ inputs.cli }} proposal-${{ inputs.cli }}`
+            reports the exact path as `reviewPath` if you changed workRoot.
 
             Read the read-safe block carefully and skim the rest. read-safe is
             the only tier that runs with nobody watching; every other tier still

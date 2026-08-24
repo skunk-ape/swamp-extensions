@@ -71,6 +71,19 @@ description: |
   file rather than the proposal. Anything the classifier was unsure of is not
   read-safe, and anything absent from the table is refused.
 
+  ## Where it lives
+
+  Workspaces go under `$XDG_CONFIG_HOME/fka`, falling back to `~/.config/fka` —
+  your home directory, not the repository you were standing in. A wrapper is
+  invoked by bare name, so it lives in the machine's namespace: two projects
+  wrapping `gh` would each render an executable called `fka-safe-gh`, and only
+  one can be on PATH.
+
+  Every wrapper for every tool is written to one shared `bin/`, so putting that
+  directory on PATH is a one-time setup that later runs never add to. Each tool
+  keeps its `review.yaml` and `surface.json` in its own subdirectory. Set
+  `workRoot` to move all of it.
+
   ## The tested parser is the shipped parser
 
   The wrapper is TypeScript on Deno so the argument parser can be unit-tested —

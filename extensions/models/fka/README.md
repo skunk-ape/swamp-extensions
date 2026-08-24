@@ -136,6 +136,16 @@ reason the check is safe to run at all.
 
 ## Use it
 
+Once, before the first run:
+
+```bash
+export PATH="$HOME/.config/fka/bin:$PATH"   # or $XDG_CONFIG_HOME/fka/bin
+```
+
+That is the whole setup, and it is the last time PATH comes up. Every wrapper
+for every tool you ever wrap is written to that one directory, which is the same
+bargain the permission rules make: one line now, nothing to add later.
+
 ```bash
 swamp workflow run @skunk-ape/fka --input cli=gh
 ```
@@ -161,6 +171,38 @@ yourself:
 ```bash
 swamp data get fka-gh generated-gh --json | jq -r '.content.settingsSnippet'
 ```
+
+## Where it lives
+
+```
+~/.config/fka/
+  bin/            every wrapper for every tool — the one directory on PATH
+    fka-help-gh  fka-safe-gh  fka-write-gh  fka-safe-git …
+  gh/
+    review.yaml   the judgement: what you approved for gh
+    surface.json  what the crawl read out of gh --help
+  git/
+    review.yaml
+    surface.json
+```
+
+Your home directory, not the repository you happened to be standing in. A
+wrapper is invoked by bare name, so it lives in the machine's namespace: two
+projects wrapping `gh` would each render an executable called `fka-safe-gh`, and
+only one of them can be on PATH. The judgement is about a binary installed on
+this machine, and `git log` is read-safe in every repository you own.
+
+The split between `bin/` and `<cli>/` is worth knowing if you sync dotfiles.
+`review.yaml` is the part worth keeping — it is what a person decided, and it
+moves between machines. `bin/` is not: each wrapper embeds the absolute path of
+the tool and of the Deno that runs it. Sync the review files, run `generate` on
+the new machine, and you have your policy without carrying one machine's paths
+onto another.
+
+Set `workRoot` to put the workspaces somewhere else. A relative value is
+resolved against the repository root, which is there for anyone who wants a
+project-local workspace — but the alias names stay global either way, so it does
+not give two projects two different policies for one tool.
 
 ## The tested parser is the parser that ships
 
@@ -219,17 +261,18 @@ to run `--help` on it, the problem is upstream of this model.
 
 Set these in the model definition's `globalArguments`.
 
-| Argument           | Default   | What it changes                                                                                                                                                                                                             |
-| ------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docsMode`         | `none`    | `web` lets the classifier read the tool's docs. Help text often does not say whether an operation is billable or reaches a private resource. The cost is a session with network access that reads pages you do not control. |
-| `prefix`           | `fka`     | The first segment of every alias name, and so the word every permission rule keys on. Change it and the rules change with it.                                                                                               |
-| `helpFlag`         | `--help`  | How the tool is asked for help.                                                                                                                                                                                             |
-| `fallbackHelpFlag` | `-h`      | Used only when the help flag opens a man page, which no help-text parser can read correctly.                                                                                                                                |
-| `maxDepth`         | `3`       | How deep to descend.                                                                                                                                                                                                        |
-| `maxCommands`      | `400`     | Ceiling on help calls. Prefer `include` over raising this.                                                                                                                                                                  |
-| `envScrub`         | 8 names   | Variables every wrapper deletes, added to the ones the classifier finds.                                                                                                                                                    |
-| `denoPath`         | automatic | The Deno runtime the wrappers run under. It is written into each wrapper.                                                                                                                                                   |
-| `spawnSamples`     | `6`       | How many cases per wrapper `verify` re-checks by running the real script.                                                                                                                                                   |
+| Argument           | Default         | What it changes                                                                                                                                                                                                             |
+| ------------------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workRoot`         | `~/.config/fka` | Where the workspaces and the shared `bin/` live. Honours `XDG_CONFIG_HOME`. An absolute path is used as given; a relative one is resolved against the repository root.                                                      |
+| `docsMode`         | `none`          | `web` lets the classifier read the tool's docs. Help text often does not say whether an operation is billable or reaches a private resource. The cost is a session with network access that reads pages you do not control. |
+| `prefix`           | `fka`           | The first segment of every alias name, and so the word every permission rule keys on. Change it and the rules change with it.                                                                                               |
+| `helpFlag`         | `--help`        | How the tool is asked for help.                                                                                                                                                                                             |
+| `fallbackHelpFlag` | `-h`            | Used only when the help flag opens a man page, which no help-text parser can read correctly.                                                                                                                                |
+| `maxDepth`         | `3`             | How deep to descend.                                                                                                                                                                                                        |
+| `maxCommands`      | `400`           | Ceiling on help calls. Prefer `include` over raising this.                                                                                                                                                                  |
+| `envScrub`         | 8 names         | Variables every wrapper deletes, added to the ones the classifier finds.                                                                                                                                                    |
+| `denoPath`         | automatic       | The Deno runtime the wrappers run under. It is written into each wrapper.                                                                                                                                                   |
+| `spawnSamples`     | `6`             | How many cases per wrapper `verify` re-checks by running the real script.                                                                                                                                                   |
 
 ## After the tool is upgraded
 

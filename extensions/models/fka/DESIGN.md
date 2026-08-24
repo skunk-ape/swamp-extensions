@@ -151,6 +151,30 @@ prompt, so the operator keeps the option of approving one; a deny removes that
 and stops nothing, since an absolute path never matched the bare name. It also
 grew one line per tool, against the point of segment-keyed rules.
 
+### The workspace is the user's, because PATH is
+
+Workspaces first lived in `.fka/` under the repository, which was wrong for a
+reason the naming scheme had already settled: **a wrapper is invoked by bare
+name, so it lives in the machine's namespace.** Two repositories wrapping `gh`
+would each render an executable called `fka-safe-gh`, and only one of them can
+be on PATH. Project scope would have produced two tables that quietly disagreed
+and one binary that silently won.
+
+Everything else about the design pointed the same way. The permission rules are
+per segment, written once for every tool ever wrapped. What a table encodes is a
+judgement about a binary installed on this machine — `git log` is read-safe in
+every repository you own. So the root is `$XDG_CONFIG_HOME/fka`, falling back to
+`~/.config/fka`, and `workRoot` remains for anyone who wants otherwise.
+
+`bin/` is shared across tools rather than sitting under each one. A per-tool
+`bin` would have grown PATH by an entry per tool, which hands back exactly what
+segment-keyed rules bought: one directory, one PATH line, however many tools.
+
+The split between `bin/` and `<cli>/review.yaml` also draws the portability line
+in the right place. The review file is a judgement and moves between machines;
+the wrappers embed the absolute path of the tool and of the Deno that runs them,
+and do not. Sync the first, regenerate the second.
+
 ## Shape
 
 ```
