@@ -157,7 +157,7 @@ function looksLikeOption(v: string): boolean {
   return !/^-\d+(?:\.\d+)?$/.test(v);
 }
 
-function matchesAnchored(pattern: string, value: string): boolean {
+export function matchesAnchored(pattern: string, value: string): boolean {
   // Anchored deliberately: an unanchored allowlist pattern is not an allowlist.
   // `new RegExp` on a policy-supplied string is safe here — the policy is a
   // reviewed local file, not attacker input — but a bad pattern must not throw

@@ -340,6 +340,96 @@ Deno.test("an alias pinning a command the crawl never saw is rejected", () => {
   );
 });
 
+// The pinned-option checks below all guard one hole. `toPolicy` assigns pinned
+// options after the tier filter, deliberately — an alias has to be able to run
+// its own pin — so a pin is the only way an option enters a policy without
+// passing that filter. While nothing checked pins, `append` was an unbounded
+// grant: any option, any tier, at every command the alias admits.
+
+Deno.test("an alias pinning an option above its own ceiling is rejected", () => {
+  const r = review([command(["list"], "read-safe")], {
+    globalOptions: { "--no-color": { arity: 1, tier: "modify" } },
+    wrappers: [
+      spec("safe", {
+        admits: { maxTier: "read-safe" },
+        append: ["--no-color", "/tmp/evil"],
+      }),
+    ],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assert(
+    problems.some((p) =>
+      p.kind === "bad-wrapper" && p.message.includes("pins the option") &&
+      p.message.includes("above this alias's ceiling")
+    ),
+  );
+});
+
+Deno.test("a pinned option is checked wherever it is pinned", () => {
+  // prepend and append are the same grant by a different route, so a check
+  // that only reads one of them is not a check.
+  for (const where of ["prepend", "append"] as const) {
+    const r = review([command(["list"], "read-safe")], {
+      globalOptions: { "--no-color": { arity: 0, tier: "modify" } },
+      wrappers: [
+        spec("safe", {
+          admits: { maxTier: "read-safe" },
+          [where]: ["--no-color"],
+        }),
+      ],
+    });
+    const problems = checkAgainstSurface(r, surfaceOf(crawled));
+    assert(
+      problems.some((p) =>
+        p.kind === "bad-wrapper" && p.message.includes("pins the option")
+      ),
+      `a pinned option in ${where} was not checked`,
+    );
+  }
+});
+
+Deno.test("an alias pinning an option the table does not tier is rejected", () => {
+  // Absent from the table is refused, which for a pin has to mean refused at
+  // check time: there is no tier to compare, so there is nothing to permit.
+  const r = review([command(["list"], "read-safe")], {
+    wrappers: [
+      spec("safe", {
+        admits: { maxTier: "read-safe" },
+        append: ["--upload-pack", "/tmp/evil"],
+      }),
+    ],
+  });
+  const problems = checkAgainstSurface(r, surfaceOf(crawled));
+  assert(
+    problems.some((p) =>
+      p.kind === "bad-wrapper" && p.message.includes("does not tier")
+    ),
+  );
+});
+
+Deno.test("an alias may pin an option at or below its ceiling", () => {
+  const r = review([command(["list"], "read-safe")], {
+    globalOptions: { "--no-color": { arity: 0, tier: "read-safe" } },
+    wrappers: [
+      spec("safe", {
+        admits: { maxTier: "read-safe" },
+        append: ["--no-color"],
+      }),
+    ],
+  });
+  assertEquals(checkAgainstSurface(r, surfaceOf(crawled)), []);
+});
+
+Deno.test("a help alias may pin a help spelling, which sits outside the ladder", () => {
+  // The one pin that must keep working: a help alias is built by appending the
+  // tool's own help flag, and help is a mode rather than a tier.
+  const r = review([command(["list"], "read-safe")], {
+    helpOptions: ["--help"],
+    wrappers: [spec("help", { append: ["--help"], accepts: "path-only" })],
+  });
+  assertEquals(checkAgainstSurface(r, surfaceOf(crawled)), []);
+});
+
 Deno.test("a rejected alias is pruned out of the plan", () => {
   // Nothing is read-safe here, so the safe alias admits nothing and goes. The
   // write alias keeps `delete` and stays — tiers are cumulative downward, so a
@@ -569,6 +659,40 @@ Deno.test("the file says what it is and what editing it does", () => {
   assertStringIncludes(yaml, "proposal from a language model");
   assertStringIncludes(yaml, "read-safe");
   assertStringIncludes(yaml, "--- read-safe ---");
+});
+
+Deno.test("a review is unapproved until a person says otherwise", () => {
+  // The default is the whole gate. A proposal and an approved table are the
+  // same file, so if `approved` defaulted to true — or were absent and read as
+  // missing rather than false — `generate` could not tell them apart.
+  assertEquals(review([command(["list"], "read-safe")]).approved, false);
+  assertEquals(fromYaml("cli: demo\nbinary: /usr/bin/demo").approved, false);
+  assert(
+    !toYaml(review([command(["list"], "read-safe")])).includes(
+      "approved: true",
+    ),
+  );
+});
+
+Deno.test("approval survives the round trip, and only when it was written", () => {
+  const approved = fromYaml(
+    toYaml(review([command(["list"], "read-safe")], { approved: true })),
+  );
+  assertEquals(approved.approved, true);
+  assertThrows(
+    () => fromYaml("cli: demo\nbinary: /usr/bin/demo\napproved: yes please"),
+    Error,
+    "does not match",
+  );
+});
+
+Deno.test("the file says how to approve it and what approving does", () => {
+  const yaml = toYaml(review([command(["list"], "read-safe")]));
+  assertStringIncludes(yaml, "approved");
+  assertStringIncludes(yaml, "grants nothing");
+  // The wrappers block is where a pinned option hides, so the header has to
+  // send the reader there rather than telling them to skim it.
+  assertStringIncludes(yaml, "wrappers");
 });
 
 Deno.test("an edited file that is no longer valid is an error, never a default", () => {

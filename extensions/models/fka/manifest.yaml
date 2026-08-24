@@ -60,16 +60,31 @@ description: |
     discover found but never invent a command or an option.
   - `generate` — read back the edited review file and render the wrappers, the
     permission snippet, and the skill snippet. One method, because they are
-    three views of one fact.
+    three views of one fact. Each wrapper is written to a neighbouring temp and
+    renamed, so a caller invoking one mid-run gets the old policy or the new
+    one and never a half-written file. An alias dropped from the review file is
+    also removed from `bin/`, because a wrapper left behind keeps enforcing the
+    policy it was rendered with while the rule granting its segment still
+    matches its name.
   - `verify` — prove every wrapper permits its own tier and refuses everything
-    above it, using a check mode that never executes the wrapped tool.
+    above it, using a check mode that never executes the wrapped tool. The
+    matrix covers argument *syntax* as well as coverage: `--`, attached values,
+    short clusters, positionals, and a constrained option exercised with a
+    value that cannot match it.
 
   ## The human gate
 
-  `classify` writes a proposal. It grants nothing. A person edits the review
-  file, approves the workflow's `review` step, and `generate` reads the edited
-  file rather than the proposal. Anything the classifier was unsure of is not
-  read-safe, and anything absent from the table is refused.
+  `classify` writes a proposal with `approved: false`, and has no way to write
+  anything else. `generate` refuses to render a wrapper until a person has set
+  that flag to true, so the gate is a state on disk rather than a convention
+  about who runs what in which order. Anything the classifier was unsure of is
+  not read-safe, and anything absent from the table is refused.
+
+  Two blocks are worth real attention. `read-safe` is one, because it is the
+  only tier that runs unattended. `wrappers` is the other, and it is short: an
+  option pinned there applies at every command its alias admits, so it is
+  checked against the crawl and against that alias's own ceiling before it can
+  be rendered.
 
   ## Where it lives
 

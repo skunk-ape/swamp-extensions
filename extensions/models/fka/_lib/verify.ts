@@ -24,8 +24,8 @@
 
 import type { Review } from "./review.ts";
 import { toPolicy, wrapperName } from "./review.ts";
-import type { Policy } from "./validate.ts";
-import { validate } from "./validate.ts";
+import type { CommandRule, OptionSpec, Policy } from "./validate.ts";
+import { matchesAnchored, validate } from "./validate.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const Deno: any;
@@ -118,6 +118,10 @@ export function buildCases(review: Review): Case[] {
           about: `${option} is permitted on ${name} by ${wrapper}`,
         });
       }
+
+      if (rule) {
+        cases.push(...syntaxCases(policy, rule, wrapper, name, typed));
+      }
     }
 
     // The bare alias, which for a pinned one is the pinned command itself.
@@ -129,6 +133,242 @@ export function buildCases(review: Review): Case[] {
         argv: [],
         expect: "refuse",
         about: `${wrapper} on its own names no permitted command`,
+      });
+    }
+  }
+
+  return cases;
+}
+
+// ---------------------------------------------------------------------------
+// Argument syntax
+// ---------------------------------------------------------------------------
+
+/**
+ * Tokens chosen so a refusal can only mean one thing.
+ *
+ * A made-up positional has to be a word no tool would route as a subcommand,
+ * or the parser resolves it as a path and the case proves nothing.
+ */
+const NOT_A_SUBCOMMAND = "fka-verify-not-a-subcommand";
+const NONMATCHING = "fka-verify-nonmatching-value";
+
+/** The options legal at a path: globals, plus every rule along the way. */
+function optionsAlong(
+  policy: Policy,
+  path: readonly string[],
+): Record<string, OptionSpec> {
+  const merged: Record<string, OptionSpec> = { ...policy.globalOptions };
+  for (let i = 0; i <= path.length; i++) {
+    const key = path.slice(0, i).join(" ");
+    const rule = policy.commands.find((c) => c.path.join(" ") === key);
+    if (rule) Object.assign(merged, rule.options);
+  }
+  return merged;
+}
+
+/**
+ * The syntax families, which the command-and-option sweep never reaches.
+ *
+ * That sweep asks whether each command and each option is on the right side of
+ * the line. It builds one argument vector shape — path, option, maybe the word
+ * "value" — so a whole class of question goes unasked: what `--` does, whether
+ * an attached value is checked like a separate one, whether a short cluster is
+ * resolved character by character, whether a positional is accepted where the
+ * table says none. Those are all places a parser can be wrong while every
+ * command still lands in the right tier, which is exactly the failure this
+ * model exists to catch and exactly the failure a coherence check cannot see.
+ *
+ * Each case is emitted only when its outcome is unambiguous. A refusal that
+ * could have come from either the rule under test or an unrelated constraint
+ * proves nothing, so where a pattern or a cap could be doing the refusing, the
+ * case is skipped rather than asserted.
+ */
+function syntaxCases(
+  policy: Policy,
+  rule: CommandRule,
+  wrapper: string,
+  name: string,
+  typed: (path: string[]) => string[],
+): Case[] {
+  const cases: Case[] = [];
+  const base = typed(rule.path);
+  const permitted = optionsAlong(policy, rule.path);
+  const mode = rule.positionals ?? "none";
+  const unconstrained = mode === "any" && !rule.positionalPattern &&
+    rule.maxPositionals === undefined;
+
+  // `--` ends the options, so everything after it is a positional however much
+  // it looks like a flag. The refusal case is the load-bearing one: it is the
+  // difference between "options are checked" and "arguments are checked".
+  if (mode === "none") {
+    cases.push({
+      wrapper,
+      argv: [...base, "--", NOT_A_SUBCOMMAND],
+      expect: "refuse",
+      about:
+        `${name} takes no positional, so a word after -- is refused by ${wrapper}`,
+    });
+    const anyOption = Object.keys(permitted)[0];
+    if (anyOption) {
+      cases.push({
+        wrapper,
+        argv: [...base, "--", anyOption],
+        expect: "refuse",
+        about:
+          `after --, ${anyOption} is a positional rather than an option, and ${name} takes none`,
+      });
+    }
+  } else if (unconstrained) {
+    cases.push({
+      wrapper,
+      argv: [...base, "--", NOT_A_SUBCOMMAND],
+      expect: "permit",
+      about: `${name} accepts a positional after -- under ${wrapper}`,
+    });
+  }
+
+  // A bare positional, which is the same question without the `--`.
+  if (mode === "none") {
+    cases.push({
+      wrapper,
+      argv: [...base, NOT_A_SUBCOMMAND],
+      expect: "refuse",
+      about: `${name} takes no positional under ${wrapper}`,
+    });
+  } else if (unconstrained) {
+    cases.push({
+      wrapper,
+      argv: [...base, NOT_A_SUBCOMMAND],
+      expect: "permit",
+      about: `${name} accepts a positional under ${wrapper}`,
+    });
+  }
+
+  if (
+    mode === "any" && rule.maxPositionals !== undefined &&
+    !rule.positionalPattern
+  ) {
+    cases.push({
+      wrapper,
+      argv: [
+        ...base,
+        ...Array(rule.maxPositionals + 1).fill(NOT_A_SUBCOMMAND),
+      ],
+      expect: "refuse",
+      about:
+        `${name} caps positionals at ${rule.maxPositionals}, so one more is refused`,
+    });
+  }
+
+  if (
+    mode === "any" && rule.positionalPattern &&
+    !matchesAnchored(rule.positionalPattern, NONMATCHING)
+  ) {
+    cases.push({
+      wrapper,
+      argv: [...base, NONMATCHING],
+      expect: "refuse",
+      about: `${name} constrains its positionals and this one does not match`,
+    });
+  }
+
+  const shortFlags = Object.entries(permitted)
+    .filter(([n, s]) => s.arity === 0 && /^-[a-zA-Z0-9]$/.test(n))
+    .map(([n]) => n);
+
+  for (const [option, spec] of Object.entries(rule.options)) {
+    // An attached value is a separate code path from a separated one, and the
+    // table cannot say whether they agree.
+    if (spec.arity === 1 && !spec.valuePattern) {
+      cases.push({
+        wrapper,
+        argv: [...base, `${option}=value`],
+        expect: "permit",
+        about: `${option}=value is the attached spelling of a permitted option`,
+      });
+    }
+    if (spec.arity === 1 && spec.valuePattern) {
+      // The gap the old matrix left open: a constrained option was never
+      // exercised at all. A value that cannot match makes the refusal mean
+      // the pattern, and nothing else.
+      if (!matchesAnchored(spec.valuePattern, NONMATCHING)) {
+        cases.push({
+          wrapper,
+          argv: [...base, option, NONMATCHING],
+          expect: "refuse",
+          about: `${option} constrains its value and this one does not match`,
+        });
+        cases.push({
+          wrapper,
+          argv: [...base, `${option}=${NONMATCHING}`],
+          expect: "refuse",
+          about: `${option}= is checked against the same pattern as ${option} `,
+        });
+      }
+    }
+    if (spec.arity === 1 && !spec.allowOptionLikeValue) {
+      cases.push({
+        wrapper,
+        argv: [...base, option, "--not-a-value"],
+        expect: "refuse",
+        about:
+          `${option} takes a value, and an option-shaped one is refused rather than guessed`,
+      });
+    }
+    // Attaching a value to a flag is a long-option convention and only a long
+    // one. `--flag=false` is how a cobra boolean is negated; `-z=false` is not
+    // the short spelling of that, it is the cluster z,=,f,a,l,s,e — which is
+    // why the parser refuses it, and why generating it as a permit here was
+    // wrong. Real tools read it the same way.
+    if (spec.arity === 0 && option.startsWith("--")) {
+      cases.push({
+        wrapper,
+        argv: [...base, `${option}=false`],
+        expect: "permit",
+        about: `${option}=false is how a boolean flag is negated`,
+      });
+      cases.push({
+        wrapper,
+        argv: [...base, `${option}=${NONMATCHING}`],
+        expect: "refuse",
+        about: `${option} takes no value, so an attached one is refused`,
+      });
+    }
+    if (spec.arity === 0 && !option.startsWith("--") && !permitted["-="]) {
+      cases.push({
+        wrapper,
+        argv: [...base, `${option}=false`],
+        expect: "refuse",
+        about:
+          `${option} is a short flag, so =false is a cluster containing "-=" rather than a negation`,
+      });
+    }
+  }
+
+  // A short cluster is resolved one character at a time, and the whole reason
+  // to test it is that a lazier reading — treat `-ab` as an unknown option, or
+  // as `-a` and stop — is a bypass in one direction or noise in the other.
+  if (shortFlags.length >= 2) {
+    cases.push({
+      wrapper,
+      argv: [...base, `-${shortFlags[0][1]}${shortFlags[1][1]}`],
+      expect: "permit",
+      about: `${shortFlags[0]} and ${shortFlags[1]} bundle into one cluster`,
+    });
+  }
+  if (shortFlags.length >= 1) {
+    const taken = new Set(Object.keys(permitted));
+    const spare = "abcdefghijklmnopqrstuvwxyz".split("").find((c) =>
+      !taken.has(`-${c}`)
+    );
+    if (spare) {
+      cases.push({
+        wrapper,
+        argv: [...base, `-${shortFlags[0][1]}${spare}`],
+        expect: "refuse",
+        about:
+          `a cluster is refused when any character in it is not permitted (-${spare})`,
       });
     }
   }

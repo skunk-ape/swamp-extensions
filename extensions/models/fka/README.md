@@ -120,19 +120,46 @@ honest. Its output is checked against the crawl, so it can move a command to
 another tier but cannot invent one. And its output is a proposal that grants
 nothing.
 
-**The person** reads `review.yaml` and edits it. Read the `read-safe` block with
-care and skim the rest: every other tier still stops at a prompt, so a mistake
-there costs one keystroke. A mistake in `read-safe` runs with nobody watching.
-Deleting a line is always the safe edit, because anything absent is refused.
+**The person** reads `review.yaml` and edits it. Two blocks want real attention.
+Read `read-safe` with care: every other tier still stops at a prompt, so a
+mistake there costs one keystroke, while a mistake in `read-safe` runs with
+nobody watching. Then read `wrappers`, which is short and is not a tier —
+`prepend` and `append` pin tokens into every call an alias makes, so a pinned
+option is permitted at every command that alias admits. Deleting a line is
+always the safe edit, because anything absent is refused.
 
-**`generate`** reads the edited file, not the proposal, and writes the wrappers,
-the permission snippet, and the skill snippet. One method writes all three,
-because they are three views of one fact. Three methods let them drift.
+Then set `approved: true` at the top of the file. `classify` always writes it
+false and cannot write anything else, so that one line is what separates a
+model's suggestion from a person's decision.
+
+**`generate`** refuses to render anything while `approved` is false. It also
+re-checks the edited table against what `discover` saw, because the file it
+reads is never the file that was checked — a human edit sits in between, and an
+edit can name a command the tool no longer has just as a model session can.
+Then it writes the wrappers, the permission snippet, and the skill snippet. One
+method writes all three, because they are three views of one fact. Three
+methods let them drift.
+
+Two details about how it writes them. Each wrapper goes to a neighbouring temp
+file and is renamed into place, so a wrapper invoked during a regeneration sees
+the old policy or the new one, never a half-written script. And an alias you
+delete from the review file is deleted from `bin/` — a wrapper left behind goes
+on enforcing the policy it was rendered with, and the rule granting its segment
+still matches its name. Removal is by exact ownership: the segment must be one
+of the known set, the tool name must match yours rather than merely start with
+it (`fka-safe-ghi` is not `gh`), and the file must carry the generator's marker,
+so nothing you wrote yourself is ever deleted. Whatever went is recorded in the
+`generated` resource.
 
 **`verify`** proves that each wrapper permits its own tier and refuses
-everything above it. Every wrapper honours `FKA_CHECK=1`: read the arguments,
-print the verdict, stop. It never runs the wrapped tool, which is the only
-reason the check is safe to run at all.
+everything above it — and that it parses arguments the way the table says,
+which is a separate question. The matrix covers `--`, attached values, short
+clusters, positionals where the table permits none, an option-shaped value, and
+a pattern-constrained option exercised with a value that cannot match it. Those
+are the shapes where a parser can be wrong while every command still lands in
+the right tier. Every wrapper honours `FKA_CHECK=1`: read the arguments, print
+the verdict, stop. It never runs the wrapped tool, which is the only reason the
+check is safe to run at all.
 
 ## Use it
 

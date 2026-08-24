@@ -91,10 +91,18 @@ swamp data get fka-<cli> proposal-<cli> --json | jq -r '.content |
 ```
 
 Then read the review file itself and **summarise the read-safe block for the
-user in your own words**. Not the whole table — the read-safe list is the only
-tier that runs with nobody watching, and it is the only one worth a person's
-attention. Every other tier still stops at a prompt, so a mistake there costs a
-keystroke.
+user in your own words**. Not the whole table — the read-safe list is the tier
+that runs with nobody watching. Every other tier still stops at a prompt, so a
+mistake there costs a keystroke.
+
+**Then summarise the `wrappers` block too.** It is a handful of lines and it is
+not a tier. `prepend` and `append` pin tokens into every call an alias makes, so
+a pinned option is permitted at every command that alias admits — a tier says
+what a command may do, a pin says what every command gets. Pins are checked
+against the crawl and against the alias's own ceiling, so an invented or
+over-tier pin is rejected before it renders; what remains is judgement about
+whether pinning that option was wanted at all. Name every `prepend` and `append`
+you find, and say what each one does to the argument vector.
 
 Call out anything in `read-safe` that reads like it could:
 
@@ -119,10 +127,22 @@ line is always the safe edit: anything absent is refused.
 
 ### Step 3 — Approve and finish
 
+Two approvals, and they are not the same one. The workflow step releases the
+run; `approved: true` in the review file releases `generate`, which refuses to
+render while it is false. Set the flag first, or the run resumes and then fails.
+
+Setting it is the person's call, not yours. Ask for it rather than editing it in
+on their behalf — the flag means a human read the table, and it is worth
+nothing if you are the one who set it.
+
 ```
 swamp workflow approve @skunk-ape/fka review
 swamp workflow resume @skunk-ape/fka
 ```
+
+If `generate` fails saying the file is not approved, the flag was not set. If it
+fails listing entries the crawl never saw, an edit named something the tool does
+not have — it re-checks the edited table, so fix those lines and resume.
 
 ## Handing over the result
 

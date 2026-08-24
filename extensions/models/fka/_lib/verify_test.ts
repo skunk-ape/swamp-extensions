@@ -62,7 +62,7 @@ Deno.test("an option above the tier gets its own refusal case", () => {
   assertEquals(escape?.expect, "refuse");
 });
 
-Deno.test("an option whose value is pattern-constrained is not asserted with a made-up value", () => {
+Deno.test("a pattern-constrained option is asserted by what it must refuse", () => {
   const r = review({
     commands: [{
       path: ["list"],
@@ -72,11 +72,34 @@ Deno.test("an option whose value is pattern-constrained is not asserted with a m
     }],
   });
   const cases = buildCases(r);
-  // A refusal here would be the pattern working, indistinguishable from the
-  // option being absent, so the case is left out rather than asserted wrongly.
+  // Matched by prefix rather than equality: the attached spelling is the token
+  // `--limit=…`, which an exact match would silently drop.
+  const mine = cases.filter((c) =>
+    c.wrapper === "fka-safe-demo" &&
+    c.argv.some((a) => a === "--limit" || a.startsWith("--limit="))
+  );
+
+  // No permit case: a value that satisfies an arbitrary pattern cannot be
+  // invented here, and asserting a permit with a made-up token would fail for
+  // the pattern rather than for the rule under test.
+  assert(!mine.some((c) => c.expect === "permit"));
+
+  // A refusal is a different matter, and it is the half that was missing. A
+  // value the pattern cannot match makes the refusal mean the pattern and
+  // nothing else, which is what leaves a constrained option exercised rather
+  // than skipped.
+  const separated = mine.find((c) =>
+    c.argv.some((a) => a === "--limit") && c.expect === "refuse"
+  );
+  assertEquals(separated?.expect, "refuse");
+  assert(separated?.argv.some((a) => !/^\d+$/.test(a) && a !== "--limit"));
+
+  // The attached spelling is a separate branch in the parser and gets its own
+  // case, because `--limit=x` and `--limit x` reaching the same verdict is an
+  // assumption rather than an observation.
   assert(
-    !cases.some((c) =>
-      c.wrapper === "fka-safe-demo" && c.argv.includes("--limit")
+    mine.some((c) =>
+      c.expect === "refuse" && c.argv.some((a) => a.startsWith("--limit="))
     ),
   );
   // The path-only alias is a different question and does assert it: there the
@@ -85,6 +108,133 @@ Deno.test("an option whose value is pattern-constrained is not asserted with a m
     cases.some((c) =>
       c.wrapper === "fka-help-demo" && c.argv.includes("--limit") &&
       c.expect === "refuse"
+    ),
+  );
+});
+
+// --- argument syntax -----------------------------------------------------
+//
+// The command-and-option sweep builds one shape of argument vector, so it can
+// be entirely green while the parser mishandles every other shape. These are
+// the shapes, and each assertion below was a case the matrix did not contain.
+
+Deno.test("the matrix exercises -- rather than assuming it", () => {
+  const cases = buildCases(review()).filter((c) =>
+    c.wrapper === "fka-safe-demo" && c.argv.includes("--")
+  );
+  assert(cases.length > 0, "no case exercises --");
+  // `list` takes no positional, so everything after -- is refused however it
+  // is spelled. The option-shaped one is the case worth having: it is the
+  // difference between checking options and checking arguments.
+  assert(cases.every((c) => c.expect === "refuse"));
+  assert(
+    cases.some((c) => c.argv.some((a) => a.startsWith("--") && a !== "--")),
+    "no case puts an option-shaped token after --",
+  );
+});
+
+Deno.test("the matrix exercises a positional where the table permits none", () => {
+  const cases = buildCases(review()).filter((c) =>
+    c.wrapper === "fka-safe-demo" &&
+    c.argv.some((a) => a.includes("not-a-subcommand")) && !c.argv.includes("--")
+  );
+  assert(cases.length > 0, "no bare positional case");
+  assert(cases.every((c) => c.expect === "refuse"));
+});
+
+Deno.test("a permitted positional is asserted where the table allows one", () => {
+  const r = review({
+    commands: [{
+      path: ["list"],
+      tier: "read-safe",
+      why: "reads",
+      positionals: "any",
+      options: {},
+    }],
+  });
+  const cases = buildCases(r).filter((c) =>
+    c.wrapper === "fka-safe-demo" &&
+    c.argv.some((a) => a.includes("not-a-subcommand"))
+  );
+  assert(cases.length > 0);
+  assert(cases.every((c) => c.expect === "permit"));
+});
+
+Deno.test("a positional cap is asserted by exceeding it", () => {
+  const r = review({
+    commands: [{
+      path: ["list"],
+      tier: "read-safe",
+      why: "reads",
+      positionals: "any",
+      maxPositionals: 2,
+      options: {},
+    }],
+  });
+  const over = buildCases(r).find((c) =>
+    c.wrapper === "fka-safe-demo" &&
+    c.argv.filter((a) => a.includes("not-a-subcommand")).length === 3
+  );
+  assertEquals(over?.expect, "refuse");
+});
+
+Deno.test("the attached spelling of an option is asserted separately", () => {
+  // `--limit=x` and `--limit x` are different branches in the parser, and the
+  // table cannot say whether they agree.
+  const attached = buildCases(review()).find((c) =>
+    c.wrapper === "fka-safe-demo" && c.argv.includes("--limit=value")
+  );
+  assertEquals(attached?.expect, "permit");
+});
+
+Deno.test("a flag refuses an attached value but accepts a negation", () => {
+  const r = review({
+    commands: [{
+      path: ["list"],
+      tier: "read-safe",
+      why: "reads",
+      options: { "--quiet": { arity: 0 } },
+    }],
+  });
+  const cases = buildCases(r).filter((c) => c.wrapper === "fka-safe-demo");
+  assertEquals(
+    cases.find((c) => c.argv.includes("--quiet=false"))?.expect,
+    "permit",
+  );
+  assert(
+    cases.some((c) =>
+      c.expect === "refuse" &&
+      c.argv.some((a) => a.startsWith("--quiet=") && a !== "--quiet=false")
+    ),
+  );
+});
+
+Deno.test("an option-shaped value is asserted to be refused, not guessed", () => {
+  const refused = buildCases(review()).find((c) =>
+    c.wrapper === "fka-safe-demo" && c.argv.includes("--limit") &&
+    c.argv.includes("--not-a-value")
+  );
+  assertEquals(refused?.expect, "refuse");
+});
+
+Deno.test("short clusters are asserted in both directions", () => {
+  const r = review({
+    commands: [{
+      path: ["list"],
+      tier: "read-safe",
+      why: "reads",
+      options: { "-a": { arity: 0 }, "-b": { arity: 0 } },
+    }],
+  });
+  const cases = buildCases(r).filter((c) => c.wrapper === "fka-safe-demo");
+  // A cluster of permitted flags is one token the parser has to take apart.
+  assertEquals(cases.find((c) => c.argv.includes("-ab"))?.expect, "permit");
+  // And a cluster carrying one unpermitted character is the bypass direction:
+  // reading `-ac` as `-a` and stopping would let `c` through unexamined.
+  assert(
+    cases.some((c) =>
+      c.expect === "refuse" &&
+      c.argv.some((a) => /^-a[a-z]$/.test(a) && a !== "-ab")
     ),
   );
 });

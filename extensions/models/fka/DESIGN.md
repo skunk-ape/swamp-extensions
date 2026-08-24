@@ -244,17 +244,38 @@ classify blind.
 
 ### the human gate — and why it stays tractable
 
-`classify` writes `review.yaml`, the human edits it, `manual_approval` releases
-the workflow, and `generate` reads back **the edited file**, not the
-classifier's original proposal.
+`classify` writes `review.yaml` with `approved: false`, the human edits it and
+sets that flag, and `generate` refuses to render anything until they have.
+
+The marker is load-bearing rather than ceremonial, and an earlier design did
+without it. The proposal and the approved table are the same file, so with no
+marker there is nothing on disk that distinguishes "a model wrote this" from "a
+person accepted this" — `generate` reading "the edited file, not the proposal"
+described an intention that no code enforced, since both names pointed at one
+path. A workflow approval step gates the *workflow*; it does not gate a
+`generate` invoked on its own.
+
+`generate` also re-checks the table against the discovered surface, rather than
+trusting the check `classify` ran. Those two checks are not the same check: a
+human edit sits between them, and the file that gets rendered is never the file
+that was validated.
 
 The obvious objection is scale: `aws --help` is hundreds of services and
 thousands of operations, and nobody reviews that. The resolution is that **only
 the `read-safe` list needs careful reading.** Every other tier still stops at a
 human at run time; a mistake there costs a prompt. A mistake in `read-safe` is a
 command that runs with nobody watching. So `review.yaml` puts `read-safe` first,
-annotated, and lets the rest be skimmed — and `subtrees` lets you scope a run to
-`gh pr` and `gh issue` instead of all of `gh`.
+annotated — and `subtrees` lets you scope a run to `gh pr` and `gh issue`
+instead of all of `gh`.
+
+The one block that must be read besides `read-safe` is `wrappers`, and it is
+short. A tier is a claim about a command; a pin is a claim about every command
+an alias admits. `prepend` and `append` place tokens into the argument vector
+before the caller's, so a pinned option is permitted everywhere that alias
+reaches, whatever the table says about it elsewhere. Pins are checked against
+the crawl and against the alias's own ceiling, which stops the mechanical
+failures — an invented option, one tiered above the alias — but what is worth
+pinning is judgement, and it is judgement concentrated in a handful of lines.
 
 Fail-closed does the rest: anything the classifier was unsure of is not
 `read-safe`, and anything absent from the table is refused.

@@ -118,14 +118,21 @@ jobs:
             `swamp data get fka-${{ inputs.cli }} proposal-${{ inputs.cli }}`
             reports the exact path as `reviewPath` if you changed workRoot.
 
-            Read the read-safe block carefully and skim the rest. read-safe is
-            the only tier that runs with nobody watching; every other tier still
-            stops at a prompt, so a mistake there costs one keystroke and a
-            mistake in read-safe does not.
+            Read the read-safe block carefully. read-safe is the only tier that
+            runs with nobody watching; every other tier still stops at a prompt,
+            so a mistake there costs one keystroke and a mistake in read-safe
+            does not.
+
+            Read the wrappers block too. It is short, and it is not a tier: an
+            option pinned there with prepend or append applies at every command
+            that alias admits, whatever the table says about it elsewhere.
 
             Deleting a line is always the safe edit — anything absent from the
-            table is refused by every wrapper. `generate` reads your edited
-            file, not the proposal.
+            table is refused by every wrapper.
+
+            Then set `approved: true` at the top of that file. Approving this
+            step releases the workflow; the flag in the file is what releases
+            `generate`, which refuses to render anything while it is false.
         dependsOn:
           - step: classify
             condition:

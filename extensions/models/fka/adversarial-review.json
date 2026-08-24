@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/fka",
+  "version": "2026.08.22.1",
+  "reviewedAt": "2026-08-24T16:55:00Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "This model holds no secret of its own: no vault reference, no token, no credential in any resource or argument. What it does own is the environment a wrapped tool inherits, and that was tested rather than read — GIT_TRACE and GIT_EXTERNAL_DIFF were both set in a control run and demonstrably neutered in a wrapped one, so the scrub list is enforced at runtime and not merely recorded in the table. The env block carries names, never values."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Every ctx.logger call was read. They carry counts, command names, wrapper names, the resolved deno path, and case totals — no argument vector from a caller and no environment value. The one place third-party text could reach a log is the per-command help failure in discover, which quotes the tool's own error string; that string is upstream output and receives nothing from this model."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "The throw-before-write rule holds: generate refuses on an unapproved table and again on a surface mismatch, both before any wrapper is rendered, and verify writes its resource before throwing so a failed verification is still recorded. The in-place wrapper write flagged earlier in this pass is fixed — each wrapper is rendered to a neighbouring temp, chmodded there so 0755 is its first mode rather than one applied after it is reachable by name, and renamed into place, with the temp removed on any failure. A caller invoking a wrapper mid-regeneration now sees the old policy or the new one rather than a file that parses as nothing. Partial failure across several wrappers is still possible — three renamed and a fourth failing leaves a mixed set — but every file present is a complete file."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "185 tests pass, and the parser — the actual security boundary — is the best-covered part: adversarial argv was run against real generated wrappers, and attempts at option/value confusion, PATH re-aiming, cluster splitting, and pinned-argv displacement were all refused. The verify matrix was extended this pass from 886 to 2304 cases against the real git table, adding the syntax families it previously had none of: 8 cases using --, 1230 attached values, 45 short clusters, 10 positionals, plus pattern-constrained options exercised with a value that cannot match. That extension immediately found a real defect in its own generator (short flags do not take =false; the long-option convention was being applied to them) which is now an assertion in the other direction. The model layer is now partly covered rather than not at all: the wrapper-ownership rule that decides what generate deletes, and the atomic executable write, are both tested against real temporary directories — the ownership tests include the fka-safe-gh versus fka-safe-ghi case, where a prefix match would delete another tool's wrapper, and the unmarked-file case, where it would delete the operator's own. Writing those found a real defect: Deno.readDir does not throw when called but when first stepped, so the missing-directory guard was catching nothing. What remains untested is the rest of the model layer — the four execute bodies, including the approval gate and the surface re-check, need a repo context and a real CLI on PATH."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "discover rewrites surface.json whole. classify rewrites review.yaml whole and always with approved:false, so re-running a classify silently revokes an approval rather than inheriting it — the safe direction. generate rewrites every wrapper from the table, so it converges rather than accumulating, and a wrapper removed from the plan is the one case that does not self-clean (see crud-completeness). verify mutates nothing."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No HTTP client and no SDK. The only external calls are subprocess invocations: the wrapped CLI with its help flag, and Claude Code for classify. Nothing is paginated, no response body is parsed as an API contract, and the one structured reply — the classifier's JSON — is validated by a zod schema and then checked again against the crawl, which is the contract that matters and is covered under schema-strictness."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Subprocesses are bounded: discover runs the tool through argv rather than a shell, under a per-call timeout with SIGKILL, a depth cap of 6 and a command cap of 5000, and verify's spawnCheck kills on timeout and treats any exit code other than 0 or 1 as a failure rather than a verdict. The listener leak flagged earlier in this pass is fixed — runHelp now removes its abort listener in a finally, alongside the clearTimeout that was already there. The subtlety worth recording: the listener was registered with once:true, which fires a listener at most once but does not remove one that never fires, and in a normal crawl none of them ever fire."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Every shipped file was scanned for absolute home paths, hostnames, vault names and tokens; none appear. The single repo-wide hit is a public nixpkgs store path in _lib/wrapper_test.ts, which is a test file and not in additionalFiles. The workspace audit logs under .swamp/ cannot reach a bundle: they are gitignored, unnamed by the manifest, and rejected by the packer's dot-prefix rule. DESIGN.md is deliberately not shipped, so a puller gets README.md without the design record."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "No passthrough, no catchall, no z.any and no z.unknown anywhere in the model or its libraries. The classifier's replies parse through closed schemas, and — the part that matters more — a schema-valid reply is then checked against the observed crawl, so a well-formed invention is still rejected. That containment was incomplete when this pass began and is now closed for pinned options as well as commands; see the note under preflight-checks."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "All four resource specs and all three file specs set both lifetime and garbageCollection. The split is deliberate: surface, proposal and verification are 30d because a re-run reproduces them, while generated, review, settings and skill are infinite because they are the record of what was approved and rendered — the review file in particular is the artifact a person signed, and losing it would leave wrappers on PATH with no account of why."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "Delete now exists where it mattered most: generate removes wrappers that its own table no longer names, which was the one path by which this model could leave a grant standing that nothing described. Ownership is decided narrowly, because the operation deletes files from a directory on the operator's PATH — the segment must come from the closed set, the tool name must equal the base name or be qualified with a hyphen (so fka-safe-ghi is never taken for gh), and the file must carry the generator's marker, so a name collision with something the operator wrote is left alone. Removals are logged and recorded in the generated resource. What remains absent is a whole-tool teardown: nothing removes the last wrapper for a CLI you no longer wrap, or the workspace under the work root, so retiring a tool entirely is still a manual rm of bin/<prefix>-*-<tool> and the tool's directory. That is a smaller gap than the one closed here — it needs a deliberate decision to stop wrapping something, rather than happening silently as a side effect of an edit."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "The checks are where this pass did its main work. Two blocking defects were found and fixed. First, checkWrappers validated only the non-option tokens of a spec's prepend, so spec.append was checked by nothing and an option-shaped prepend token by nothing — and because toPolicy assigns pinned options after the tier filter (deliberately, since an alias must be able to run its own pin), a pin was the one route by which an option entered a policy without passing the ceiling. append: [\"--upload-pack\", \"/tmp/evil\"] on a read-safe alias produced zero problems and a permit verdict. Pinned options are now required to appear in the review's globalOptions block, which carries the crawl check transitively, and to sit at or below the alias's own ceiling; help spellings stay exempt because help is a mode rather than a tier. Second, classifyAll built a docs-aware system prompt and then passed the bare constant to the per-command batch call, so under docsMode:web the tiering prompt lost the prompt-injection warning that is the stated defence for reading untrusted pages. Both fixes carry regression tests, including the exploit itself. Also verified as sound: the crawl caps, the argv-not-shell invocation, and deny-by-default at every level."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Enumerated explicitly. Seven specs, each written by exactly one method, each instance named spec-<cli> through one shared dataName helper. Two tools wrapped in one repository produce disjoint instance names; one tool wrapped twice converges on the same name, which is correct since the second run supersedes the first."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No dataRepository access anywhere. State moves between methods through the workspace on disk — surface.json, review.yaml — and through resources written by ctx.writeResource and ctx.createFileWriter. generate reads surface.json directly to re-check the edited table, which is deliberate: it needs the crawl as ground truth at render time, not the proposal's summary of it."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "First publish, so there is no deployed data to migrate and no upgrades entry is required. Recorded for the next bump: this pass added a required-by-default field to the review file schema (approved, defaulting false) and changed no resource shape. Because the review file is a user-edited artifact on disk rather than swamp-managed data, a pre-existing review.yaml from a development run parses with approved false and is refused by generate until a person sets it — which is the intended migration and needs no code."
+    }
+  ]
+}

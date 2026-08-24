@@ -506,11 +506,18 @@ async function runHelp(
     timedOut = true;
     kill();
   }, o.timeoutMs);
+  // `once: true` fires the listener at most once; it does not remove a listener
+  // that never fires. One signal is shared by every call in a crawl, so without
+  // the matching removeEventListener below a thousand-command tree leaves a
+  // thousand dead listeners attached to it, each holding its own closure.
   o.signal?.addEventListener("abort", kill, { once: true });
+  const done = () => {
+    clearTimeout(timer);
+    o.signal?.removeEventListener("abort", kill);
+  };
 
   try {
     const { stdout, stderr } = await child.output();
-    clearTimeout(timer);
     if (timedOut) {
       return {
         ok: false,
@@ -529,9 +536,10 @@ async function runHelp(
     }
     return { ok: true, text, error: "" };
   } catch (error) {
-    clearTimeout(timer);
     const reason = error instanceof Error ? error.message : String(error);
     return { ok: false, text: "", error: reason };
+  } finally {
+    done();
   }
 }
 

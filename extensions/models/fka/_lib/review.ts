@@ -235,6 +235,21 @@ const WrapperSpecSchema = z.object({
 export type WrapperSpec = z.infer<typeof WrapperSpecSchema>;
 
 export const ReviewSchema = z.object({
+  /**
+   * Whether a person has read this table and accepted it.
+   *
+   * `classify` always writes false and has no way to write true; `generate`
+   * refuses to render anything until someone sets it. That is the whole of the
+   * human gate, and it is deliberately the only thing standing here: the
+   * proposal and the approved table are one file, so without a marker
+   * "a model suggested this" and "a person accepted this" are the same state
+   * on disk, and `generate` cannot tell them apart.
+   *
+   * Setting it is meant to be the last thing you do, after reading the
+   * read-safe block. Flipping it first and reading afterwards costs one
+   * keystroke and gives up everything this design is for.
+   */
+  approved: z.boolean().default(false),
   cli: z.string().min(1),
   /** Absolute path, resolved at discover time. */
   binary: z.string().min(1),
@@ -672,6 +687,53 @@ function checkWrappers(review: Review, surface: Surface): Problem[] {
       });
     }
 
+    // A pinned *option* needs the same grounding as a pinned path, and a
+    // ceiling besides. `toPolicy` assigns pinned options after the tier filter
+    // on purpose — a wrapper has to be able to execute its own pin — which
+    // makes a pin the one route by which an option enters a policy without
+    // passing that filter. So this is where the filter has to happen instead.
+    // Unchecked, `append` was a grant of any option, at any tier, at every
+    // command the alias admits: `append: ["--upload-pack", "/tmp/evil"]` on a
+    // read-safe alias passed with no problem reported.
+    //
+    // Membership in `globalOptions` carries the crawl check transitively —
+    // `checkAgainstSurface` has already rejected any global the crawl never
+    // saw — so requiring an entry here grounds the spelling and supplies the
+    // tier in one step.
+    const ceilingTier = spec.admits.maxTier ?? SEGMENT_CEILING[spec.segment];
+    const ceiling = ceilingTier === null
+      ? Number.POSITIVE_INFINITY
+      : tierRank(ceilingTier);
+    for (
+      const name of Object.keys(
+        pinnedOptions([...spec.prepend, ...spec.append]),
+      )
+    ) {
+      // A help spelling sits outside the tier ladder — it is a fact about the
+      // tool, already checked against the crawl as `helpOptions` — and pinning
+      // one is exactly how a help alias is built.
+      if (review.helpOptions.includes(name)) continue;
+
+      const global = review.globalOptions[name];
+      if (!global) {
+        problems.push({
+          kind: "bad-wrapper",
+          wrapper,
+          message:
+            `"${wrapper}" pins the option "${name}", which the review's globalOptions block does not tier. A pin is permitted at every command the alias admits, so it has to be an option this table has judged — absent from the table is refused.`,
+        });
+        continue;
+      }
+      if (tierRank(global.tier) > ceiling) {
+        problems.push({
+          kind: "bad-wrapper",
+          wrapper,
+          message:
+            `"${wrapper}" pins the option "${name}", which is ${global.tier}, above this alias's ceiling of ${ceilingTier}. Pinning it would permit it at every command the alias admits.`,
+        });
+      }
+    }
+
     for (const path of spec.admits.paths ?? []) {
       if (!surface.paths.has(path.join(" "))) {
         problems.push({
@@ -814,13 +876,21 @@ function header(review: Review): string {
     ` fka review — ${review.cli}${version}`,
     ` binary: ${review.binary}`,
     "",
-    " This is a proposal from a language model. It grants nothing until you",
-    " approve the workflow's review step, and `generate` reads THIS FILE, not",
-    " the proposal it started from. Edit freely.",
+    " This is a proposal from a language model. It grants nothing while",
+    " `approved` is false: `generate` refuses to render a wrapper from an",
+    " unapproved table, so setting that flag is the act that turns this file",
+    " from a suggestion into policy. Edit freely first.",
     "",
-    " Read the read-safe block carefully and skim the rest. Every other tier",
-    " still stops at a prompt when it runs, so a mistake there costs you one",
-    " keystroke. A mistake in read-safe runs with nobody watching.",
+    " Read the read-safe block carefully. Every other tier still stops at a",
+    " prompt when it runs, so a mistake there costs you one keystroke. A",
+    " mistake in read-safe runs with nobody watching.",
+    "",
+    " Then read `wrappers`, which is short and is not a tier. `prepend` and",
+    " `append` pin tokens into every call an alias makes, so a pinned option",
+    " is permitted at every command that alias admits, whatever the table says",
+    " about it elsewhere. Pins are checked against the crawl and against the",
+    " alias's own ceiling, but what is worth pinning is judgement, and it is",
+    " judgement in the one block small enough to read line by line.",
     "",
   ];
   for (const tier of TIERS) {

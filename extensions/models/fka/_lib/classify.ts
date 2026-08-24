@@ -569,7 +569,7 @@ export async function classifyAll(o: ClassifyOptions): Promise<ClassifyResult> {
     try {
       const reply = await askJson(
         o.ask,
-        SYSTEM,
+        system,
         batchPrompt(o.cli, batch, summaries),
         BatchReplySchema,
       );
