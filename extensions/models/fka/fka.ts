@@ -7,7 +7,7 @@
 // argument list and into the command name, which is the one part of a shell
 // command a permission rule can match cheaply and exactly.
 //
-// Four methods and one person, in that order:
+// Four methods and one person, in that order, and a fifth that undoes them:
 //
 //   discover   Recursively read `<cli> --help` and record the command tree.
 //              Deterministic. The only stage with ground truth, and therefore
@@ -26,6 +26,10 @@
 //
 //   verify     Prove every wrapper enforces its tier, using a check mode that
 //              never executes the wrapped tool.
+//
+//   remove     Stop wrapping a tool: take its wrappers off PATH, and with
+//              purge delete the review file as well. Separate from the four
+//              because retiring a tool is a decision, not a stage.
 //
 // Nothing here writes settings.json. The thing that proposes a permission
 // policy must not also be able to put it into force, so the last step is
@@ -191,6 +195,25 @@ type GenerateArgs = z.infer<typeof GenerateArgs>;
 const VerifyArgs = z.object({ cli: CliArg });
 type VerifyArgs = z.infer<typeof VerifyArgs>;
 
+const RemoveArgs = z.object({
+  cli: CliArg,
+  /**
+   * Also delete the tool's workspace — the review file, the crawl, the
+   * snippets.
+   *
+   * Off by default, and the asymmetry is deliberate. Taking the wrappers off
+   * PATH is the part that changes what an agent can do, and it is recoverable:
+   * the table that produced them is still there, so `generate` rebuilds them.
+   * The review file is the record of what a person approved and why, marked
+   * `infinite` for that reason, and nothing regenerates it — `classify` would
+   * write a fresh proposal, not the judgement someone made about the last one.
+   * So the reversible half happens on request and the unrecoverable half needs
+   * asking for.
+   */
+  purge: z.boolean().default(false),
+});
+type RemoveArgs = z.infer<typeof RemoveArgs>;
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
@@ -243,6 +266,17 @@ const GeneratedSchema = z.object({
   removed: z.array(z.string()),
   settingsSnippet: z.string(),
   skillSnippet: z.string(),
+  nextAction: z.string(),
+});
+
+const RemovedSchema = z.object({
+  cli: z.string(),
+  removedAt: z.string(),
+  binDir: z.string(),
+  /** Wrapper names taken off PATH. */
+  wrappers: z.array(z.string()),
+  /** The workspace directory, when `purge` deleted it. Empty when it was kept. */
+  purgedWorkspace: z.string(),
   nextAction: z.string(),
 });
 
@@ -468,6 +502,13 @@ export const model = {
       description:
         "The wrappers, the permission snippet, and the skill snippet.",
       schema: GeneratedSchema,
+      lifetime: "infinite",
+      garbageCollection: 20,
+    },
+    "removed": {
+      description:
+        "What unwrapping a tool took off PATH, and whether its workspace went with it.",
+      schema: RemovedSchema,
       lifetime: "infinite",
       garbageCollection: 20,
     },
@@ -1031,6 +1072,88 @@ export const model = {
               `fix ${reviewPath} and run generate again before trusting them.`,
           );
         }
+        return { dataHandles: [handle] };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    remove: {
+      description:
+        "Stop wrapping a tool: take its wrappers off PATH, and with purge also delete its review file and crawl. The permission rules are keyed on the segment rather than the tool, so they need no edit.",
+      arguments: RemoveArgs,
+      execute: async (
+        args: RemoveArgs,
+        ctx: {
+          globalArgs: GlobalArgs;
+          repoDir: string;
+          logger: Logger;
+          writeResource: WriteResource;
+        },
+      ) => {
+        const g = ctx.globalArgs;
+        const dir = workspace(ctx.repoDir, g, args.cli);
+        const binDir = binDirFor(ctx.repoDir, g);
+
+        // The same ownership rule `generate` prunes with, for the same reason:
+        // bin/ is a directory on the operator's PATH holding every tool's
+        // wrappers, so "this tool's" has to mean the closed segment set, an
+        // exact or hyphen-qualified name, and the generator's own marker.
+        const names = await ownedWrappers(binDir, g.prefix, args.cli);
+        for (const name of names) {
+          await Deno.remove(`${binDir}/${name}`);
+          ctx.logger.info("Removed {name}", { name });
+        }
+        if (names.length === 0) {
+          ctx.logger.warning(
+            "No wrappers for {cli} were found in {binDir}, so nothing was taken off PATH",
+            { cli: baseName(args.cli), binDir },
+          );
+        }
+
+        let purgedWorkspace = "";
+        if (args.purge) {
+          try {
+            await Deno.remove(dir, { recursive: true });
+            purgedWorkspace = dir;
+            ctx.logger.warning(
+              "Purged {dir}, including the review file — the judgement is gone, not just the wrappers",
+              { dir },
+            );
+          } catch {
+            // Already absent is the state purge wanted, so it is not a failure.
+            ctx.logger.info("No workspace at {dir} to purge", { dir });
+          }
+        }
+
+        const handle = await ctx.writeResource(
+          "removed",
+          dataName("removed", args.cli),
+          {
+            cli: baseName(args.cli),
+            removedAt: new Date().toISOString(),
+            binDir,
+            wrappers: names,
+            purgedWorkspace,
+            nextAction: purgedWorkspace
+              ? `${
+                baseName(args.cli)
+              } is fully unwrapped. Running the workflow ` +
+                `again starts from discover, and the tiers will be a fresh ` +
+                `proposal rather than the table you approved before.`
+              : `${baseName(args.cli)} is off PATH. ${dir} still holds the ` +
+                `review file, so generate rebuilds the wrappers from the table ` +
+                `you already approved — no reclassification, no second review.`,
+          },
+        );
+
+        // Worth saying rather than leaving to be noticed: the settings snippet
+        // grants `Bash(fka-safe:*)` and its siblings, which name the segment and
+        // never the tool. Unwrapping one tool leaves those rules correct, and
+        // they go on covering every other tool that is still wrapped.
+        ctx.logger.info(
+          "Removed {count} wrapper(s). The permission rules key on the segment, not the tool, so settings.json needs no edit",
+          { count: names.length },
+        );
         return { dataHandles: [handle] };
       },
     },

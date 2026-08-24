@@ -1,4 +1,10 @@
-import { assertEquals, assertThrows } from "jsr:@std/assert@1";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "jsr:@std/assert@1";
 import { model, ownedWrappers, workRoot, writeExecutable } from "./fka.ts";
 
 /** The parsed defaults, as a method sees them when nothing overrides. */
@@ -139,6 +145,273 @@ Deno.test("an unknown segment is not ours, since the segment set is closed", asy
 
 Deno.test("a missing bin directory is empty rather than an error", async () => {
   assertEquals(await ownedWrappers("/nonexistent-fka-bin", "fka", "gh"), []);
+});
+
+// --- the method bodies ---------------------------------------------------
+//
+// These were untested on the grounds that a method body needs a repository and
+// a real CLI on PATH. That is true of `discover` and `classify`; it is not true
+// of `generate` or `remove`, which need a directory and a review file. They are
+// also the two that matter most — one holds the approval gate, the other is the
+// only thing in this model that deletes.
+
+/** Render a log template the way a person reading the log would see it. */
+function fill(msg: string, props?: Record<string, unknown>): string {
+  if (!props) return msg;
+  return msg.replace(/\{(\w+)\}/g, (_, k) => String(props[k] ?? `{${k}}`));
+}
+
+/** Everything a method body asks of its context, recorded rather than acted on. */
+function fakeCtx(repoDir: string, over: Record<string, unknown> = {}) {
+  const written: {
+    spec: string;
+    name: string;
+    data: Record<string, unknown>;
+  }[] = [];
+  const logs: string[] = [];
+  return {
+    written,
+    logs,
+    ctx: {
+      globalArgs: model.globalArguments.parse({
+        workRoot: repoDir,
+        denoPath: "/bin/echo",
+        ...over,
+      }),
+      repoDir,
+      logger: {
+        info: (m: string, p?: Record<string, unknown>) => logs.push(fill(m, p)),
+        warning: (m: string, p?: Record<string, unknown>) =>
+          logs.push(fill(m, p)),
+      },
+      writeResource: (
+        spec: string,
+        name: string,
+        data: Record<string, unknown>,
+      ) => {
+        written.push({ spec, name, data });
+        return Promise.resolve({ name });
+      },
+      createFileWriter: (_spec: string, name: string) => ({
+        writeText: () => Promise.resolve({ name }),
+      }),
+      extensionFile: (p: string) => `${import.meta.dirname}/${p}`,
+    },
+  };
+}
+
+/** The smallest review that generates something. */
+function reviewYaml(approved: boolean, command = "list"): string {
+  return `approved: ${approved}
+cli: demo
+binary: /bin/echo
+binaryVersion: demo 1.0
+prefix: fka
+helpOptions: []
+wrappers:
+  - segment: safe
+    name: demo
+    purpose: safe demo commands
+    prepend: []
+    append: []
+    admits:
+      maxTier: read-safe
+    accepts: table
+globalOptions: {}
+commands:
+  - path: [${command}]
+    tier: read-safe
+    summary: ""
+    why: reads
+    options: {}
+    dropped: {}
+`;
+}
+
+/** A crawl that saw exactly `list`, and nothing else. */
+const surfaceJson = JSON.stringify({
+  cli: "demo",
+  binary: "/bin/echo",
+  binaryVersion: "demo 1.0",
+  nodes: [
+    {
+      path: [],
+      ok: true,
+      error: "",
+      helpText: "",
+      helpFlagUsed: "--help",
+      parsed: { usage: "", subcommands: [], options: [] },
+    },
+    {
+      path: ["list"],
+      ok: true,
+      error: "",
+      helpText: "",
+      helpFlagUsed: "--help",
+      parsed: { usage: "", subcommands: [], options: [] },
+    },
+  ],
+});
+
+async function workspaceWith(review: string): Promise<string> {
+  const root = await Deno.makeTempDir();
+  await Deno.mkdir(`${root}/demo`, { recursive: true });
+  await Deno.writeTextFile(`${root}/demo/review.yaml`, review);
+  await Deno.writeTextFile(`${root}/demo/surface.json`, surfaceJson);
+  return root;
+}
+
+Deno.test("generate refuses a table nobody approved", async () => {
+  const root = await workspaceWith(reviewYaml(false));
+  try {
+    const { ctx } = fakeCtx(root);
+    let threw = "";
+    try {
+      await model.methods.generate.execute({ cli: "demo" }, ctx);
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    assertStringIncludes(threw, "not approved");
+    // Refused before rendering, not after: nothing reached PATH.
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("generate refuses an approved table that the crawl contradicts", async () => {
+  // The check that exists because a human edit sits between the table classify
+  // validated and the table generate renders.
+  const root = await workspaceWith(reviewYaml(true, "invented"));
+  try {
+    const { ctx } = fakeCtx(root);
+    let threw = "";
+    try {
+      await model.methods.generate.execute({ cli: "demo" }, ctx);
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    assertStringIncludes(threw, "does not match what discover saw");
+    assertStringIncludes(threw, "invented");
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("generate renders once the table is approved", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    const { ctx, written } = fakeCtx(root);
+    await model.methods.generate.execute({ cli: "demo" }, ctx);
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), [
+      "fka-safe-demo",
+    ]);
+    assertEquals(
+      (await Deno.stat(`${root}/bin/fka-safe-demo`)).mode! & 0o777,
+      0o755,
+    );
+    assertEquals(written.find((w) => w.spec === "generated")?.data.removed, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("generate takes an alias off PATH once the table stops naming it", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    await model.methods.generate.execute({ cli: "demo" }, fakeCtx(root).ctx);
+    // A wrapper from an earlier run, for an alias this table no longer has.
+    await Deno.copyFile(
+      `${root}/bin/fka-safe-demo`,
+      `${root}/bin/fka-write-demo`,
+    );
+
+    const { ctx, written } = fakeCtx(root);
+    await model.methods.generate.execute({ cli: "demo" }, ctx);
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), [
+      "fka-safe-demo",
+    ]);
+    assertEquals(written.find((w) => w.spec === "generated")?.data.removed, [
+      "fka-write-demo",
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("remove takes the wrappers off PATH and keeps the judgement", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    await model.methods.generate.execute({ cli: "demo" }, fakeCtx(root).ctx);
+    const { ctx, written } = fakeCtx(root);
+    await model.methods.remove.execute({ cli: "demo", purge: false }, ctx);
+
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), []);
+    // The review file survives, so generate rebuilds without a second review.
+    assertEquals(
+      (await Deno.stat(`${root}/demo/review.yaml`)).isFile,
+      true,
+    );
+    const rec = written.find((w) => w.spec === "removed");
+    assertEquals(rec?.data.wrappers, ["fka-safe-demo"]);
+    assertEquals(rec?.data.purgedWorkspace, "");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("remove with purge deletes the review file too", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    await model.methods.generate.execute({ cli: "demo" }, fakeCtx(root).ctx);
+    const { ctx, written } = fakeCtx(root);
+    await model.methods.remove.execute({ cli: "demo", purge: true }, ctx);
+
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demo"), []);
+    await assertRejects(() => Deno.stat(`${root}/demo/review.yaml`));
+    assertEquals(
+      written.find((w) => w.spec === "removed")?.data.purgedWorkspace,
+      `${root}/demo`,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("remove leaves another tool's wrappers alone", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    await model.methods.generate.execute({ cli: "demo" }, fakeCtx(root).ctx);
+    // A second tool whose name extends the first. Deleting this would be the
+    // prefix bug, with somebody else's grant as the casualty.
+    await Deno.copyFile(
+      `${root}/bin/fka-safe-demo`,
+      `${root}/bin/fka-safe-demolition`,
+    );
+
+    await model.methods.remove.execute(
+      { cli: "demo", purge: false },
+      fakeCtx(root).ctx,
+    );
+    assertEquals(await ownedWrappers(`${root}/bin`, "fka", "demolition"), [
+      "fka-safe-demolition",
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("remove says so plainly when there was nothing to remove", async () => {
+  const root = await workspaceWith(reviewYaml(true));
+  try {
+    const { ctx, written, logs } = fakeCtx(root);
+    await model.methods.remove.execute({ cli: "demo", purge: false }, ctx);
+    assertEquals(written.find((w) => w.spec === "removed")?.data.wrappers, []);
+    assert(logs.some((l) => l.includes("No wrappers for demo")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("an executable is replaced whole, never observed half-written", async () => {

@@ -314,6 +314,31 @@ swamp model method run fka-gh verify --input cli=gh
 Run the workflow again to pick up the new commands. The review gate runs again
 too, which is correct: nobody reviewed those commands yet.
 
+## When you stop wrapping a tool
+
+```bash
+swamp model method run fka-gh remove --input cli=gh
+```
+
+Takes every `gh` wrapper off `PATH` and leaves the workspace alone, so the
+review file — the record of what you approved, and the thing `generate` builds
+from — survives. Rewrapping later is a `generate`, not a second review.
+
+Add `--input purge=true` to delete the workspace as well. That is the
+unrecoverable half: `classify` would write a fresh proposal, not the judgement
+somebody made about the last one. Hence the asymmetry — the reversible part
+happens on request, the rest has to be asked for.
+
+Removal is by exact ownership, because `bin/` is a directory on your `PATH`
+holding every tool's wrappers: the segment must be one of the known set, the
+tool name must match rather than merely start the same (`fka-safe-ghi` is not
+`gh`), and the file must carry the generator's marker. Nothing you wrote
+yourself is ever deleted.
+
+Your permission rules need no edit. They name segments, not tools, so
+`Bash(fka-safe:*)` goes on being correct for everything still wrapped and
+grants nothing for a tool with no wrappers left.
+
 ## Prerequisites
 
 - swamp initialized in the repository (`swamp repo init`)
