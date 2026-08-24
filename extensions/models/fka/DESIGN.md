@@ -73,7 +73,7 @@ admitting `--ext-diff` with it.
 
 So every option carries its own optional tier, defaulting to its command's. The
 policy for a wrapper is built by filtering twice — commands, then each surviving
-command's options — and `git log` reaches `safe-git` with forty options and
+command's options — and `git log` reaches `fka-safe-git` with forty options and
 without that one.
 
 ## The alias plan
@@ -99,8 +99,7 @@ with `accepts: path-only`. There is no help mechanism in the code.
 
 The first attempt at help allowed the flag and required it, so the wrapper
 validated the caller's intent. Pinning is strictly stronger.
-`fka-help-git
-commit` runs `git commit --help` because the alias _builds_ that
+`fka-help-git commit` runs `git commit --help` because the alias _builds_ that
 vector; no token the caller writes decides whether help happens, and `-m pwned`
 is refused because the alias carries no `-m`. Both the check and the exec run on
 the effective vector, so there is no gap between what was judged and what runs.

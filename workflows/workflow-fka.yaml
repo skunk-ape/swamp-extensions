@@ -37,14 +37,6 @@ inputs:
         often does not say whether an operation is billable or reaches a private
         resource, and the docs do — at the cost of a network-capable session
         reading pages you do not control.
-    emit:
-      type: array
-      items:
-        type: string
-      default: ["read-safe", "read-private", "modify"]
-      description: >-
-        Which tiers get a wrapper. Add "escape" only if you want a wrapper for
-        the commands that hand over arbitrary execution.
     maxDepth:
       type: integer
       default: 3
@@ -74,7 +66,6 @@ jobs:
             maxDepth: ${{ inputs.maxDepth }}
             maxCommands: ${{ inputs.maxCommands }}
             docsMode: ${{ inputs.docsMode }}
-            emit: ${{ inputs.emit }}
           inputs:
             cli: ${{ inputs.cli }}
             include: ${{ inputs.include }}
@@ -110,7 +101,6 @@ jobs:
           methodName: classify
           globalArgs:
             docsMode: ${{ inputs.docsMode }}
-            emit: ${{ inputs.emit }}
           inputs:
             cli: ${{ inputs.cli }}
         dependsOn:
@@ -148,8 +138,6 @@ jobs:
           modelType: '@skunk-ape/fka'
           modelName: fka-${{ inputs.cli }}
           methodName: generate
-          globalArgs:
-            emit: ${{ inputs.emit }}
           inputs:
             cli: ${{ inputs.cli }}
         dependsOn:
@@ -166,8 +154,6 @@ jobs:
           modelType: '@skunk-ape/fka'
           modelName: fka-${{ inputs.cli }}
           methodName: verify
-          globalArgs:
-            emit: ${{ inputs.emit }}
           inputs:
             cli: ${{ inputs.cli }}
         dependsOn:

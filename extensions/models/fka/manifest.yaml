@@ -6,10 +6,10 @@ description: |
 
   Take a command-line tool the agent already has, work out which of its commands
   are safe to run unattended, and generate a wrapper that enforces the answer.
-  The wrapper is named for the tool and the tier: `gh` becomes `safe-gh`,
-  `private-gh`, `write-gh`. The tier moves out of the argument list and into the
-  command name, which is the one part of a shell command a permission rule can
-  match cheaply and exactly.
+  The wrapper is named for the tool and the tier: `gh` becomes `fka-safe-gh`,
+  `fka-private-gh`, `fka-write-gh`. The tier moves out of the argument list and
+  into the command name, which is the one part of a shell command a permission
+  rule can match cheaply and exactly.
 
   ## The problem
 
