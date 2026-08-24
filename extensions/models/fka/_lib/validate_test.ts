@@ -215,6 +215,28 @@ Deno.test("positionals are denied by default", () => {
   assertStringIncludes(refuses(p, ["api", "/repos/o/r"]), "no free arguments");
 });
 
+Deno.test("an unadmitted subcommand is named, not called a free argument", () => {
+  // The shape that produced this: git's root command is itself in the table, so
+  // `fka-safe-git add .` found a rule at the root, took `add` for a stray
+  // argument, and reported `"git " takes no free arguments` — a message that
+  // names the wrong problem and trails a space where the command should be.
+  const p = policy([
+    { path: [], options: {} },
+    { path: ["log"], options: {}, positionals: "any" },
+  ]);
+  const reason = refuses(p, ["add", "."]);
+  assertStringIncludes(reason, '"demo add" is not a permitted command');
+  assert(
+    !reason.includes('"demo "'),
+    `refusal should name the command, got: ${reason}`,
+  );
+});
+
+Deno.test("a stray argument below the root still names its command", () => {
+  const p = policy([{ path: [], options: {} }, { path: ["log"], options: {} }]);
+  assertStringIncludes(refuses(p, ["log", "x"]), '"demo log" takes no free');
+});
+
 Deno.test("a positional pattern is anchored", () => {
   const p = policy([{
     path: ["api"],
