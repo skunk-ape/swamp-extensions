@@ -363,11 +363,40 @@ export type Ask = (system: string, prompt: string) => Promise<string>;
 
 export interface AskOptions {
   claudePath: string;
+  /**
+   * Model to pin for the spawned session. Empty inherits the caller's Claude
+   * Code default: the child gets the caller's environment and `claude -p`
+   * resolves its model from it, so no `--model` flag is passed.
+   */
   model: string;
   wallTimeoutMs: number;
   /** Whether the classifier may read documentation off the network. */
   docsMode: "none" | "web";
   signal: AbortSignal;
+}
+
+/**
+ * The argv for one ask, pure so tests can see exactly what gets spawned.
+ *
+ * `--model` is passed only when a model was chosen. Omitting it is the
+ * inheritance path: `claude -p` then runs on whatever model the caller's
+ * Claude Code is configured for, rather than on a default this file picked.
+ */
+export function askArgv(
+  o: Pick<AskOptions, "model" | "docsMode">,
+  system: string,
+): string[] {
+  const args = ["-p"];
+  if (o.model !== "") args.push("--model", o.model);
+  args.push("--append-system-prompt", system);
+  if (o.docsMode === "web") args.push("--allowedTools", "WebFetch,WebSearch");
+  else {
+    args.push(
+      "--disallowedTools",
+      "WebFetch,WebSearch,Bash,Read,Write,Edit",
+    );
+  }
+  return args;
 }
 
 /**
@@ -381,12 +410,7 @@ export interface AskOptions {
  */
 export function spawnAsk(o: AskOptions): Ask {
   return async (system: string, prompt: string): Promise<string> => {
-    const args = ["-p", "--model", o.model, "--append-system-prompt", system];
-    if (o.docsMode === "web") args.push("--allowedTools", "WebFetch,WebSearch");
-    else {args.push(
-        "--disallowedTools",
-        "WebFetch,WebSearch,Bash,Read,Write,Edit",
-      );}
+    const args = askArgv(o, system);
 
     let child: Deno.ChildProcess;
     // The session inherits the caller's credentials and model default, which

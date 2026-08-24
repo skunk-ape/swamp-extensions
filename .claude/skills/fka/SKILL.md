@@ -66,6 +66,13 @@ finishes.
 swamp workflow run @skunk-ape/fka --input cli=aws --input include='["s3","ec2"]'
 ```
 
+A root help sometimes names only the common commands — `git --help` lists 25 of
+~200. Point discover at the tool's own full listing when it has one.
+
+```
+swamp workflow run @skunk-ape/fka --input cli=git --input listCommand='help -a'
+```
+
 The run suspends at `review`. That is not a failure — it is the gate.
 
 ### What each stage does
@@ -198,6 +205,8 @@ Set these in the model definition's `globalArguments`.
 | `maxDepth`    | `3`             | Deeper command trees.                                                                                                                                              |
 | `maxCommands` | `400`           | Raise for a big tool, or scope with `include` instead.                                                                                                             |
 | `envScrub`    | eight variables | Extra variables every wrapper deletes before exec.                                                                                                                 |
+| `model`       | inherit         | The classifier's spawned `claude -p` sessions. Empty inherits the caller's Claude Code default; set it to pin one — this is a cost decision, so name it out loud. |
+| `listCommand` | none            | Enumerates the tool's full command list when the root help names only the common ones — `--input listCommand='help -a'` for git.                                  |
 
 ## What this cannot do
 

@@ -5,7 +5,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "jsr:@std/assert@1";
-import { classifyAll, extractJson, systemPrompt } from "./classify.ts";
+import { askArgv, classifyAll, extractJson, systemPrompt } from "./classify.ts";
 import type { Ask } from "./classify.ts";
 import type { CrawlNode } from "./help.ts";
 
@@ -504,4 +504,29 @@ Deno.test("an ask that throws surfaces rather than producing a silent empty tabl
     Error,
     "claude exited 1",
   );
+});
+
+// --- ask argv ---------------------------------------------------------------
+//
+// The classifier's model is a cost and a capability decision the operator
+// makes, so the argv it spawns is visible: an empty model passes no --model
+// flag, which is how the session inherits the caller's Claude Code default.
+
+Deno.test("an empty model inherits the caller's Claude Code default", () => {
+  const argv = askArgv({ model: "", docsMode: "none" }, "system text");
+  assert(!argv.includes("--model"));
+  assertEquals(argv[0], "-p");
+  assert(argv.includes("system text"));
+});
+
+Deno.test("a chosen model is pinned with --model", () => {
+  const argv = askArgv({ model: "claude-sonnet-5", docsMode: "none" }, "s");
+  assertEquals(argv[argv.indexOf("--model") + 1], "claude-sonnet-5");
+});
+
+Deno.test("docs mode decides the tool grant", () => {
+  const web = askArgv({ model: "", docsMode: "web" }, "s");
+  const none = askArgv({ model: "", docsMode: "none" }, "s");
+  assert(web.includes("--allowedTools"));
+  assert(none.includes("--disallowedTools"));
 });

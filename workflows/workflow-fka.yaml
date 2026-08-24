@@ -47,6 +47,22 @@ inputs:
       description: >-
         Ceiling on help invocations. Prefer scoping with `include` over raising
         this — the ceiling protects the reviewer as much as the clock.
+    listCommand:
+      type: string
+      default: ""
+      description: >-
+        An argv suffix that enumerates the tool's full command list, for tools
+        whose root help names only the common commands — git lists 25 of ~200,
+        but `git help -a` lists them all, so `--input listCommand='help -a'`
+        gives the crawl the whole tree. Empty crawls what the root help lists.
+    model:
+      type: string
+      default: ""
+      description: >-
+        Model the classifier's spawned `claude -p` sessions run on. Empty
+        inherits the caller's Claude Code default — the child receives the
+        caller's environment and saved model. Set it to pin one, e.g.
+        `--input model=claude-sonnet-5`.
   required: ["cli"]
 jobs:
   - name: wrap
@@ -66,6 +82,7 @@ jobs:
             maxDepth: ${{ inputs.maxDepth }}
             maxCommands: ${{ inputs.maxCommands }}
             docsMode: ${{ inputs.docsMode }}
+            listCommand: ${{ inputs.listCommand }}
           inputs:
             cli: ${{ inputs.cli }}
             include: ${{ inputs.include }}
@@ -101,6 +118,7 @@ jobs:
           methodName: classify
           globalArgs:
             docsMode: ${{ inputs.docsMode }}
+            model: ${{ inputs.model }}
           inputs:
             cli: ${{ inputs.cli }}
         dependsOn:

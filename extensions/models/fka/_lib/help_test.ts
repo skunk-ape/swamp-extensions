@@ -448,6 +448,7 @@ function crawlOpts(binary: string, over: Record<string, unknown> = {}) {
     include: [],
     exclude: [],
     maxHelpBytes: 100_000,
+    listCommand: [],
     ...over,
   };
 }
@@ -609,6 +610,77 @@ Deno.test("resolveBinary takes a path as given and refuses one that is not there
       threw = e instanceof Error ? e.message : String(e);
     });
     assert(threw.includes("no such binary"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- wrapped help lines ----------------------------------------------------
+//
+// Cliff-style help wraps a long description onto a deeper-indented line. The
+// continuation belongs to the entry above it; parsing it as an entry invents
+// commands the tool does not have — `issues.` from `...vault compatibility
+// issues.` was a real crawl result before this existed.
+
+Deno.test("a wrapped command description continues the entry, not a phantom", () => {
+  const text = [
+    "Commands:",
+    "",
+    "  audit       - Verify that the audit integration is healthy.",
+    "  datastores  - Check that the datastore is healthy and flag any vault compatibility",
+    "                issues.",
+    "  install     - Check installation health: binary ownership, writability, autoupdate",
+    "                status.",
+  ].join("\n");
+  const parsed = parseHelp(text);
+  assertEquals(
+    parsed.subcommands.map((s) => s.name),
+    ["audit", "datastores", "install"],
+  );
+  const ds = parsed.subcommands.find((s) => s.name === "datastores");
+  assert(ds !== undefined && ds.summary.includes("vault compatibility issues."));
+});
+
+Deno.test("a wrapped option description continues the option", () => {
+  const text = [
+    "Options:",
+    "  --version-suffix <type>  - Override version micro segment: 'epoch' uses a Unix timestamp (e.g.",
+    "                             2026.06.18.1750263600)",
+  ].join("\n");
+  const parsed = parseHelp(text);
+  assertEquals(parsed.options.length, 1);
+  assert(parsed.options[0].summary.includes("2026.06.18.1750263600)"));
+});
+
+Deno.test("listCommand replaces the root help as the crawl's enumeration", async () => {
+  const dir = await Deno.makeTempDir();
+  const binary = `${dir}/demo`;
+  const script = `#!/bin/sh
+case "$*" in
+  "--help") ${shq(cobraPage("demo", ["alpha"]))} ;;
+  "list-all") ${shq(cobraPage("demo", ["alpha", "hidden"]))} ;;
+  "alpha --help") ${shq(cobraPage("demo alpha", []))} ;;
+  "hidden --help") ${shq(cobraPage("demo hidden", []))} ;;
+  *) exit 1 ;;
+esac
+`;
+  await Deno.writeTextFile(binary, script);
+  await Deno.chmod(binary, 0o755);
+  try {
+    const full = await crawl(crawlOpts(binary, { listCommand: ["list-all"] }));
+    assert(full.map((n) => n.path.join(" ")).includes("hidden"));
+    const plain = await crawl(crawlOpts(binary));
+    assert(!plain.map((n) => n.path.join(" ")).includes("hidden"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a listCommand the tool does not have leaves the root enumeration standing", async () => {
+  const { binary, dir } = await fakeCli();
+  try {
+    const nodes = await crawl(crawlOpts(binary, { listCommand: ["no-such"] }));
+    assert(nodes.map((n) => n.path.join(" ")).includes("beta"));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

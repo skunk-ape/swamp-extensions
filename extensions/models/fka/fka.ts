@@ -103,6 +103,15 @@ const GlobalArgsSchema = z.object({
    * fires only for a tool that has already shown it routes `--help` to `man`.
    */
   fallbackHelpFlag: z.string().default("-h"),
+  /**
+   * An argv suffix, whitespace-split, that enumerates the tool's full command
+   * list. A root help sometimes names only the common commands — `git --help`
+   * lists 25 of ~200 — while an enumeration subcommand lists them all, like
+   * `git help -a`. When set, discover parses that output and uses it as the
+   * crawl's level-1 command list; the root help is still the page kept and
+   * tiered.
+   */
+  listCommand: z.string().default(""),
   /** How deep below the root to descend. */
   maxDepth: z.number().int().min(0).max(6).default(3),
   /** Hard ceiling on help invocations, so a large tool cannot run for an hour. */
@@ -115,7 +124,14 @@ const GlobalArgsSchema = z.object({
   // --- classify ------------------------------------------------------------
   /** Path or command name for the Claude Code binary. */
   claudePath: z.string().default("claude"),
-  model: z.string().default("claude-opus-5"),
+  /**
+   * Model the classifier's spawned `claude -p` sessions run on. Empty — the
+   * default — inherits the caller's Claude Code default: the child process
+   * receives the caller's environment and saved model, and no `--model` flag
+   * is passed. Set it to pin a model for every classify this definition runs,
+   * e.g. `claude-sonnet-5`.
+   */
+  model: z.string().default(""),
   /**
    * Whether the classifier may read documentation off the network.
    *
@@ -576,6 +592,9 @@ export const model = {
           include: args.include,
           exclude: args.exclude,
           maxHelpBytes: g.maxHelpBytes,
+          listCommand: g.listCommand.trim() === ""
+            ? []
+            : g.listCommand.trim().split(/\s+/),
           signal: ctx.signal,
           onNode: (node) => {
             seen++;

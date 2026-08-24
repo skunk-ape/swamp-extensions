@@ -2,7 +2,7 @@ manifestVersion: 1
 name: "@skunk-ape/fka"
 version: 2026.08.24.5
 description: |
-  Formerly known as. Wrap a CLI in the permission tier it deserves.
+  Formerly known as.
 
   Take a command-line tool the agent already has, work out which of its commands
   are safe to run unattended, and generate a wrapper that enforces the answer.
@@ -36,7 +36,7 @@ description: |
       "ask":   ["Bash(fka-private:*)", "Bash(fka-write:*)"]
 
   Wrap another CLI tomorrow and that file does not change. `Bash(fka-help:*)` on
-  its own is the narrowest useful grant: the agent reads any command's
+  its own is the narrowest useful grant: the agent reads any command\'s
   documentation and runs none of them.
 
   Which aliases a tool gets is judgement about that tool, proposed by the
@@ -51,7 +51,7 @@ description: |
   ## Methods
 
   - `discover` — recursively read `<cli> --help` and record the command tree,
-    the option spellings, and each option's arity. Deterministic. Runs the tool
+    the option spellings, and each option\'s arity. Deterministic. Runs the tool
     only with its help flag, through argv rather than a shell, under a depth
     cap, a command cap, and a per-call timeout.
   - `classify` — a model session proposes a tier per command, an option
@@ -69,7 +69,7 @@ description: |
   - `remove` — stop wrapping a tool. Takes its wrappers off PATH; with
     `purge` also deletes its review file and crawl. The permission rules key on
     the segment rather than the tool, so unwrapping one tool needs no edit to
-    `settings.json` and leaves every other tool's rules correct.
+    `settings.json` and leaves every other tool\'s rules correct.
   - `verify` — prove every wrapper permits its own tier and refuses everything
     above it, using a check mode that never executes the wrapped tool. The
     matrix covers argument *syntax* as well as coverage: `--`, attached values,
@@ -87,14 +87,14 @@ description: |
   Two blocks are worth real attention. `read-safe` is one, because it is the
   only tier that runs unattended. `wrappers` is the other, and it is short: an
   option pinned there applies at every command its alias admits, so it is
-  checked against the crawl and against that alias's own ceiling before it can
+  checked against the crawl and against that alias\'s own ceiling before it can
   be rendered.
 
   ## Where it lives
 
   Workspaces go under `$XDG_CONFIG_HOME/fka`, falling back to `~/.config/fka` —
   your home directory, not the repository you were standing in. A wrapper is
-  invoked by bare name, so it lives in the machine's namespace: two projects
+  invoked by bare name, so it lives in the machine\'s namespace: two projects
   wrapping `gh` would each render an executable called `fka-safe-gh`, and only
   one can be on PATH.
 

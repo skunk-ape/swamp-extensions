@@ -91,6 +91,17 @@ export interface CrawlOptions {
   include: string[];
   /** Subtrees never crawled, matched as a path prefix. */
   exclude: string[];
+  /**
+   * An argv suffix that enumerates the tool's full command list.
+   *
+   * Some tools list only their common commands in the root help — `git
+   * --help` names 25 of ~200 — but expose an enumeration subcommand such as
+   * `git help -a`. When non-empty, this argv is run once at the root and its
+   * parsed subcommands replace the root help's as the crawl's level-1
+   * enumeration. The root's own help page is still the one kept and tiered;
+   * this only decides which commands get crawled.
+   */
+  listCommand: string[];
   /** Bytes of help text kept per node. */
   maxHelpBytes: number;
   signal?: AbortSignal;
@@ -331,6 +342,27 @@ export function parseHelp(text: string): ParsedHelp {
   let kind: SectionKind = "other";
 
   /**
+   * Continuation tracking for sections whose entries wrap.
+   *
+   * Cliff-style help wraps a long description onto a deeper-indented line:
+   *
+   *     datastores  - Check that the configured datastore is healthy and flag
+   *                   any vault compatibility issues.
+   *
+   * The continuation is indented deeper than the section's entries. Treating
+   * it as an entry parses `issues.` as a command — a phantom that tiers a
+   * thing the tool does not have. A line deeper than every entry seen so far
+   * is therefore prose: appended to the previous entry's summary, which is
+   * where it belongs and where the classifier can read it.
+   *
+   * `entryIndent` is the shallowest entry indent seen in the current section,
+   * and resets on every section change.
+   */
+  let entryIndent = -1;
+  let lastSub: ParsedSubcommand | null = null;
+  let lastOpt: ParsedOption | null = null;
+
+  /**
    * Is the next non-blank line an indented entry — a command or an option?
    *
    * This is what tells a heading from a sentence when there is no colon to go
@@ -360,10 +392,14 @@ export function parseHelp(text: string): ParsedHelp {
     if (line.trim() === "") continue;
 
     const indented = /^\s/.test(line);
+    const indent = line.length - line.trimStart().length;
 
     if (!indented) {
       if (/:\s*$/.test(line)) {
         kind = sectionKind(line.replace(/:\s*$/, ""));
+        entryIndent = -1;
+        lastSub = null;
+        lastOpt = null;
         continue;
       }
       if (/^usage:/i.test(line)) {
@@ -377,6 +413,9 @@ export function parseHelp(text: string): ParsedHelp {
           const named = sectionKind(line.trim());
           if (named !== "other") {
             kind = named;
+            entryIndent = -1;
+            lastSub = null;
+            lastOpt = null;
             continue;
           }
           // A heading this function cannot name, sitting inside a command
@@ -387,6 +426,9 @@ export function parseHelp(text: string): ParsedHelp {
           if (kind === "commands") continue;
         }
         kind = "other";
+        entryIndent = -1;
+        lastSub = null;
+        lastOpt = null;
         continue;
       }
     }
@@ -402,16 +444,35 @@ export function parseHelp(text: string): ParsedHelp {
         if (!seenOptions.has(id)) {
           seenOptions.add(id);
           options.push(opt);
+          lastOpt = opt;
         }
+        if (entryIndent < 0 || indent < entryIndent) entryIndent = indent;
+      } else if (
+        kind === "options" && entryIndent >= 0 && indent > entryIndent &&
+        lastOpt
+      ) {
+        // A wrapped option description: prose belonging to the entry above.
+        lastOpt.summary = `${lastOpt.summary} ${line.trim()}`.trim();
       }
       continue;
     }
 
     if (kind === "commands") {
+      if (entryIndent >= 0 && indent > entryIndent) {
+        // A wrapped command description, not a command — see the note where
+        // `entryIndent` is declared. Append it where the rest of the
+        // description lives.
+        if (lastSub) {
+          lastSub.summary = `${lastSub.summary} ${line.trim()}`.trim();
+        }
+        continue;
+      }
       const cmd = parseSubcommandLine(line);
       if (cmd && !seenCommands.has(cmd.name)) {
         seenCommands.add(cmd.name);
         subcommands.push(cmd);
+        lastSub = cmd;
+        if (entryIndent < 0 || indent < entryIndent) entryIndent = indent;
       }
     }
   }
@@ -465,12 +526,10 @@ export function looksLikeManPage(text: string): boolean {
  * non-zero exit is routine for `--help`, so both streams are captured and the
  * exit code is not treated as failure on its own.
  */
-async function runHelp(
+async function runHelpArgs(
   o: CrawlOptions,
-  path: string[],
-  flag: string = o.helpFlag,
+  args: string[],
 ): Promise<{ ok: boolean; text: string; error: string }> {
-  const args = [...path, flag];
   let child: Deno.ChildProcess;
   // Deno merges a spawn's explicit env over the inherited one, so a variable
   // cannot be excluded per-spawn; the strip has to happen in-process, around
@@ -553,6 +612,15 @@ async function runHelp(
   }
 }
 
+/** Ask one node's path with a help flag. */
+async function runHelp(
+  o: CrawlOptions,
+  path: string[],
+  flag: string = o.helpFlag,
+): Promise<{ ok: boolean; text: string; error: string }> {
+  return runHelpArgs(o, [...path, flag]);
+}
+
 /**
  * Read help for one node, refusing a man page rather than misreading it.
  *
@@ -621,6 +689,18 @@ export async function crawl(o: CrawlOptions): Promise<CrawlNode[]> {
     const parsed = ok
       ? parseHelp(text)
       : { usage: "", subcommands: [], options: [] };
+
+    // A root help may list only the common commands — `git --help` names 25
+    // of ~200. When the tool exposes an enumeration argv, its parsed listing
+    // replaces the root help's as the level-1 crawl; the root's own page is
+    // still the one kept and tiered.
+    if (path.length === 0 && ok && o.listCommand.length > 0) {
+      const listed = await runHelpArgs(o, o.listCommand);
+      if (listed.ok) {
+        const names = parseHelp(listed.text).subcommands;
+        if (names.length > 0) parsed.subcommands = names;
+      }
+    }
     const node: CrawlNode = {
       path,
       ok,
@@ -730,6 +810,7 @@ export async function binaryVersion(
         include: [],
         exclude: [],
         maxHelpBytes: 2000,
+        listCommand: [],
       },
       [],
     );

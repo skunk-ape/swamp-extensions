@@ -217,12 +217,37 @@ the options recovered from `git log`. Every one of these is a judgement about a
 real format, not a generic rule, which is why the parser stays heuristic and
 conservative rather than pretending to be a grammar.
 
+**A wrapped description is prose, not a command.** Cliff-style help wraps a long
+description onto a deeper-indented line, and the continuation is shaped exactly
+like a bare command name — `...vault compatibility` followed by `issues.` once
+entered a table as a command called `issues.`. A line indented deeper than every
+entry seen in its section is therefore appended to the previous entry's summary
+instead of parsed, which is also where the classifier wants the rest of the
+description.
+
+**The crawl is only as complete as the help it can read.** Two consequences,
+both stated so they are not mistaken for bugs. A root help sometimes names only
+the common commands — `git --help` lists 25 of ~200 — so `listCommand` lets the
+operator point discover at an enumeration the tool does have, `help -a` for
+git; its parsed listing replaces the root help's as the level-1 crawl. And a
+tool whose full option lists live only in man pages presents thin ones here,
+because man pages are refused above: `git diff` crawls with 21 options, not the
+man page's hundreds. Thin means the wrappers refuse more, never that they admit
+more, which is the direction this model is allowed to err.
+
 ### classify — judgment, structured, and untrusted
 
 A model session reads the discovered surface and proposes a tier per command,
 plus a per-command option allowlist and an environment scrub list. It may fetch
 the tool's documentation, because help text alone often does not say whether an
 operation is billable or whether a subcommand reaches a private resource.
+
+The session is spawned as `claude -p`, running on the credential Claude Code
+already holds, so there is no API key to store. The model follows the same
+rule: by default nothing is pinned, and the child inherits the caller's Claude
+Code default along with their environment. Which model classifies is a cost
+and capability judgement that belongs to the operator, so it changes only when
+the operator changes it, through the `model` global argument.
 
 Two properties keep this honest:
 
