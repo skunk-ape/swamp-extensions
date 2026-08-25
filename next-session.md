@@ -66,7 +66,8 @@ fixing what the testing finds, before publishing.
    `Bash(fka-write-swamp-push-dry:*)` once swamp wraps); ask `Bash(fka-write:*)`
    and `Bash(fka-private:*)`. Snippets land at `~/.config/fka/<cli>/settings.snippet.json`.
 2. Remove the broad `"Bash"` allow from this repo's `.claude/settings.local.json`.
-3. Push main / merge this branch, then publish the extension.
+3. Fix `modelName` breaks for path CLIs.
+4. Push main / merge this branch, then publish the extension.
 
 ## Findings list (pre-publish)
 
@@ -74,7 +75,7 @@ fixing what the testing finds, before publishing.
 2. ~~Thin git surface~~ — `listCommand` fixed enumeration; thin option lists
    stay (man pages are refused by design) — documented in DESIGN.md.
 3. ~~Hardcoded opus~~ — fixed (`5cb9c5b`).
-4. `modelName` breaks for path clis — open (deno run failure above).
+4. `modelName` breaks for path clis — in progress (deno run failure above).
 5. Optional: expose `wallTimeoutMs`/`batchSize` as workflow inputs.
 
 Queue log (for reference):
