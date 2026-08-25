@@ -5,11 +5,8 @@ fixing what the testing finds, before publishing.
 
 ## Where the work lives
 
-- Repo: `/Users/seth/src/swamp-extensions`; all fixes are on branch
-  `fix/fka-pre-publish` in worktree `.claude/worktrees/fix-fka-pre-publish`
-  (enter via `EnterWorktree` with that path — it branches from local main, which
-  has the fka commits; origin/main does not).
-- `main` is 13 commits ahead of origin. **Push is deliberately deferred — Seth decides.**
+- Repo: `/Users/seth/src/swamp-extensions`; all fixes are now on `main`.
+- `main` is up to date with the latest changes. **Push is deliberately deferred — Seth decides.**
 - Tests: `<deno> test -A extensions/models/fka/` — 220/220 green. Deno binary:
   `/nix/store/2mdy7lx8f6kc2s0xmjsjpp2gjyiyys37-deno-2.9.2/bin/deno` (not on PATH).
 
