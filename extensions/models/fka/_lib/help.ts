@@ -14,6 +14,8 @@
  * what the heuristics could not settle.
  */
 
+import { stripLinkerEnv } from "./env.ts";
+
 // deno-lint-ignore no-explicit-any
 declare const Deno: any;
 
@@ -470,6 +472,12 @@ async function runHelp(
 ): Promise<{ ok: boolean; text: string; error: string }> {
   const args = [...path, flag];
   let child: Deno.ChildProcess;
+  // Deno merges a spawn's explicit env over the inherited one, so a variable
+  // cannot be excluded per-spawn; the strip has to happen in-process, around
+  // the spawn. Without it the tool being crawled would run under whatever
+  // loader hooks the caller's shell carries — and Deno refuses the spawn
+  // outright when the caller has them.
+  const restore = stripLinkerEnv();
   try {
     child = new Deno.Command(o.binary, {
       args,
@@ -494,6 +502,8 @@ async function runHelp(
       text: "",
       error: `could not run ${o.binary}: ${reason}`,
     };
+  } finally {
+    restore();
   }
 
   let timedOut = false;

@@ -21,6 +21,7 @@
  */
 
 import { z } from "npm:zod@4";
+import { stripLinkerEnv } from "./env.ts";
 import type { CrawlNode, ParsedOption } from "./help.ts";
 import { defaultWrappers, SEGMENTS, TIER_MEANING, TIERS } from "./review.ts";
 import type {
@@ -388,6 +389,10 @@ export function spawnAsk(o: AskOptions): Ask {
       );}
 
     let child: Deno.ChildProcess;
+    // The session inherits the caller's credentials and model default, which
+    // is the point, but nothing that could preload a library into it. Strip
+    // the loader family around the spawn for the same reason the wrappers do.
+    const restore = stripLinkerEnv();
     try {
       child = new Deno.Command(o.claudePath, {
         args,
@@ -401,6 +406,8 @@ export function spawnAsk(o: AskOptions): Ask {
         `Could not run "${o.claudePath}": ${reason}. Install Claude Code, or set ` +
           `the claudePath global argument to its full path.`,
       );
+    } finally {
+      restore();
     }
 
     let timedOut = false;
