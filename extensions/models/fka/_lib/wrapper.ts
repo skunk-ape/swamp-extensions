@@ -113,6 +113,23 @@ async function main(): Promise<number> {
       // Not granted, so it was never readable by the child either.
     }
   }
+  // Deno refuses to spawn under the wrapper's scoped --allow-run if the child
+  // would inherit a dynamic-linker variable — anything LD_* or DYLD_* — and a
+  // caller's shell routinely has them, which used to surface as a raw
+  // NotCapable crash instead of the tool running. Those variables preload
+  // libraries and redirect loader search paths: they are the injection
+  // surface the scrub exists for, so dropping them unconditionally is both
+  // the fix and the posture. A table's scrub list adds tool-specific names
+  // on top; it can never bring these back.
+  for (const name of Object.keys(Deno.env.toObject())) {
+    if (/^(?:LD|DYLD)_/.test(name)) {
+      try {
+        Deno.env.delete(name);
+      } catch {
+        // Not granted, so it was never readable by the child either.
+      }
+    }
+  }
   for (const [name, value] of Object.entries(POLICY.env.set)) {
     Deno.env.set(name, value);
   }

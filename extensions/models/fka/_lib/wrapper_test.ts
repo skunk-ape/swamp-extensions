@@ -280,3 +280,38 @@ Deno.test("the skill explains what a refusal means and what not to do about it",
   assertStringIncludes(skill, "FKA_CHECK=1");
   assertStringIncludes(skill, "Do not route around a refusal");
 });
+
+// --- running for real ------------------------------------------------------
+
+Deno.test("a wrapper runs even when the caller's environment carries linker variables", async () => {
+  // Deno refuses to spawn under the wrapper's scoped --allow-run when the
+  // child would inherit an LD_* or DYLD_* variable, and callers routinely
+  // have them. Before the wrapper dropped that family itself, this surfaced
+  // as a raw NotCapable crash instead of the tool running.
+  if (Deno.build.os !== "darwin" && Deno.build.os !== "linux") return;
+  const source = await Deno.readTextFile(VALIDATE);
+  const real = ReviewSchema.parse({ ...review, binary: "/usr/bin/true" });
+  const script = renderWrapper(real, at("safe", real), source, Deno.execPath());
+  const dir = await Deno.makeTempDir();
+  const path = `${dir}/fka-safe-demo`;
+  try {
+    await Deno.writeTextFile(path, script);
+    await Deno.chmod(path, 0o755);
+    const { code, stderr } = await new Deno.Command(path, {
+      args: ["list"],
+      env: {
+        ...Deno.env.toObject(),
+        LD_PRELOAD: "probe",
+        LD_LIBRARY_PATH: "probe",
+        DYLD_INSERT_LIBRARIES: "probe",
+      },
+      stdout: "null",
+      stderr: "piped",
+    }).output();
+    const err = new TextDecoder().decode(stderr);
+    assert(!err.includes("NotCapable"), err);
+    assertEquals(code, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
