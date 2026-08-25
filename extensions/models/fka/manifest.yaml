@@ -115,7 +115,7 @@ description: |
 
   It does not sandbox. A wrapper controls the argument vector and nothing else:
   an allowlisted `git log` still reads `~/.gitconfig`, and a `[diff] external`
-  hook there still runs. It does not install its own output — nothing here
+  hook there runs. It does not install its own output — nothing here
   writes `settings.json`. And it does not help against a hostile CLI, since
   `discover` runs the binary to read its help.
 
