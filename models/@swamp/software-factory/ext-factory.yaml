@@ -134,20 +134,35 @@ globalArguments:
 
     - id: implementing
       description: >-
-        Do the work. Driven in conversation rather than dispatched, so the
-        session that implements is the one that knows the repository.
+        Do the work. Dispatched to one cold subagent on a cheaper model rather
+        than driven in conversation: the issue and the plan are validated
+        artifacts, so the context this stage needs is in the run data, not in
+        the driving session's history. The driver keeps the test evidence.
       work:
-        mode: interactive
+        mode: dispatch
         skills: [swamp]
+        command: >-
+          Spawn exactly one subagent, subagent_type "general-purpose", model
+          "sonnet". Not "fork" — a fork inherits the driver's model and ignores
+          the override. The subagent starts with no conversation history, so
+          the prompt must carry the work item id and the query recipe below and
+          nothing it cannot fetch for itself.
         systemPrompt: >-
-          Implement the approved issue and nothing beyond it. If a plan was
-          approved for this item, implement that plan; a deliberate departure
-          from it is recorded in followUps rather than made silently. Extension
-          npm deps
-          are bundled rather than lockfile-tracked, so pin explicit versions in
-          npm: specifiers. Run the extension's own test suite before recording
-          the change summary; a summary claiming green tests that were never run
-          is the one thing review cannot catch.
+          Implement the approved issue and nothing beyond it. You start cold.
+          Fetch the issue with `swamp data query 'modelName == "ext-factory" &&
+          name == "artifact-<workItem>-issue"' --repo-dir
+          /Users/seth/src/swamp-extensions --json`, and the plan the same way
+          from `artifact-<workItem>-plan` if one was approved; implement that
+          plan, and put a deliberate departure from it in your report rather
+          than making it silently. Extension npm deps are bundled rather than
+          lockfile-tracked, so pin explicit versions in npm: specifiers. Run the
+          extension's own test suite and report the exact command you ran with
+          its raw output — but do not assert pass and fail counts as fact, and
+          do not record any artifact or call any factory method yourself. The
+          driver re-runs the suite and owns the tests field of the change
+          summary, because a claim of green tests is the one thing review cannot
+          catch. Report what you changed, which files, and anything you left
+          undone.
       artifacts:
         - name: change-summary
           schema:
