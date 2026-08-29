@@ -14,14 +14,6 @@ export interface GenerateOptions {
   system: string;
   prompt: string;
   signal: AbortSignal;
-  /** Derive modelName from the basename of the cli path if it's a path. */
-  modelName?: string;
-}
-
-export function getBaseName(cli: string): string {
-  const path = new URL(cli, 'file:');
-  return path.pathname.split('/').pop() || '';
-}
 }
 
 /**

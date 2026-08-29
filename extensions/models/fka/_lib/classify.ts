@@ -21,7 +21,7 @@
  */
 
 import { z } from "npm:zod@4";
-import { stripLinkerEnv } from "./env.ts";
+import type { Ask } from "./ask.ts";
 import type { CrawlNode, ParsedOption } from "./help.ts";
 import { defaultWrappers, SEGMENTS, TIER_MEANING, TIERS } from "./review.ts";
 import type {
@@ -30,9 +30,6 @@ import type {
   Tier,
   WrapperSpec,
 } from "./review.ts";
-
-// deno-lint-ignore no-explicit-any
-declare const Deno: any;
 
 // ---------------------------------------------------------------------------
 // What we accept back
@@ -355,131 +352,11 @@ Reply with this JSON shape and nothing else:
 }
 
 // ---------------------------------------------------------------------------
-// Asking
+// Reading the reply
+//
+// How a session is spawned and what it cost lives in ./ask.ts. What arrives
+// back is the classifier's problem, so it is handled here.
 // ---------------------------------------------------------------------------
-
-/** One question to the model. Injectable so tests never spawn anything. */
-export type Ask = (system: string, prompt: string) => Promise<string>;
-
-export interface AskOptions {
-  claudePath: string;
-  /**
-   * Model to pin for the spawned session. Empty inherits the caller's Claude
-   * Code default: the child gets the caller's environment and `claude -p`
-   * resolves its model from it, so no `--model` flag is passed.
-   */
-  model: string;
-  wallTimeoutMs: number;
-  /** Whether the classifier may read documentation off the network. */
-  docsMode: "none" | "web";
-  signal: AbortSignal;
-}
-
-/**
- * The argv for one ask, pure so tests can see exactly what gets spawned.
- *
- * `--model` is passed only when a model was chosen. Omitting it is the
- * inheritance path: `claude -p` then runs on whatever model the caller's
- * Claude Code is configured for, rather than on a default this file picked.
- */
-export function askArgv(
-  o: Pick<AskOptions, "model" | "docsMode">,
-  system: string,
-): string[] {
-  const args = ["-p"];
-  if (o.model !== "") args.push("--model", o.model);
-  args.push("--append-system-prompt", system);
-  if (o.docsMode === "web") args.push("--allowedTools", "WebFetch,WebSearch");
-  else {
-    args.push(
-      "--disallowedTools",
-      "WebFetch,WebSearch,Bash,Read,Write,Edit",
-    );
-  }
-  return args;
-}
-
-/**
- * Ask by spawning `claude -p`.
- *
- * The local Claude Code binary means this runs on whatever credential Claude
- * Code already holds, so no API key is stored in a vault and none exists to
- * leak. Tools are named explicitly in both directions: with docs off, the
- * session gets nothing, which is the posture for an operator who would rather
- * classify blind than let a fetched page near the classifier.
- */
-export function spawnAsk(o: AskOptions): Ask {
-  return async (system: string, prompt: string): Promise<string> => {
-    const args = askArgv(o, system);
-
-    let child: Deno.ChildProcess;
-    // The session inherits the caller's credentials and model default, which
-    // is the point, but nothing that could preload a library into it. Strip
-    // the loader family around the spawn for the same reason the wrappers do.
-    const restore = stripLinkerEnv();
-    try {
-      child = new Deno.Command(o.claudePath, {
-        args,
-        stdin: "piped",
-        stdout: "piped",
-        stderr: "piped",
-      }).spawn();
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Could not run "${o.claudePath}": ${reason}. Install Claude Code, or set ` +
-          `the claudePath global argument to its full path.`,
-      );
-    } finally {
-      restore();
-    }
-
-    let timedOut = false;
-    const kill = () => {
-      try {
-        child.kill("SIGTERM");
-      } catch { /* already exited */ }
-    };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, o.wallTimeoutMs);
-    o.signal.addEventListener("abort", kill, { once: true });
-
-    let reaped = false;
-    try {
-      const writer = child.stdin.getWriter();
-      await writer.write(new TextEncoder().encode(prompt));
-      await writer.close();
-
-      const { code, stdout, stderr } = await child.output();
-      reaped = true;
-      const out = new TextDecoder().decode(stdout).trim();
-      const err = new TextDecoder().decode(stderr).trim();
-
-      if (timedOut) {
-        throw new Error(
-          `claude exceeded the ${o.wallTimeoutMs}ms wall timeout.`,
-        );
-      }
-      if (o.signal.aborted) throw new Error("Classification cancelled.");
-      if (code !== 0) {
-        throw new Error(`claude exited ${code}${err ? `: ${err}` : ""}`);
-      }
-      if (out === "") throw new Error("claude returned no text.");
-      return out;
-    } finally {
-      clearTimeout(timer);
-      o.signal.removeEventListener("abort", kill);
-      // A throw before output() resolves leaves the child running with nobody
-      // waiting on it. Signal and drain so it is reaped rather than orphaned.
-      if (!reaped) {
-        kill();
-        await child.output().catch(() => {});
-      }
-    }
-  };
-}
 
 /** Pull the JSON object out of a reply, tolerating a fence the prompt asked it not to use. */
 export function extractJson(text: string): unknown {

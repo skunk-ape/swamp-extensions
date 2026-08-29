@@ -57,7 +57,10 @@ description: |
   - `classify` — a model session proposes a tier per command, an option
     allowlist, and an environment scrub list, then writes a commented review
     file. Its output is checked back against the crawl, so it can re-tier what
-    discover found but never invent a command or an option.
+    discover found but never invent a command or an option. The proposal also
+    records what the run cost and which model ids served it, because a table
+    written by a cheap model is a weaker starting point than one from a strong
+    model and nothing in the table itself says which wrote it.
   - `generate` — read back the edited review file and render the wrappers, the
     permission snippet, and the skill snippet. One method, because they are
     three views of one fact. Each wrapper is written to a neighbouring temp and
@@ -124,6 +127,11 @@ description: |
   - swamp initialized in the repository (`swamp repo init`)
   - the CLI you want to wrap, on PATH
   - Claude Code on PATH, for `classify` only
+
+  No API key is stored: `classify` spawns the local Claude Code, which runs on
+  the credential it already holds. The `askEnv` global argument can route those
+  sessions through a proxy instead, and doing so means holding that proxy\'s
+  token — a stored credential by another name. It is empty by default.
 repository: "https://github.com/skunk-ape/swamp-extensions"
 paths:
   base: manifest

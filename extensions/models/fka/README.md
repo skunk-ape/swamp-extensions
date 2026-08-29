@@ -120,6 +120,21 @@ honest. Its output is checked against the crawl, so it can move a command to
 another tier but cannot invent one. And its output is a proposal that grants
 nothing.
 
+It also records what the run cost. The proposal carries the token counts, the
+list price the CLI reported, and the model ids that served the calls:
+
+```bash
+swamp data get fka-gh proposal-gh --json
+```
+
+Read `usage.models` before you read the table. A proposal from a cheap model is
+a weaker starting point than one from a strong model, and the table itself does
+not say which wrote it. Pin a cheap model while you are developing or plumbing
+— `--input model=claude-haiku-4-5-20251001` measured about 4.7x cheaper here —
+and use a strong one for a table you actually intend to approve. Pinning a
+model changes the price of the tokens, not how many there are; fewer tokens
+come from fewer spawns, which is `batchSize`.
+
 **The person** reads `review.yaml` and edits it. Two blocks want real attention.
 Read `read-safe` with care: every other tier still stops at a prompt, so a
 mistake there costs one keystroke, while a mistake in `read-safe` runs with
@@ -293,6 +308,8 @@ Set these in the model definition's `globalArguments`.
 | `workRoot`         | `~/.config/fka` | Where the workspaces and the shared `bin/` live. Honours `XDG_CONFIG_HOME`. An absolute path is used as given; a relative one is resolved against the repository root.                                                      |
 | `docsMode`         | `none`          | `web` lets the classifier read the tool's docs. Help text often does not say whether an operation is billable or reaches a private resource. The cost is a session with network access that reads pages you do not control. |
 | `model`            | `""` (inherit)  | Model the classifier's spawned `claude -p` sessions run on. Empty inherits the caller's Claude Code default — the child receives the caller's environment and saved model, and no `--model` flag is passed. Set it to pin one, e.g. `claude-sonnet-5`. |
+| `askCwd`           | `""` (workspace) | Working directory for the classifier's spawned sessions. Empty uses the tool's own workspace, chosen for what is *not* under it: Claude Code collects `CLAUDE.md` from its working directory upwards, and a repository's instructions are dead weight in a session whose job is to tier a command list — paid for again on every batch. |
+| `askEnv`           | `{}`            | Variables set for the classifier's spawned sessions and nowhere else, so `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` can route one run through a proxy without moving your own Claude Code session onto it. Filling it means holding a proxy token, which is a stored credential by another name — see the credential note below. |
 | `prefix`           | `fka`           | The first segment of every alias name, and so the word every permission rule keys on. Change it and the rules change with it.                                                                                               |
 | `helpFlag`         | `--help`        | How the tool is asked for help.                                                                                                                                                                                             |
 | `fallbackHelpFlag` | `-h`            | Used only when the help flag opens a man page, which no help-text parser can read correctly.                                                                                                                                |
@@ -302,6 +319,18 @@ Set these in the model definition's `globalArguments`.
 | `envScrub`         | 8 names         | Variables every wrapper deletes, added to the ones the classifier finds. The dynamic-linker family (`LD_*`, `DYLD_*`) is deleted unconditionally — it is the injection surface, and Deno will not spawn a scoped wrapper that still carries it. |
 | `denoPath`         | automatic       | The Deno runtime the wrappers run under. It is written into each wrapper.                                                                                                                                                   |
 | `spawnSamples`     | `6`             | How many cases per wrapper `verify` re-checks by running the real script.                                                                                                                                                   |
+
+### The credential this runs on
+
+By default there is none to hold. The classifier is a local `claude -p`, which
+runs on whatever credential Claude Code already has, so nothing is stored in a
+vault and nothing exists to leak.
+
+`askEnv` is the one thing that changes that. Pointing a run at a proxy means
+supplying that proxy's token, and a token in a global argument is a stored
+credential whatever it is called. It is empty by default and the default path
+is unchanged; if you fill it, do so knowing you have given up the property
+above rather than discovering it later.
 
 ## After the tool is upgraded
 

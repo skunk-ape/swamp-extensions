@@ -57,7 +57,8 @@ import {
   toYaml,
 } from "./_lib/review.ts";
 import type { Review } from "./_lib/review.ts";
-import { classifyAll, spawnAsk } from "./_lib/classify.ts";
+import { addUsage, spawnAsk, zeroUsage } from "./_lib/ask.ts";
+import { classifyAll } from "./_lib/classify.ts";
 import { renderSettings, renderSkill, renderWrapper } from "./_lib/wrapper.ts";
 import {
   buildCases,
@@ -145,6 +146,29 @@ const GlobalArgsSchema = z.object({
   batchSize: z.number().int().min(1).max(60).default(20),
   /** Hard ceiling for a single model call. */
   wallTimeoutMs: z.number().int().positive().default(300_000),
+  /**
+   * Variables set for the classifier's spawned sessions and nowhere else.
+   *
+   * The reason to want this is routing: `ANTHROPIC_BASE_URL` and
+   * `ANTHROPIC_AUTH_TOKEN` pointed at a proxy put one classify run on a
+   * cheaper model without moving the caller's own Claude Code session onto it.
+   * Setting those in your shell would move both.
+   *
+   * Empty by default, and worth being clear about what filling it costs: a
+   * proxy needs a token, and a token is a stored credential, which is the
+   * property `DESIGN.md` otherwise claims this model does not have.
+   */
+  askEnv: z.record(z.string(), z.string()).default({}),
+  /**
+   * Working directory for the classifier's spawned sessions.
+   *
+   * Empty — the default — uses the tool's own workspace, which is chosen for
+   * what is *not* in it: Claude Code reads a `CLAUDE.md` from its working
+   * directory upwards, and a repository's instructions are pure cost in a
+   * session whose only job is to tier a command list. Every batch pays for
+   * them again.
+   */
+  askCwd: z.string().default(""),
 
   // --- generate ------------------------------------------------------------
   /**
@@ -258,6 +282,26 @@ const ProposalSchema = z.object({
   /** Problems found by checking the proposal back against the crawl. */
   rejected: z.array(z.string()),
   notes: z.array(z.string()),
+  /**
+   * What producing this proposal cost, and which model produced it.
+   *
+   * `models` is the part a reviewer needs rather than the accountant: a table
+   * proposed by a cheap model is a weaker starting point than one from a
+   * strong model, and the reviewer cannot tell by reading the table. Recording
+   * it means nobody has to remember which run used what.
+   *
+   * `costUsd` is the CLI's list price. On a subscription that is not what the
+   * run was billed, so it compares runs rather than stating money owed.
+   */
+  usage: z.object({
+    calls: z.number(),
+    input: z.number(),
+    output: z.number(),
+    cacheRead: z.number(),
+    cacheCreation: z.number(),
+    costUsd: z.number(),
+    models: z.array(z.string()),
+  }),
   nextAction: z.string(),
 });
 
@@ -374,6 +418,23 @@ export function workRoot(repoDir: string, g: GlobalArgs): string {
 /** The per-tool workspace. Holds the crawl and the review file for one CLI. */
 function workspace(repoDir: string, g: GlobalArgs, cli: string): string {
   return `${workRoot(repoDir, g)}/${baseName(cli)}`;
+}
+
+/**
+ * Where a classifier session runs.
+ *
+ * Defaults to the tool's own workspace, chosen for what is *not* under it.
+ * Claude Code walks up from its working directory collecting `CLAUDE.md`, so a
+ * session spawned inside a repository loads that repository's instructions
+ * before it sees a single command name — dead weight in a session whose only
+ * job is to tier a command list, and paid for again on every batch. The
+ * workspace holds the crawl and the review file for one CLI and nothing that
+ * addresses an agent.
+ *
+ * An explicit `askCwd` wins, for the operator who knows better.
+ */
+export function askCwdFor(g: GlobalArgs, workspaceDir: string): string {
+  return g.askCwd !== "" ? g.askCwd : workspaceDir;
 }
 
 /**
@@ -701,6 +762,12 @@ export const model = {
           mode: g.docsMode,
         });
 
+        // Summed across every batch. The tally lives here rather than inside
+        // classifyAll because what a run cost is a fact about the run, not an
+        // input to any classification decision.
+        let usage = zeroUsage();
+        let calls = 0;
+
         const result = await classifyAll({
           cli: baseName(args.cli),
           nodes: crawled.nodes,
@@ -713,6 +780,12 @@ export const model = {
             wallTimeoutMs: g.wallTimeoutMs,
             docsMode: g.docsMode,
             signal: ctx.signal,
+            env: g.askEnv,
+            cwd: askCwdFor(g, dir),
+            onUsage: (u) => {
+              usage = addUsage(usage, u);
+              calls++;
+            },
           }),
           onProgress: (done, total) =>
             ctx.logger.info("Classified {done} of {total}", { done, total }),
@@ -774,6 +847,18 @@ export const model = {
             escape: counts["escape"],
           },
         );
+        ctx.logger.info(
+          "Cost {calls} call(s): {input} in, {output} out, {cacheRead} cache-read, {cacheCreation} cache-write, {cost} USD list, on {models}",
+          {
+            calls,
+            input: usage.input,
+            output: usage.output,
+            cacheRead: usage.cacheRead,
+            cacheCreation: usage.cacheCreation,
+            cost: usage.costUsd.toFixed(4),
+            models: usage.models.join(", ") || "the caller's default",
+          },
+        );
 
         const handle = await ctx.writeResource(
           "proposal",
@@ -786,6 +871,7 @@ export const model = {
             counts,
             rejected: problems.map((p) => p.message),
             notes: result.notes,
+            usage: { ...usage, calls },
             nextAction:
               `Read ${reviewPath}. The read-safe block is the part that needs real ` +
               `attention: it is the only tier that runs with nobody watching. Read ` +

@@ -249,6 +249,47 @@ Code default along with their environment. Which model classifies is a cost
 and capability judgement that belongs to the operator, so it changes only when
 the operator changes it, through the `model` global argument.
 
+#### What a run costs, and who is told
+
+The session is asked for `--output-format json`, so every reply carries its
+token counts, its list price, and the model ids that served it alongside the
+text. Those are summed across the batches and recorded on the proposal.
+
+The `models` field is there for the reviewer rather than the accountant. A
+table proposed by a cheap model is a weaker starting point than one from a
+strong model, and nothing in the table itself says which produced it — so the
+proposal says. `costUsd` is the CLI's list price; on a subscription that is not
+what the run was billed, and it is only good for comparing one run to another.
+
+The envelope is parsed strictly and an unrecognised one throws. There is no
+fallback to reading raw stdout as the answer, because a changed output format
+would then become a confident classification built from a fragment of JSON,
+which is the failure this model must not have.
+
+Two knobs exist for the cost of that session, and both are off by default:
+
+- `askCwd` decides where the child runs, defaulting to the tool's own
+  workspace. Claude Code walks up from its working directory collecting
+  `CLAUDE.md`, so a session started inside a repository loads that
+  repository's instructions before it reads a command name, and pays for them
+  again on every batch. The workspace holds a crawl and a review file and
+  nothing that addresses an agent.
+- `askEnv` sets variables for the spawned child and nowhere else, which is how
+  `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` can point one classify run at
+  a proxy without moving the caller's own Claude Code session onto it. Be plain
+  about what using it costs: a proxy needs a token, and a token is a stored
+  credential by another name. The no-API-key property above describes the
+  default path, and choosing this one gives it up.
+
+A cheap model is the right default while developing or plumbing —
+`--input model=claude-haiku-4-5-20251001` measured about 4.7x cheaper than the
+session default on this machine — and the wrong choice for a table you intend
+to approve. Note what that measurement does *not* show: the token counts barely
+moved. The fixed cost of a `claude -p` session is structural, so picking a
+model changes the price of those tokens rather than their number. Fewer tokens
+come from fewer spawns — a larger `batchSize`, or the batch cache — not from
+this.
+
 Two properties keep this honest:
 
 - **Its output is a proposal, not a policy.** It cannot grant anything. The

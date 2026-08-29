@@ -5,7 +5,13 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "jsr:@std/assert@1";
-import { model, ownedWrappers, workRoot, writeExecutable } from "./fka.ts";
+import {
+  askCwdFor,
+  model,
+  ownedWrappers,
+  workRoot,
+  writeExecutable,
+} from "./fka.ts";
 
 /** The parsed defaults, as a method sees them when nothing overrides. */
 function defaults(over: Record<string, unknown> = {}) {
@@ -431,4 +437,29 @@ Deno.test("an executable is replaced whole, never observed half-written", async 
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// --- where a classifier session runs ---------------------------------------
+//
+// The default matters for cost rather than correctness: a session started
+// inside this repository loads its CLAUDE.md before it reads a command name,
+// and pays for it again on every batch. The workspace holds a crawl and a
+// review file and nothing that addresses an agent.
+
+Deno.test("a classifier session runs in the tool's workspace by default", () => {
+  assertEquals(
+    askCwdFor(defaults(), "/home/ada/.config/fka/git"),
+    "/home/ada/.config/fka/git",
+  );
+});
+
+Deno.test("an explicit askCwd wins over the workspace", () => {
+  assertEquals(
+    askCwdFor(defaults({ askCwd: "/var/empty" }), "/home/ada/.config/fka/git"),
+    "/var/empty",
+  );
+});
+
+Deno.test("askEnv is empty by default, so the default path spawns as it did", () => {
+  assertEquals(defaults().askEnv, {});
 });
