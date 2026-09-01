@@ -1,0 +1,20 @@
+# Projects in this repository, for ~/src/factory.
+#
+# Each entry owns a work item prefix. The factory has no central registry — this
+# file is the declaration, and a CEL gate on intake checks that FKA-3 really is
+# an issue against the project declaring prefix FKA.
+#
+# No absolute paths here: repoDir is the canonical checkout the intake agent is
+# reading this file from, so the descriptor stays portable across machines.
+version: 1
+repo: swamp-extensions
+projects:
+  - prefix: FKA
+    project: fka
+    path: extensions/models/fka
+  - prefix: STEF
+    project: stef
+    path: extensions/models/stef.ts
+  - prefix: HERMES
+    project: hermes
+    path: extensions/models/hermes
