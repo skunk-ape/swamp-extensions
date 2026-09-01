@@ -14,6 +14,12 @@ Pinning a subcommand is another. Pinning `--help` is a third.
 
 ## The problem this solves
 
+Agents run behind permission checks, and a check is only as good as the file
+that configures it. What you want in that file is simple: allow the safe
+operations, ask about the dangerous ones. What stops you is that **command-line
+tools were never designed to be permission-checked**, and nothing about their
+shape cooperates.
+
 Claude Code grants Bash permission by prefix match. For a CLI with a real
 command tree, both available answers are bad:
 
@@ -34,10 +40,20 @@ you ask it for. `sort` writes files with `-o`. `find` executes with `-exec`.
 `git log` runs arbitrary code through `--ext-diff`. A permission system matching
 on the first two words of the command line is blind to all of it.
 
+Worse, some perfectly safe operations cannot be expressed as a rule at all.
+`swamp extension push --dry-run` changes nothing; `swamp extension push`
+publishes. No `Bash(…)` pattern separates them, because the token that
+distinguishes them is an option, and options are the thing prefix rules cannot
+read.
+
 So the generated wrapper is not a namespace. It is a parser that re-reads the
 whole argument vector and refuses anything not explicitly permitted. The
 namespace is what makes the _permission rule_ short; the parser is what makes it
 _true_.
+
+The goal this serves is one sentence, and it settles several arguments further
+down: **keep the safety you had, and spend far less of your day answering
+permission prompts.**
 
 ## Four tiers
 
@@ -175,72 +191,142 @@ in the right place. The review file is a judgement and moves between machines;
 the wrappers embed the absolute path of the tool and of the Deno that runs them,
 and do not. Sync the first, regenerate the second.
 
+## The unit of work is demand, not surface
+
+The first version of this model analysed a tool's complete interface before it
+would wrap anything. That is the intuitive reading of the goal — you cannot
+allowlist safely unless something has looked at all of it — and it does not
+survive contact with a real CLI.
+
+git presents 168 subcommands. The `swamp` proposal came to 6,779 lines. Neither
+was ever approved, and that is the whole failure: the artifact a person must
+read scales with the tool rather than with their use of it, and the gate is the
+one stage that cannot be made faster by spending more tokens on it.
+
+Fourteen days of this machine's agent transcripts say what the analysis should
+have been scoped to:
+
+| tool    | interface                      | actually used          |
+| ------- | ------------------------------ | ---------------------- |
+| `git`   | 168 subcommands                | **23**                 |
+| `swamp` | full tree, 6,779-line proposal | **17 top-level, ~76 paths** |
+| `deno`  | —                              | **10**                 |
+
+So the unit of work is a **queue of commands you have actually run**, mined from
+those transcripts, rather than a crawl of everything the binary can do. Wrap
+those, live with the result, mine again tomorrow.
+
+Three things follow, and together they are the argument for the shape below.
+
+**The gate becomes tractable by construction.** A 23-command proposal is
+readable in one sitting. The previous design argued that the gate stayed
+tractable because only the `read-safe` block needed care. The argument was
+correct and still produced no approved file, because the file was 1,585 lines.
+Reasoning about which part of an unreadable artifact matters is a weaker move
+than handing over a readable one.
+
+**A false refusal becomes a signal.** Under whole-surface analysis, a command
+the table missed is a dead end: the wrapper refuses, and nothing records that it
+should not have. Under mining, that refusal appears in tomorrow's transcript as
+a command needing classification, and enters the next queue. The system
+converges on your working set instead of guessing at it, and coverage stops
+being a precondition and becomes an outcome.
+
+**Cost tracks use, and decays.** Classification is paid for the commands you
+run, not the ones the binary ships, and the second pass pays only for what is
+new.
+
+### Narrow at the command, stay generous at the option
+
+Mined usage is a lower bound on what you will want. Wrapping exactly
+`git log --oneline` because that is the invocation observed would refuse
+`git log --format=%H` the first time you needed it — trading a permission prompt
+for a wrapper error, which is a worse thing to be handed.
+
+So the narrowing applies at one level only. **Mining decides which commands are
+analysed; the analysis then covers each command's full option surface.**
+`git log` enters the queue because you ran it, and the classifier reads its help
+and tiers all of its options, not the one that happened to appear. The explosion
+lives at the command level, so that is where the cut goes. False refusals hurt
+at the option level, so that is where it stays generous.
+
 ## Shape
 
 ```
-discover ──► classify ──► [human edits review.yaml] ──► generate ──► verify
-  help          model                  ▲                  wrappers    self-test
-  crawl        session                 │                  settings
-                                  the gate                 skill
+mine ──► discover ──► classify ──► [human edits review.yaml] ──► generate ──► verify
+transcripts  help        model                 ▲                 wrappers    self-test
+  queue     reading     session                │                 settings
+   ▲                                       the gate                skill
+   │                                                                  │
+   └──────────────── refusals re-enter the queue ────────────────────┘
 ```
 
-Five stages, four of them model methods and one of them a person. The workflow
-chains them; `manual_approval` is the human stage.
+`mine` is deterministic and reads no CLI. `discover` and `classify` run over the
+queue rather than over the tool. The human stage is where the judgement lands.
+The loop back from a refused command is what makes an incomplete table
+self-correcting rather than permanent.
 
-### discover — deterministic
+### mine — deterministic, and the fixture too
 
-Recursively run `<cli> --help`, `<cli> <sub> --help`, and parse the output. This
-is the only stage that gets ground truth, so it is the only stage allowed to
-decide _what the command names actually are_. It never runs a command without a
-help flag, caps depth and total invocations, spawns through argv rather than a
-shell, and applies a per-call timeout.
+Agent transcripts record every command the agent ran. They do **not** record
+which of those prompted: a call approved at a prompt is indistinguishable from
+one allowed outright. Explicit denials are recorded and are worth mining
+separately, but they are the small case.
 
-It extracts, per command: the subcommand list, the option spellings, and —
-critically — **each option's arity**. Arity is not decoration. If the wrapper
-believes `--limit` takes a value and the real CLI does not, the wrapper consumes
-the next token as a value and never checks it, while the CLI reads it as another
-option. That is a bypass. So arity is taken from help text where the text states
-it, and an option whose arity cannot be determined is _not allowlisted at all_.
+What is recoverable is better than an ask log would have been. Take the commands
+that were run, then compute which of them *would* prompt under a given
+permission ruleset. That is prefix matching over a corpus — deterministic, no
+model involved, and a pure function of (corpus, ruleset).
 
-**A man page is refused, not parsed.** `git log --help` runs `man git-log`, and
-roff read by a help-text parser does not fail loudly — it yields a table full of
-plausible, wrong arities, which is the bypass above arriving with a straight
-face. So the crawl recognises a man page by its running header and flush-left
-section names, and asks again with `-h`. That retry is narrow by construction:
-it only ever fires for a tool that has already shown it routes `--help` to
-`man`. If the second answer is also roff, the node is marked unusable with a
-message naming the knob to set, and nothing about it enters the table.
+The same computation that ranks the queue therefore also scores any candidate
+wrapper set. That is not a convenience. A design with a work queue and no
+evaluation harness has no way to tell whether a change to the later stages
+helped, which is exactly the position this model was in before.
 
-**Framework-specific spellings are worth handling one at a time.** Recognising
-git's `--[no-]decorate` as the pair it stands for took four lines and doubled
-the options recovered from `git log`. Every one of these is a judgement about a
-real format, not a generic rule, which is why the parser stays heuristic and
-conservative rather than pretending to be a grammar.
+### discover — reading help, not parsing it
 
-**A wrapped description is prose, not a command.** Cliff-style help wraps a long
-description onto a deeper-indented line, and the continuation is shaped exactly
-like a bare command name — `...vault compatibility` followed by `issues.` once
-entered a table as a command called `issues.`. A line indented deeper than every
-entry seen in its section is therefore appended to the previous entry's summary
-instead of parsed, which is also where the classifier wants the rest of the
-description.
+Help text is not a specification. It is prose written for people, formatted
+differently by every framework, sometimes routed to a man page, and frequently
+silent about arity — which is the one property the wrapper cannot be wrong
+about. If the wrapper believes `--limit` takes a value and the real CLI does
+not, the wrapper consumes the next token as a value and never checks it, while
+the CLI reads it as another option. That is a bypass.
 
-**The crawl is only as complete as the help it can read.** Two consequences,
-both stated so they are not mistaken for bugs. A root help sometimes names only
-the common commands — `git --help` lists 25 of ~200 — so `listCommand` lets the
-operator point discover at an enumeration the tool does have, `help -a` for
-git; its parsed listing replaces the root help's as the level-1 crawl. And a
-tool whose full option lists live only in man pages presents thin ones here,
-because man pages are refused above: `git diff` crawls with 21 options, not the
-man page's hundreds. Thin means the wrappers refuse more, never that they admit
-more, which is the direction this model is allowed to err.
+An earlier version met this with a hand-written parser: indentation rules,
+cliff-style continuation detection, `--[no-]` pair expansion, man-page refusal.
+Each of those is a judgement about one real format, and the set of real formats
+does not close. The parser grew a heuristic per tool and still returned thin
+tables — an approach that pays forever and converges on nothing.
+
+So the reading is done by a model, and its output is treated as a proposal to be
+checked rather than an answer to be trusted. What performs that check is a
+separate question and an open one; the honest candidates are re-reading the same
+help adversarially, and probing the binary where probing is safe. The failure
+mode is bounded either way, because **an option whose arity is not established
+is not allowlisted at all.** That leaves the table thinner than the truth and
+never wider, which is the direction this model is allowed to err.
+
+Discovery still runs the binary only with a help flag, spawns through argv
+rather than a shell, caps invocations, and applies a per-call timeout. What
+changed is that it reads help for the commands in the queue. The crawl is
+bounded by your usage rather than by the tool's size, so the depth, breadth, and
+enumeration problems that made a full crawl expensive stop applying — a root
+help that lists 25 of git's 200 commands does not matter when the queue names
+the 23 you use.
 
 ### classify — judgment, structured, and untrusted
 
-A model session reads the discovered surface and proposes a tier per command,
-plus a per-command option allowlist and an environment scrub list. It may fetch
-the tool's documentation, because help text alone often does not say whether an
-operation is billable or whether a subcommand reaches a private resource.
+A model session reads the queued commands and their discovered options and
+proposes a tier per command, plus a per-command option allowlist and an
+environment scrub list. It may fetch the tool's documentation, because help text
+alone often does not say whether an operation is billable or whether a
+subcommand reaches a private resource.
+
+It is also told what mining found: how often each command was run, and in what
+form. That evidence is context for a judgement and never the judgement itself —
+frequency is not safety, and the command you run hourly can still be the
+dangerous one. What frequency earns is attention. The commands at the top of the
+queue are the ones whose tier decides whether any of this was worth doing.
 
 The session is spawned as `claude -p`, running on the credential Claude Code
 already holds, so there is no API key to store. The model follows the same
@@ -308,7 +394,7 @@ the material it could exfiltrate is a public tool's help text.
 `docsMode: "none"` turns the capability off for operators who would rather
 classify blind.
 
-### the human gate — and why it stays tractable
+### the human gate — where the care goes
 
 `classify` writes `review.yaml` with `approved: false`, the human edits it and
 sets that flag, and `generate` refuses to render anything until they have.
@@ -326,25 +412,31 @@ trusting the check `classify` ran. Those two checks are not the same check: a
 human edit sits between them, and the file that gets rendered is never the file
 that was validated.
 
-The obvious objection is scale: `aws --help` is hundreds of services and
-thousands of operations, and nobody reviews that. The resolution is that **only
-the `read-safe` list needs careful reading.** Every other tier still stops at a
-human at run time; a mistake there costs a prompt. A mistake in `read-safe` is a
-command that runs with nobody watching. So `review.yaml` puts `read-safe` first,
-annotated — and `subtrees` lets you scope a run to `gh pr` and `gh issue`
-instead of all of `gh`.
+Scale used to be the standing objection here, and mining is the answer to it:
+the file describes the commands you run, so it is short because your working set
+is short. Two things still concentrate the reader's attention, and the file is
+ordered to put them first.
 
-The one block that must be read besides `read-safe` is `wrappers`, and it is
-short. A tier is a claim about a command; a pin is a claim about every command
-an alias admits. `prepend` and `append` place tokens into the argument vector
-before the caller's, so a pinned option is permitted everywhere that alias
-reaches, whatever the table says about it elsewhere. Pins are checked against
-the crawl and against the alias's own ceiling, which stops the mechanical
-failures — an invented option, one tiered above the alias — but what is worth
-pinning is judgement, and it is judgement concentrated in a handful of lines.
+**`read-safe` is the only tier that runs unattended.** Every other tier still
+stops at a person at run time, so a mistake there costs a prompt. A mistake in
+`read-safe` is a command that runs with nobody watching. That asymmetry deserves
+to be stated bluntly, because it tells the reviewer what to skip: option-level
+precision on an ask-tier command is not worth a minute of anyone's time.
+
+**`wrappers` is short, and is not a tier.** A tier is a claim about a command; a
+pin is a claim about every command an alias admits. `prepend` and `append` place
+tokens into the argument vector before the caller's, so a pinned option is
+permitted everywhere that alias reaches, whatever the table says about it
+elsewhere. Pins are checked against the crawl and against the alias's own
+ceiling, which stops the mechanical failures — an invented option, one tiered
+above the alias — but what is worth pinning is judgement, and it is judgement
+concentrated in a handful of lines.
 
 Fail-closed does the rest: anything the classifier was unsure of is not
-`read-safe`, and anything absent from the table is refused.
+`read-safe`, and anything absent from the table is refused. Under whole-surface
+analysis that last property was a quiet liability, because a wrongly-omitted
+command had no route back into consideration. With mining it is only a delay:
+the refusal is observed, and the command is in the next queue.
 
 ### generate — one render, three artifacts
 
@@ -453,6 +545,17 @@ And it does not help against a hostile CLI. `discover` runs the binary to read
 its help. If you do not trust the tool enough to run `--help` on it, the problem
 is upstream of this model.
 
+It does not claim to have analysed a tool completely, and since the move to
+mining it does not try. A wrapper covers the commands you have run and what the
+analysis could establish about them. Everything else prompts, exactly as it did
+before any of this existed. **The claim is that you answer fewer prompts, never
+that a binary has been enumerated.**
+
+It does not know which prompts were worth avoiding. Mining ranks by observed
+frequency, which is a proxy and a coarse one: a command run once that blocks a
+long unattended run may matter more than one run fifty times while you sat
+watching. Nothing here can tell those apart.
+
 ## One grant covers every method
 
 Swamp grants are model-scoped with no method dimension, so `run` on this model
@@ -461,3 +564,38 @@ executable files to disk. That is a developer tool driven by a human-in-the-loop
 workflow, not something to hand an unattended agent — and unlike
 `@skunk-ape/web-brief`, which was built to be granted, this one is not. Keep the
 grant on the person running the analysis.
+
+## What is proven, and what is not
+
+Stated plainly, because this model has cost more to build than it has yet
+returned, and the reason is structural rather than incidental.
+
+**Proven.** The wrapper is a tested argv parser: tiers and per-option tiers,
+pinning, `--` handling, short-option bundles, positional patterns, the
+`FKA_CHECK` self-test, and the launcher. Given a correct table it enforces that
+table, and `verify` demonstrates as much without executing a wrapped command.
+
+**Unproven.** That reading help produces a table accurate enough to approve — no
+proposal has yet been read end to end and signed off. And that the result
+reduces prompts in practice, which nothing has measured, because until mining
+there was no corpus to measure against.
+
+Those two were stacked in series with no seam between them. A wrong table could
+have come from a missed option or from a mis-tiered command, and finding out
+which one meant a full crawl, a full classify session, and a person reading the
+result. Every answer was an impression rather than a number, so no two attempts
+could be compared. That is the entire account of where the time went.
+
+Mining is what puts the seam in. Discovery can be scored alone — does the table
+contain the commands and options in the corpus, at the right arity —
+deterministically and for free. Classification can be scored against a frozen
+corpus, so one prompt is comparable to another by a number. Two metrics fall
+out, and they are precisely the two the goal asks for:
+
+- **unsound admits** — anything reachable from an unattended wrapper that should
+  not be. Must be zero. Fail-closed already protects this well.
+- **false refusals** — commands in the corpus the wrappers will not run. This is
+  the babysitting number, it is the one at risk, and it has never been measured.
+
+Neither existed when this document was first written, which is why the document
+argued about accuracy instead of reporting it.
