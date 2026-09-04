@@ -63,11 +63,49 @@ inputs:
         inherits the caller's Claude Code default — the child receives the
         caller's environment and saved model. Set it to pin one, e.g.
         `--input model=claude-sonnet-5`.
+    tallyWindowDays:
+      type: integer
+      default: 14
+      description: >-
+        How far back to read agent transcripts when tallying real usage. The
+        tally decides which commands are analysed at all, so this is the knob
+        that sets the size of everything downstream — the crawl, the classify
+        spend, and the table a person has to read.
+    transcriptRoot:
+      type: string
+      default: ""
+      description: >-
+        Where to read transcripts from. Empty uses the model's default, which
+        is scoped to the current project rather than every project on the
+        machine — widening it is a deliberate act, because it reads every
+        command ever typed at an agent.
   required: ["cli"]
 jobs:
   - name: wrap
     description: Discover, classify, review, generate, verify.
     steps:
+      - name: tally
+        description: >-
+          Read agent transcripts and emit a usage profile: the commands of this
+          tool you have actually run, ranked. Runs before discover so a person
+          can scope the crawl to this queue with `include`/`exclude` — git
+          presents 168 subcommands and 23 get used, and analysing the other 145
+          is what produced a review file nobody ever approved. discover and
+          classify do not read the profile automatically; this step orders it
+          first, scoping the inputs is still a manual choice.
+        task:
+          type: model_method
+          modelType: '@skunk-ape/fka'
+          modelName: fka-${{ inputs.cli }}
+          methodName: tally
+          globalArgs:
+            workRoot: ""
+          inputs:
+            root: ${{ inputs.transcriptRoot }}
+            windowDays: ${{ inputs.tallyWindowDays }}
+            tools: [ "${{ inputs.cli }}" ]
+        dependsOn: []
+
       - name: discover
         description: >-
           Read the command tree out of the tool's own help output. The only
@@ -87,7 +125,10 @@ jobs:
             cli: ${{ inputs.cli }}
             include: ${{ inputs.include }}
             exclude: ${{ inputs.exclude }}
-        dependsOn: []
+        dependsOn:
+          - step: tally
+            condition:
+              type: succeeded
 
       - name: found-commands
         description: >-

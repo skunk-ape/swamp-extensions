@@ -52,7 +52,8 @@ of those, the answer is a prompt, not a workaround.
 
 ## Running the pipeline
 
-The workflow chains four methods around one human gate. Run it whole.
+The workflow chains `tally`, `discover`, `classify`, `generate`, and `verify`
+around one human gate. Run it whole.
 
 ```
 swamp workflow run @skunk-ape/fka --input cli=gh
@@ -79,11 +80,20 @@ The run suspends at `review`. That is not a failure — it is the gate.
 
 | Stage      | Kind          | What it decides                                       |
 | ---------- | ------------- | ----------------------------------------------------- |
-| `discover` | deterministic | What the commands and options are actually called     |
+| `tally`    | deterministic | Which commands are worth analysing at all             |
+| `discover` | deterministic | What those commands and options are actually called   |
 | `classify` | model session | A proposed tier for each, plus an option allowlist    |
 | `review`   | a person      | The tiers that will be enforced                       |
 | `generate` | deterministic | The wrappers, the settings snippet, the skill snippet |
 | `verify`   | deterministic | That each wrapper permits its tier and nothing above  |
+
+`score` is a separate, deterministic method — false refusals and leakage,
+measured against real use — but it is **not** a step in the workflow above.
+Run it yourself once a tool has been through `generate`:
+
+```bash
+swamp model method run @skunk-ape/fka score --model fka-<cli> --input cli=<cli>
+```
 
 ## Driving the human gate
 

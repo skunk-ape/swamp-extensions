@@ -191,6 +191,19 @@ in the right place. The review file is a judgement and moves between machines;
 the wrappers embed the absolute path of the tool and of the Deno that runs them,
 and do not. Sync the first, regenerate the second.
 
+`corpus.json` sits at the workspace **root**, next to `bin/`, rather than under
+any one tool's directory — the same shared-not-per-tool reasoning as `bin/`,
+for a different resource. Tallying reads transcripts once and finds every
+binary an agent ran in that pass; splitting the result per tool before writing
+it would mean a second tool costs a second 103MB read of the same transcripts
+to get its own copy of the same facts. So `tally` reads once, writes one
+corpus at the root, and derives a `usage-profile.json` per tool underneath it —
+cheap, because deriving a queue from an already-parsed corpus is a filter and a
+sort, not a re-read. `score` reads the same corpus back for whichever tool it
+is asked about. Nothing here is portable in the sense `review.yaml` is: a
+corpus describes what happened on this machine's transcripts, not a judgement
+to carry to another one.
+
 ## The unit of work is demand, not surface
 
 The first version of this model analysed a tool's complete interface before it
@@ -212,9 +225,9 @@ have been scoped to:
 | `swamp` | full tree, 6,779-line proposal | **17 top-level, ~76 paths** |
 | `deno`  | —                              | **10**                 |
 
-So the unit of work is a **queue of commands you have actually run**, mined from
+So the unit of work is a **queue of commands you have actually run**, tallied from
 those transcripts, rather than a crawl of everything the binary can do. Wrap
-those, live with the result, mine again tomorrow.
+those, live with the result, tally again tomorrow.
 
 Three things follow, and together they are the argument for the shape below.
 
@@ -227,7 +240,8 @@ than handing over a readable one.
 
 **A false refusal becomes a signal.** Under whole-surface analysis, a command
 the table missed is a dead end: the wrapper refuses, and nothing records that it
-should not have. Under mining, that refusal appears in tomorrow's transcript as
+should not have. Because the tally repeats, that refusal appears in tomorrow's
+transcript as
 a command needing classification, and enters the next queue. The system
 converges on your working set instead of guessing at it, and coverage stops
 being a precondition and becomes an outcome.
@@ -238,13 +252,14 @@ new.
 
 ### Narrow at the command, stay generous at the option
 
-Mined usage is a lower bound on what you will want. Wrapping exactly
+The usage profile is a lower bound on what you will want. Wrapping exactly
 `git log --oneline` because that is the invocation observed would refuse
 `git log --format=%H` the first time you needed it — trading a permission prompt
 for a wrapper error, which is a worse thing to be handed.
 
-So the narrowing applies at one level only. **Mining decides which commands are
-analysed; the analysis then covers each command's full option surface.**
+So the narrowing applies at one level only. **The usage profile decides
+which commands are analysed; the analysis then covers each command's full
+option surface.**
 `git log` enters the queue because you ran it, and the classifier reads its help
 and tiers all of its options, not the one that happened to appear. The explosion
 lives at the command level, so that is where the cut goes. False refusals hurt
@@ -253,24 +268,35 @@ at the option level, so that is where it stays generous.
 ## Shape
 
 ```
-mine ──► discover ──► classify ──► [human edits review.yaml] ──► generate ──► verify
-transcripts  help        model                 ▲                 wrappers    self-test
-  queue     reading     session                │                 settings
-   ▲                                       the gate                skill
-   │                                                                  │
-   └──────────────── refusals re-enter the queue ────────────────────┘
+tally ──► discover ──► classify ──► [human edits review.yaml] ──► generate ──► verify
+transcripts   help        model                 ▲                 wrappers    self-test
+  profile    reading     session                │                 settings
+   ▲                                        the gate                skill
+   │                                                                   │
+   └───────────────── refusals re-enter the queue ─────────────────────┘
 ```
 
-`mine` is deterministic and reads no CLI. `discover` and `classify` run over the
-queue rather than over the tool. The human stage is where the judgement lands.
-The loop back from a refused command is what makes an incomplete table
-self-correcting rather than permanent.
+`tally` is deterministic, reads no CLI, and emits a **usage profile** per tool.
+Its command paths are provisional: splitting an argument vector into a command
+path needs the tool's real command tree, and `discover` is the only stage that
+has one. Nothing in the string `swamp extension push` marks `push` as a
+subcommand rather than an argument, so the tally applies shape alone and
+deliberately over-includes. The safe direction for a queue is the opposite of
+the safe direction for a table: an extra path costs a little review time and the
+crawl prunes it, while a missing path means the command is never analysed at
+all. Exact segmentation happens after `discover`.
+It runs ahead of `discover` in the workflow so that profile exists before the
+crawl does, but `discover` and `classify` do not read it themselves — scoping
+`discover`'s `include`/`exclude` to what the profile names is a step a person
+still takes, not something the ordering does automatically. The human stage is
+where the judgement lands. The loop back from a refused command is what makes
+an incomplete table self-correcting rather than permanent.
 
-### mine — deterministic, and the fixture too
+### tally — deterministic, and the fixture too
 
 Agent transcripts record every command the agent ran. They do **not** record
 which of those prompted: a call approved at a prompt is indistinguishable from
-one allowed outright. Explicit denials are recorded and are worth mining
+one allowed outright. Explicit denials are recorded and are worth tallying
 separately, but they are the small case.
 
 What is recoverable is better than an ask log would have been. Take the commands
@@ -322,11 +348,15 @@ environment scrub list. It may fetch the tool's documentation, because help text
 alone often does not say whether an operation is billable or whether a
 subcommand reaches a private resource.
 
-It is also told what mining found: how often each command was run, and in what
-form. That evidence is context for a judgement and never the judgement itself —
+Not yet wired in this pass: passing what the tally found — how often each
+command was run, and in what form — into the classify session itself, so it
+could weigh that as context for a judgement (never the judgement itself;
 frequency is not safety, and the command you run hourly can still be the
-dangerous one. What frequency earns is attention. The commands at the top of the
-queue are the ones whose tier decides whether any of this was worth doing.
+dangerous one). Today the profile's only effect on `classify` is indirect,
+through whichever commands a person chose to `include` after reading it. What
+frequency earns, right now, is a person's attention before the crawl runs at
+all — the commands at the top of the queue are the ones worth spending a crawl
+and a classify session on in the first place.
 
 The session is spawned as `claude -p`, running on the credential Claude Code
 already holds, so there is no API key to store. The model follows the same
@@ -412,7 +442,7 @@ trusting the check `classify` ran. Those two checks are not the same check: a
 human edit sits between them, and the file that gets rendered is never the file
 that was validated.
 
-Scale used to be the standing objection here, and mining is the answer to it:
+Scale used to be the standing objection here, and the tally is the answer to it:
 the file describes the commands you run, so it is short because your working set
 is short. Two things still concentrate the reader's attention, and the file is
 ordered to put them first.
@@ -435,7 +465,8 @@ concentrated in a handful of lines.
 Fail-closed does the rest: anything the classifier was unsure of is not
 `read-safe`, and anything absent from the table is refused. Under whole-surface
 analysis that last property was a quiet liability, because a wrongly-omitted
-command had no route back into consideration. With mining it is only a delay:
+command had no route back into consideration. With a repeating tally it is only
+a delay:
 the refusal is observed, and the command is in the next queue.
 
 ### generate — one render, three artifacts
@@ -546,12 +577,12 @@ its help. If you do not trust the tool enough to run `--help` on it, the problem
 is upstream of this model.
 
 It does not claim to have analysed a tool completely, and since the move to
-mining it does not try. A wrapper covers the commands you have run and what the
+tallying it does not try. A wrapper covers the commands you have run and what the
 analysis could establish about them. Everything else prompts, exactly as it did
 before any of this existed. **The claim is that you answer fewer prompts, never
 that a binary has been enumerated.**
 
-It does not know which prompts were worth avoiding. Mining ranks by observed
+It does not know which prompts were worth avoiding. The tally ranks by observed
 frequency, which is a proxy and a coarse one: a command run once that blocks a
 long unattended run may matter more than one run fifty times while you sat
 watching. Nothing here can tell those apart.
@@ -565,6 +596,21 @@ workflow, not something to hand an unattended agent — and unlike
 `@skunk-ape/web-brief`, which was built to be granted, this one is not. Keep the
 grant on the person running the analysis.
 
+`tally` widens what "the same grant" means, and it is worth being explicit
+about the shape of the widening rather than letting it ride on the general
+statement above. Every other method here executes a binary you name, or writes
+files this model itself generated. `tally` reads every command an agent typed
+across however many sessions touched a transcript root — categorically wider,
+because it is not scoped to one tool at all, and because a transcript is a
+record of *intent*, not just of commands: it can contain paths, hostnames, and
+the shape of work someone was doing that they never meant to hand to a
+classifier. That is why the transcript root defaults to the current project
+rather than every project on the machine (`~/.claude/projects/<this repo's
+slug>`, not `~/.claude/projects`), and why widening it past that takes setting
+`root` explicitly. The default keeps the widening this method introduces
+proportional to the workflow it serves — scoping a crawl to one repository's
+own working set — rather than open-ended by default.
+
 ## What is proven, and what is not
 
 Stated plainly, because this model has cost more to build than it has yet
@@ -577,7 +623,7 @@ table, and `verify` demonstrates as much without executing a wrapped command.
 
 **Unproven.** That reading help produces a table accurate enough to approve — no
 proposal has yet been read end to end and signed off. And that the result
-reduces prompts in practice, which nothing has measured, because until mining
+reduces prompts in practice, which nothing has measured, because until the tally
 there was no corpus to measure against.
 
 Those two were stacked in series with no seam between them. A wrong table could
@@ -586,16 +632,42 @@ which one meant a full crawl, a full classify session, and a person reading the
 result. Every answer was an impression rather than a number, so no two attempts
 could be compared. That is the entire account of where the time went.
 
-Mining is what puts the seam in. Discovery can be scored alone — does the table
+The tally is what puts the seam in. Discovery can be scored alone — does the table
 contain the commands and options in the corpus, at the right arity —
 deterministically and for free. Classification can be scored against a frozen
 corpus, so one prompt is comparable to another by a number. Two metrics fall
 out, and they are precisely the two the goal asks for:
 
 - **unsound admits** — anything reachable from an unattended wrapper that should
-  not be. Must be zero. Fail-closed already protects this well.
+  not be. Must be zero. This split into two checks that catch two different
+  ways to fail it, and neither alone is the whole answer:
+  - **leakage** (`_lib/score.ts`) — a wrapper admitting a command the review
+    file itself tiers above that wrapper's segment ceiling. Mechanical,
+    fail-closed already protects this well, and it is checked against real
+    corpus argv. What it structurally cannot see: a command the table itself
+    mis-tiered — `gh repo delete` filed as `read-safe` by mistake leaks
+    nothing, because the check reads the same file that produced the policy.
+  - **agreement** (`_lib/score.ts`, against `testdata/labelled.json`) — the
+    only check that can catch that mis-tiering, and only up to the
+    fixture's coverage and its own tiers being a model's proposal rather
+    than a person's ratified judgement (see the fixture's own note). Not
+    yet a clean "must be zero": it is a comparison between two guesses
+    until a person reviews the fixture.
 - **false refusals** — commands in the corpus the wrappers will not run. This is
   the babysitting number, it is the one at risk, and it has never been measured.
 
 Neither existed when this document was first written, which is why the document
 argued about accuracy instead of reporting it.
+
+**A known bias in false refusals: it is optimistic.** `tally` takes only the
+leading command of a compound line (see `_lib/corpus.ts`'s module doc) —
+`git status && git push` records as `git status`. On this project's own
+corpus that is not a rare shape: 74% of distinct invocations contain an
+unquoted separator or newline. A compound line no wrapper could ever run in
+full still scores as its wrapper-admitted leading half, so the false-refusal
+count under-counts in exactly the direction that looks reassuring. This was
+the plan's own instruction — take the leading command, because naive
+line-scanning invents far more invocations than it finds — and the defect
+being fixed here is not that choice, it is that the resulting bias went
+unstated. `score`'s `nextAction` and `_lib/corpus.ts`'s module doc both say so
+now.

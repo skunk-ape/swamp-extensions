@@ -1,0 +1,737 @@
+{
+  "note": "Ground truth for the mis-tiering check in _lib/score.ts. Usage says what was run, never what was safe to run, so this is the only source of truth `agreement` can check a review file against.\n\nPROVENANCE. `source: \"corpus\"` means this invocation was genuinely observed in a real window of this machine's Claude Code transcripts. `source: \"known-risk\"` means it was added because being wrong about it is expensive, whether or not anyone has run it here — a fixture built only from observed usage would never contain the dangerous invocation you have so far avoided.\n\nNO COUNTS, DELIBERATELY. Earlier versions carried a `count` per entry. They were removed because they could not be kept re-derivable: command-path segmentation is provisional until FKA-13 moves it after `discover`, so the paths a tally emits still shift, and option-level counts were never derivable at all — the usage profile ranks command paths, not options. A number nobody can reproduce is worse than no number, and this file already produced one review finding that way. `agreement` reads binary, path, option and tier; it never read the counts.\n\nTIERS ARE PROPOSED, NOT RATIFIED. They follow DESIGN.md's four-tier meanings but were written by a model and have not been reviewed by a person. Until they have been, `agreement` compares one model's judgement against another's, which is better than checking a table against itself and is still not ground truth. Do not quote a mis-tiering number from this file before it is reviewed.\n\nOPTION ENTRIES ARE THE POINT. An entry with `option` labels that option on that command, scored against the option's effective tier. DESIGN.md's argument is that options are where the danger is, so a fixture of bare command paths scores a classifier only where being wrong is cheapest. Note that `swamp extension push --dry-run` is reached by a PINNED alias, not by tiering the option lower — see DESIGN.md \"Pinning beats permitting\".",
+  "entries": [
+    {
+      "binary": "git",
+      "path": [
+        "log"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "status"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "diff"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "show"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "ls-files"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "rev-list"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no longer observed in the current 21-day window (was: real corpus, count 12) — kept as known-risk rather than invented; rev-list is a plumbing command whose output can carry arbitrary ref expressions."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "rev-parse"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no longer observed in the current window — kept as known-risk; rev-parse can resolve and print arbitrary refs, which is still worth a ground-truth tier."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "check-ignore"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no longer observed in the current window — kept as known-risk since it is otherwise read-safe and cheap to mis-tier down."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "branch"
+      ],
+      "tier": "read-safe",
+      "source": "corpus",
+      "note": "bare `branch` lists; the destructive forms are options, tiered below"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "add"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "commit"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "mv"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "no longer observed in the current window — kept as known-risk; still a real local mutation worth ground truth for."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "checkout"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "worktree",
+        "list"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: this project's own transcript window has only 9 total `worktree` invocations (4 list, 4 remove, 1 add), and the slot that follows `worktree` does not clear _lib/corpus.ts's successor-cardinality threshold at that volume, so the tool currently tallies bare `worktree` as one bucket rather than splitting list from remove. The tier judgement itself does not depend on the corpus tool — `agreement` checks it against the review file's own crawled command tree — so it stands regardless."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "worktree",
+        "remove"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "same corpus limitation as the `worktree list` entry above — this project's own transcripts don't have enough `worktree` volume to clear the successor-cardinality threshold that would split `remove` out from bare `worktree`. Kept as known-risk since it is the destructive half of that pair and is cheap to mis-tier down."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "cherry-pick"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "fetch"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "no longer observed in the current window — kept as known-risk; fetch reaches the network and rewrites remote-tracking refs."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "push"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "no longer observed in the current window — kept as known-risk; the canonical modify command for this tool."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "remote"
+      ],
+      "tier": "read-private",
+      "source": "corpus",
+      "note": "prints remote URLs, which can carry tokens or name private hosts"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "ls-remote"
+      ],
+      "tier": "read-private",
+      "source": "corpus",
+      "note": "contacts the remote and authenticates"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "config"
+      ],
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "writes the config that supplies core.pager, diff drivers and hooks; the payload fires later from inside an innocent read-safe command"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "log"
+      ],
+      "option": "--oneline",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "log"
+      ],
+      "option": "--format",
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "not observed in the current project-scoped window at all; kept as known-risk rather than a claimed corpus count with nothing behind it."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "log"
+      ],
+      "option": "--name-only",
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "not observed in the current project-scoped window at all; kept as known-risk rather than a claimed corpus count with nothing behind it."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "log"
+      ],
+      "option": "--ext-diff",
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "DESIGN.md's worked example: runs an external diff driver, so a read-safe command executes a program of the caller's choosing"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "status"
+      ],
+      "option": "--porcelain",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "diff"
+      ],
+      "option": "--cached",
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "not observed in the current project-scoped window at all; kept as known-risk rather than a claimed corpus count with nothing behind it."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "diff"
+      ],
+      "option": "--stat",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "branch"
+      ],
+      "option": "--show-current",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "branch"
+      ],
+      "option": "-D",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "force-deletes a branch; the bare command only lists"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "push"
+      ],
+      "option": "--force",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "overwrites remote history"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "push"
+      ],
+      "option": "--force-with-lease",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "`git push` itself is not observed anywhere in the current project-scoped window (see the sibling known-risk `push` entries) — kept as known-risk, not a claimed corpus count with nothing behind it."
+    },
+    {
+      "binary": "git",
+      "path": [
+        "push"
+      ],
+      "option": "--dry-run",
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "the pinning case: same command, nothing published"
+    },
+    {
+      "binary": "git",
+      "path": [
+        "commit"
+      ],
+      "option": "--amend",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "bare `commit` is observed (5 times) but `--amend` itself is not, in the current project-scoped window; kept as known-risk rather than a claimed corpus count with nothing behind it."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "api"
+      ],
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "not observed in this project's current 21-day transcript window — kept as known-risk. See the option-level --X entry below for the actual danger this hides behind a harmless-looking subcommand name."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "api"
+      ],
+      "option": "-X",
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "selects the HTTP method, so `gh api -X DELETE /repos/o/r` hides behind a harmless-looking subcommand"
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "repo",
+        "view"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk since gh usage here is sparse but the tier judgement still matters wherever gh is wrapped."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "pr",
+        "list"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "issue",
+        "list"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "issue",
+        "view"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "run",
+        "list"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "pr",
+        "list"
+      ],
+      "option": "--json",
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "gh pr list itself is not observed in the current window either; kept as known-risk alongside it."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "pr",
+        "list"
+      ],
+      "option": "--state",
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "gh pr list itself is not observed in the current window either; kept as known-risk alongside it."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "pr",
+        "list"
+      ],
+      "option": "--jq",
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "a jq program, but jq has no shell escape; still read-private because the data is gh pr list itself is not observed in the current window either; kept as known-risk alongside it."
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "repo",
+        "delete"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "the canonical thing a coarse Bash(gh:*) rule would have permitted"
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "pr",
+        "create"
+      ],
+      "tier": "modify",
+      "source": "known-risk"
+    },
+    {
+      "binary": "gh",
+      "path": [
+        "auth",
+        "token"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "prints the credential itself"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "get"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "query"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "type",
+        "describe"
+      ],
+      "tier": "read-safe",
+      "source": "corpus",
+      "note": "replaces an earlier 2-deep `model type` entry that was an artifact of the tally's old MAX_PATH_DEPTH=2 cap; the real subcommand is 3 tokens deep and is what the shape+frequency deriver now produces"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "type",
+        "search"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "search"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: `extension`'s own successor slot (9 distinct children over 54 occurrences, ratio 6) does not clear _lib/corpus.ts's successor-cardinality threshold in this project's own transcript volume, so the tool currently tallies bare `extension` rather than splitting its children. The tier judgement does not depend on the corpus tool and stands regardless."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "run",
+        "history"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: `run` has only one child (`history`) in this project's transcripts, and one child recurring 5 times does not clear the successor-cardinality threshold on volume alone, so the tool currently tallies bare `run`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "search"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "get"
+      ],
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "help",
+        "model"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: `help` has 15 distinct children in this project's transcripts (one per swamp verb someone asked about) over only 50 total occurrences, ratio 3.3 — a real, closed, enumerable vocabulary that nonetheless reads as open at this sample size, a known limitation of a volume-based cardinality proxy. The tool currently tallies bare `help`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "workflow",
+        "validate"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: `workflow`'s own successor slot (13 distinct children over 45 occurrences, ratio 3.5) does not clear the successor-cardinality threshold in this project's own transcript volume, so the tool currently tallies bare `workflow`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "issue",
+        "search"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "no corpus count is independently verifiable at this depth: `issue` has only 2 total occurrences in this project's transcripts, nowhere near clearing the successor-cardinality threshold, so the tool currently tallies bare `issue`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "quality"
+      ],
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "same corpus limitation as the `extension search` entry above — `extension`'s own successor slot does not clear the successor-cardinality threshold in this project's transcript volume, so the tool currently tallies bare `extension`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "method",
+        "run"
+      ],
+      "tier": "modify",
+      "source": "corpus",
+      "note": "the method run may itself be destructive; the path alone cannot say which, only that state changes. Previously counted as an argv-prefix match because the model-name token that follows `run` folded into the derived path (a documented limitation of the old per-token frequency check); the successor-cardinality fix in _lib/corpus.ts (FIX 2) resolved that, so this is now an exact-path count like any other entry."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "push"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "the fixture's own flagship mis-tiering case (see the `--dry-run` sibling entry's note) — its tier judgement is unaffected, since `agreement` checks it against the review file's own crawled command tree, not against the corpus tool. Its corpus provenance is no longer independently verifiable at this depth, though: `extension`'s own successor slot (9 distinct children over 54 occurrences, ratio 6) does not clear _lib/corpus.ts's successor-cardinality threshold in this project's own transcript volume, so the tool currently tallies bare `extension` rather than splitting `push` out."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "workflow",
+        "run"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "same corpus limitation as the `workflow validate` entry above — `workflow`'s own successor slot does not clear the successor-cardinality threshold in this project's transcript volume, so the tool currently tallies bare `workflow`."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "create"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "model",
+        "delete"
+      ],
+      "tier": "modify",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "access",
+        "grant"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "not observed in this project's current window — kept as known-risk; widening who can run a model is worth ground truth regardless of how often it happens."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "vault",
+        "get"
+      ],
+      "tier": "read-private",
+      "source": "known-risk",
+      "note": "returns a stored secret"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "push"
+      ],
+      "option": "--dry-run",
+      "tier": "read-safe",
+      "source": "known-risk",
+      "note": "The case this fixture most needs to cover for mis-tiering: no Bash() prefix rule can separate this from the bare publish, because the distinguishing token is an option, and the safe form outnumbers the real publish 45 to 1 in the window. But tiering the OPTION read-safe here does not, by itself, let any wrapper run it unattended: toPolicy (review.ts) filters a command by its OWN tier — modify — before it ever looks at an option's tier, so a modify-tiered command stays unreachable from a safe-ceiling wrapper regardless of what this table says about --dry-run. The real mechanism DESIGN.md names for this ('Pinning beats permitting') is a PINNED alias, e.g. fka-write-swamp-push-dry with append:['--dry-run'] and admits.paths:[[extension,push]], permitted by settings.json naming that one wrapper even though its segment (write) is normally 'ask'. This entry still belongs in the fixture — it is real ground truth for whether the table's OWN tiering agrees with a human's — it just is not, on its own, the thing that makes the command run without a prompt. UPDATE: this option's corpus provenance is no longer independently verifiable at this depth for the same reason the bare `extension push` entry gives — `extension`'s own successor slot does not clear _lib/corpus.ts's successor-cardinality threshold in this project's current transcript volume, so the tool tallies bare `extension` rather than reaching `push`, let alone this option. Everything this note argues about mis-tiering and about pinning still holds; only the source tag changed."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "push"
+      ],
+      "option": "--yes",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "same corpus limitation as the `extension push --dry-run` sibling entry above."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "get"
+      ],
+      "option": "--json",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "query"
+      ],
+      "option": "--select",
+      "tier": "read-safe",
+      "source": "corpus"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "delete"
+      ],
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "not observed anywhere in the current project-scoped window; kept as known-risk rather than a claimed corpus count with nothing behind it — deleting data outright is exactly the kind of command this fixture exists to keep ground truth for even when nobody has run it here."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "delete"
+      ],
+      "option": "--force",
+      "tier": "modify",
+      "source": "known-risk",
+      "note": "same as the bare `data delete` entry above."
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "get"
+      ],
+      "option": "--server",
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "names an endpoint to talk to, so a read-safe command is redirected at a host of the caller's choosing"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "get"
+      ],
+      "option": "--token",
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "supplies a credential on the command line"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "data",
+        "get"
+      ],
+      "option": "--ca-cert",
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "changes which TLS authorities are trusted"
+    },
+    {
+      "binary": "swamp",
+      "path": [
+        "extension",
+        "source",
+        "add"
+      ],
+      "tier": "escape",
+      "source": "known-risk",
+      "note": "loads arbitrary local extension code into the swamp process No longer structurally impossible for tally to emit either: this 3-deep path was unreachable under the tally's old MAX_PATH_DEPTH=2 cap, which is why an earlier version of this fixture could carry a count here that the tool could never actually produce. The cap is gone; shape and frequency decide subcommand depth now."
+    }
+  ]
+}

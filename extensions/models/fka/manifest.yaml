@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@skunk-ape/fka"
-version: 2026.08.24.5
+version: 2026.09.02.1
 description: |
   Formerly known as.
 
@@ -78,6 +78,25 @@ description: |
     matrix covers argument *syntax* as well as coverage: `--`, attached values,
     short clusters, positionals, and a constrained option exercised with a
     value that cannot match it.
+  - `tally` — read Claude Code transcripts and emit a per-tool usage profile: a
+    ranked queue of the commands actually run, and denials tallied separately.
+    Deterministic, reads no CLI, spawns no model session. Runs ahead of
+    `discover` in the workflow so a person can scope the crawl to their working
+    set with `include`/`exclude` instead of a tool\'s whole surface — a real
+    machine\'s fourteen days of transcripts named 23 git subcommands out of 168,
+    and a 6,779-line whole-surface proposal for `swamp` was never approved for
+    exactly that reason. `discover` and `classify` do not read the profile
+    themselves; ordering the step ahead of them is what the workflow does today,
+    scoping the inputs is still a manual step for whoever drives the run.
+  - `score` — measure an approved review file against the tallied corpus:
+    false refusals (every corpus invocation no unattended wrapper admits — the
+    babysitting number), and leakage (a wrapper admitting a command tiered
+    above what its own segment promises). Reuses `_lib/validate.ts`, the exact
+    parser the wrappers run, rather than a second engine that could disagree
+    with it. Also checks classifier agreement against a small hand-labelled
+    fixture, which is the only way to catch a command that is dangerous but was
+    tiered read-safe — usage alone can never show that, since it records what
+    ran, never what was safe.
 
   ## The human gate
 
@@ -149,6 +168,7 @@ additionalFiles:
   - LICENSE
   - README.md
   - _lib/validate.ts
+  - testdata/labelled.json
 labels:
   - security
   - permissions

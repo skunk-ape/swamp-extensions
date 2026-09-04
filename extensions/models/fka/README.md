@@ -104,12 +104,28 @@ run, because reading what `git commit` does is not committing.
 ## The stages
 
 ```
-discover ──► classify ──► [a person edits review.yaml] ──► generate ──► verify
+tally ──► discover ──► classify ──► [a person edits review.yaml] ──► generate ──► verify
 ```
 
+**`tally`** reads your agent transcripts and emits a **usage profile**: the
+commands of this tool you have actually run, ranked by how often. It is
+deterministic, spawns no model session, and runs no CLI. It exists because
+analysing a tool's whole interface is what produced review files nobody ever
+approved — git presents 168 subcommands and 23 of them get used. The workflow
+runs it ahead of `discover` so the profile is there to scope the crawl with —
+pass its top paths as `include` — but that scoping is still a step a person
+takes: `discover` and `classify` do not read the profile themselves, and
+ordering `tally` first is not the same as wiring it through.
+
+A command the tally missed is refused rather than admitted, and the refusal
+shows up in tomorrow's transcripts, so it enters the next profile. Coverage is
+an outcome here, not a precondition.
+
 **`discover`** reads `<cli> --help` again and again and records the command
-tree. It is deterministic. It runs the tool only with its help flag, and through
-argv and not a shell. A depth cap, a command cap, and a timeout for each call
+tree. It does not read the usage profile itself — scoping the crawl to it with
+`include`/`exclude` is a step a person takes, per the paragraph above. It is
+deterministic. It runs the tool
+only with its help flag, and through argv and not a shell. A depth cap, a command cap, and a timeout for each call
 bound the crawl. It also records the arity of each option. If an arity is wrong,
 it is the field most likely to cause a bypass. An option whose arity the help
 text does not state is left out of the table.

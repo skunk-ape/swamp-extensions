@@ -34,6 +34,17 @@
 // Nothing here writes settings.json. The thing that proposes a permission
 // policy must not also be able to put it into force, so the last step is
 // always a person pasting the snippet in.
+//
+// Two more, apart from that chain: tally reads Claude Code transcripts and
+// emits a per-tool usage profile, ranked by frequency, so a person can scope
+// discover's `include`/`exclude` to what is actually run rather than a
+// tool's whole surface — tally orders before discover in the workflow, but
+// neither discover nor classify reads the profile automatically; scoping is
+// still a manual step for whoever drives the run. score measures an approved
+// review against that same corpus —
+// false refusals, the babysitting number, and leakage, which must be zero —
+// by reusing _lib/validate.ts, never a second engine that could disagree
+// with it. Both are deterministic and spawn nothing.
 
 import { z } from "npm:zod@4";
 import {
@@ -67,6 +78,20 @@ import {
   sampleCases,
   spawnCheck,
 } from "./_lib/verify.ts";
+import {
+  buildCorpus,
+  defaultTranscriptRoot,
+  rankByTool,
+  rankDenials,
+} from "./_lib/corpus.ts";
+import type { Invocation } from "./_lib/corpus.ts";
+import {
+  agreement,
+  falseRefusals,
+  leakage,
+  type SettingsRuleset,
+  wouldPrompt,
+} from "./_lib/score.ts";
 
 // deno-lint-ignore no-explicit-any
 declare const Deno: any;
@@ -254,6 +279,52 @@ const RemoveArgs = z.object({
 });
 type RemoveArgs = z.infer<typeof RemoveArgs>;
 
+const TallyArgs = z.object({
+  /**
+   * Where to read transcripts from. Empty defaults to this project's own
+   * transcript directory under `~/.claude/projects`.
+   *
+   * `tally` reads every command an agent has ever run, which is categorically
+   * wider than fka's other methods — those execute a named binary or write
+   * wrapper files, this reads history across however many sessions ever
+   * touched this repository. Defaulting to the current project rather than
+   * every project on the machine keeps that widening deliberate: seeing
+   * another project's commands takes setting this explicitly.
+   */
+  root: z.string().default(""),
+  /** How many days back to read, from the moment tally runs. */
+  windowDays: z.number().int().positive().default(14),
+  /**
+   * Tally only these tools (matched by basename). Empty tallies every binary
+   * the corpus contains and writes a usage profile for each.
+   */
+  tools: z.array(z.string()).default([]),
+});
+type TallyArgs = z.infer<typeof TallyArgs>;
+
+const ScoreArgs = z.object({
+  cli: CliArg,
+  /**
+   * A `settings.json`-shaped file, read either as `{ allow, ask, deny }`
+   * directly or as `{ permissions: { allow, ask, deny } }`, matching a real
+   * settings file. Two different uses:
+   *
+   * - It decides "unattended" for `falseRefusalCount`: a wrapper only counts
+   *   as unattended when this file's `allow` actually grants its full name
+   *   (and `deny` does not revoke it) — real permission data, not a guess
+   *   from the wrapper's segment name. Omit it and `falseRefusals` falls back
+   *   to the coarser segment-bucket guess; `falseRefusalMode` on the result
+   *   says which one ran.
+   * - It also drives `promptEstimate`, a coarse, deliberately conservative
+   *   aid — see `_lib/score.ts`'s `wouldPrompt` — never the sole metric that
+   *   decides whether a wrapper is safe. `leakage`, built on the exact
+   *   validator the wrappers run, is unaffected either way and is always
+   *   reported.
+   */
+  settingsPath: z.string().default(""),
+});
+type ScoreArgs = z.infer<typeof ScoreArgs>;
+
 // ---------------------------------------------------------------------------
 // Resources
 // ---------------------------------------------------------------------------
@@ -361,6 +432,126 @@ const VerificationSchema = z.object({
   })),
 });
 
+const CorpusResultSchema = z.object({
+  generatedAt: z.string(),
+  root: z.string(),
+  windowDays: z.number(),
+  transcriptsScanned: z.number(),
+  linesScanned: z.number(),
+  linesUnparsed: z.number(),
+  /** Bash commands seen but not confidently tokenised, and therefore dropped. */
+  refusedCount: z.number(),
+  /**
+   * How many invocations hit the subcommand-path deriver's one generous
+   * depth guard, rather than stopping because a token looked like an
+   * argument. Zero on every real corpus this project has read so far; a
+   * nonzero count here is a reported bound, not a silent truncation — see
+   * `_lib/corpus.ts`'s module doc.
+   */
+  pathBoundHits: z.number(),
+  invocationCount: z.number(),
+  denialCount: z.number(),
+  toolsSeen: z.array(z.string()),
+  corpusPath: z.string(),
+  /** See `TRUNCATION_BIAS_NOTE` — disclosed here, not just in `nextAction`. */
+  truncationBiasNote: z.string(),
+  nextAction: z.string(),
+});
+
+const UsageProfileSchema = z.object({
+  cli: z.string(),
+  generatedAt: z.string(),
+  windowDays: z.number(),
+  /** Distinct subcommand paths seen for this tool. */
+  commandCount: z.number(),
+  totalInvocations: z.number(),
+  denialCount: z.number(),
+  profilePath: z.string(),
+  /** The ranked queue, most-used first, capped for the resource record. */
+  top: z.array(z.object({ path: z.array(z.string()), count: z.number() })),
+  nextAction: z.string(),
+});
+
+const ScoreResultSchema = z.object({
+  cli: z.string(),
+  scoredAt: z.string(),
+  corpusInvocationCount: z.number(),
+  /**
+   * Which method decided "unattended" for this run: `"settings"` when
+   * `settingsPath` was supplied and a wrapper's real permission grant decided
+   * the answer, `"segment-bucket"` when it fell back to the `help`/`safe`
+   * segment name because no settings file was given. The two can disagree —
+   * see `_lib/score.ts`'s `FalseRefusalsResult` doc — so a reader needs to
+   * know which one produced the count below.
+   */
+  falseRefusalMode: z.enum(["settings", "segment-bucket"]),
+  /**
+   * `true` only in `"settings"` mode, and only when `settingsPath` grants
+   * not a single non-`help` wrapper by name. A distinct condition from every
+   * wrapper being legitimately `ask`/`deny`'d — see `_lib/score.ts`'s
+   * `FalseRefusalsResult.grantsNoWrapper` doc. When `true`, treat
+   * `falseRefusalCount`/`falseRefusalOccurrences` as "settings mode
+   * recognised nothing", not as "the table admits nothing safely" — check
+   * `settingsPath` before editing the review file in response.
+   */
+  settingsGrantsNoWrapper: z.boolean(),
+  /** See `TRUNCATION_BIAS_NOTE` — disclosed here, not just in `nextAction`. */
+  truncationBiasNote: z.string(),
+  /** The babysitting number, as distinct command **shapes**: corpus invocations no unattended wrapper admits. */
+  falseRefusalCount: z.number(),
+  /**
+   * The same commands, weighted by how many times each actually ran
+   * (`Invocation.count`). A shape run once and one run fifty times both count
+   * once toward `falseRefusalCount`; this is the number that answers "how
+   * many prompts did this actually cost".
+   */
+  falseRefusalOccurrences: z.number(),
+  falseRefusalSamples: z.array(
+    z.object({ command: z.string(), count: z.number() }),
+  ),
+  /** A wrapper admitting a command tiered above its own segment's ceiling. Must be zero. */
+  leakageCount: z.number(),
+  leakageSamples: z.array(z.object({
+    wrapper: z.string(),
+    command: z.string(),
+    commandTier: z.string(),
+    segmentCeiling: z.string(),
+  })),
+  /**
+   * A coarse, deliberately conservative estimate of whether a supplied
+   * `settings.json`-shaped ruleset would prompt for each corpus invocation —
+   * see `_lib/score.ts`'s `wouldPrompt` doc for exactly what it does and does
+   * not model. Never the metric that decides whether a wrapper is safe; that
+   * is `falseRefusalCount`/`falseRefusalOccurrences` and `leakageCount`,
+   * above, both built on the same validator every wrapper runs.
+   */
+  promptEstimate: z.object({
+    used: z.boolean(),
+    certainlyAllowedCount: z.number(),
+    wouldPromptCount: z.number(),
+  }),
+  agreement: z.object({
+    total: z.number(),
+    scored: z.number(),
+    scoredOptions: z.number(),
+    agreed: z.number(),
+    mismatches: z.array(z.object({
+      path: z.array(z.string()),
+      option: z.string().optional(),
+      labelledTier: z.string(),
+      reviewTier: z.string(),
+      /** Why the fixture labels it this way — the rationale a reviewer checks. */
+      note: z.string().optional(),
+    })),
+    missing: z.array(z.object({
+      path: z.array(z.string()),
+      option: z.string().optional(),
+      tier: z.string(),
+    })),
+  }),
+  nextAction: z.string(),
+});
+
 // ---------------------------------------------------------------------------
 // Plumbing
 // ---------------------------------------------------------------------------
@@ -454,6 +645,42 @@ async function ensureDir(path: string): Promise<void> {
   await Deno.mkdir(path, { recursive: true });
 }
 
+/**
+ * Tighten `path`'s permission bits, warning rather than silently swallowing
+ * a real failure.
+ *
+ * The prior version of every one of these call sites caught every error the
+ * same way, with a comment claiming Windows — no POSIX mode bits — was the
+ * only cause. That is true for `Deno.errors.NotSupported`, but a real POSIX
+ * `EPERM` (a read-only filesystem, an unexpected owner) matches the same
+ * blanket `catch` and leaves the file or directory at its wider default
+ * mode with nothing in the output to say so (finding N7).
+ */
+async function tightenPerms(
+  path: string,
+  mode: number,
+  logger: Logger,
+  what: string,
+): Promise<void> {
+  try {
+    await Deno.chmod(path, mode);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotSupported) {
+      return; // Windows has no POSIX mode bits; nothing to tighten.
+    }
+    logger.warning(
+      "could not tighten permissions on {path} to {mode}: {reason} — " +
+        "{what} may be more readable than intended",
+      {
+        path,
+        mode: mode.toString(8),
+        reason: error instanceof Error ? error.message : String(error),
+        what,
+      },
+    );
+  }
+}
+
 async function readJson<T>(path: string, what: string): Promise<T> {
   let text: string;
   try {
@@ -490,6 +717,24 @@ export async function writeExecutable(
     throw error;
   }
 }
+
+/**
+ * Disclosed in both `tally`'s and `score`'s `nextAction`, and carried as its
+ * own field on both resources (finding F3): only the leading command of a
+ * compound transcript line is ever tallied — `_lib/corpus.ts`'s module doc
+ * measured 74% of this project's own distinct invocations containing an
+ * unquoted separator or newline. That under-represents anything that mostly
+ * runs second in a chain, and biases `falseRefusals`/`wouldPrompt`
+ * optimistic in exactly the same way: a compound line no wrapper could run
+ * at all still records as its (wrapper-admitted) leading command. Not
+ * structurally fixed here — this is a disclosure, not a remedy.
+ */
+const TRUNCATION_BIAS_NOTE =
+  "Known bias: only the leading command of a compound transcript line " +
+  "(a && b, a | b, a; b) is ever tallied, so a command that mostly runs " +
+  "second in a chain is under-represented in this corpus, and a compound " +
+  "line no wrapper could actually run in full still scores as its " +
+  "(wrapper-admitted) leading command — see _lib/corpus.ts's module doc.";
 
 /** The marker every rendered wrapper carries, and nothing else does. */
 const WRAPPER_MARKER = "generated by @skunk-ape/fka";
@@ -558,7 +803,7 @@ export async function ownedWrappers(
  */
 export const model = {
   type: "@skunk-ape/fka",
-  version: "2026.08.24.1",
+  version: "2026.09.02.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     "surface": {
@@ -593,6 +838,27 @@ export const model = {
       description:
         "Proof that each wrapper permits its own tier and nothing above it.",
       schema: VerificationSchema,
+      lifetime: "30d",
+      garbageCollection: 20,
+    },
+    "corpus": {
+      description:
+        "What tally read out of Claude Code transcripts: counts, coverage, and where the shared corpus.json landed.",
+      schema: CorpusResultSchema,
+      lifetime: "30d",
+      garbageCollection: 10,
+    },
+    "usageProfile": {
+      description:
+        "One tool's ranked queue of commands actually run, and its denials, derived from the shared corpus.",
+      schema: UsageProfileSchema,
+      lifetime: "30d",
+      garbageCollection: 20,
+    },
+    "score": {
+      description:
+        "False refusals and leakage measured against the tallied corpus, plus classifier agreement against the labelled fixture.",
+      schema: ScoreResultSchema,
       lifetime: "30d",
       garbageCollection: 20,
     },
@@ -1258,6 +1524,383 @@ export const model = {
         ctx.logger.info(
           "Removed {count} wrapper(s). The permission rules key on the segment, not the tool, so settings.json needs no edit",
           { count: names.length },
+        );
+        return { dataHandles: [handle] };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    tally: {
+      description:
+        "Read Claude Code transcripts and emit a per-tool usage profile: a ranked queue of the commands actually run, plus denials tallied separately. Deterministic — reads no CLI, spawns no model session.",
+      arguments: TallyArgs,
+      execute: async (
+        args: TallyArgs,
+        ctx: {
+          globalArgs: GlobalArgs;
+          repoDir: string;
+          logger: Logger;
+          writeResource: WriteResource;
+        },
+      ) => {
+        const g = ctx.globalArgs;
+        const root = args.root !== ""
+          ? args.root
+          : defaultTranscriptRoot(Deno.env.get("HOME") ?? "", ctx.repoDir);
+
+        ctx.logger.info(
+          "Reading transcripts under {root} over the last {days} day(s)",
+          { root, days: args.windowDays },
+        );
+        const corpus = await buildCorpus(root, args.windowDays);
+        if (corpus.transcriptsScanned === 0) {
+          // An empty corpus is a LEGITIMATE state — a tool nobody has run
+          // here yet — not a configuration mistake, so this warns rather
+          // than throwing (finding N5). Throwing here used to abort
+          // `swamp workflow run @skunk-ape/fka` at the very first step on a
+          // fresh clone, a CI checkout, or any project Claude Code has not
+          // been run in, even though discover, classify and generate never
+          // read the profile tally produces.
+          ctx.logger.warning(
+            "no .jsonl transcripts found under {root} (resolved from " +
+              "this project's directory) — continuing with an empty " +
+              "corpus rather than failing the workflow at this step. If " +
+              "Claude Code HAS actually been run here, check that path " +
+              "exists first — a stale slug is the usual cause, not a " +
+              "missing history. Only pass root explicitly once you have " +
+              "confirmed transcripts really do live somewhere else: it " +
+              "reads every command an agent has ever run, so widening it " +
+              "to another project should stay a deliberate, rare choice.",
+            { root },
+          );
+        }
+        ctx.logger.info(
+          "Scanned {n} transcript(s), {lines} line(s) ({unparsed} unparsed); " +
+            "{refused} command(s) could not be confidently tokenised and were dropped" +
+            "{boundNote}",
+          {
+            n: corpus.transcriptsScanned,
+            lines: corpus.linesScanned,
+            unparsed: corpus.linesUnparsed,
+            refused: corpus.refusedCount,
+            boundNote: corpus.pathBoundHits > 0
+              ? `; ${corpus.pathBoundHits} invocation(s) hit the subcommand-path bound (reported, not silently truncated)`
+              : "",
+          },
+        );
+
+        const root2 = workRoot(ctx.repoDir, g);
+        await ensureDir(root2);
+        // corpus.json carries verbatim argv, raw command text, and denial
+        // samples — real tokens and private paths can appear in any of them —
+        // so both the directory and the file are tightened past ensureDir's
+        // and writeTextFile's defaults (0755/0644, world-readable).
+        await tightenPerms(root2, 0o700, ctx.logger, "the workspace root");
+        const corpusPath = `${root2}/corpus.json`;
+        // `mode` at creation closes the write-then-chmod race for a
+        // brand-new file — it never exists at the wider default even for
+        // the instant between write and chmod. It does NOT change the mode
+        // of a file that already exists (a stale 0666 corpus.json from
+        // before this fix, say), which is exactly why the explicit
+        // `tightenPerms` call still follows it (finding N7).
+        await Deno.writeTextFile(corpusPath, JSON.stringify(corpus, null, 2), {
+          mode: 0o600,
+        });
+        await tightenPerms(corpusPath, 0o600, ctx.logger, "corpus.json");
+
+        const ranked = rankByTool(corpus.invocations);
+        const toolsSeen = [...ranked.keys()].sort();
+        const wanted = args.tools.length > 0
+          ? [...new Set(args.tools.map(baseName))]
+          : toolsSeen;
+
+        const handles = [
+          await ctx.writeResource("corpus", "corpus", {
+            generatedAt: corpus.generatedAt,
+            root: corpus.root,
+            windowDays: corpus.windowDays,
+            transcriptsScanned: corpus.transcriptsScanned,
+            linesScanned: corpus.linesScanned,
+            linesUnparsed: corpus.linesUnparsed,
+            refusedCount: corpus.refusedCount,
+            pathBoundHits: corpus.pathBoundHits,
+            invocationCount: corpus.invocations.length,
+            denialCount: corpus.denials.length,
+            toolsSeen,
+            corpusPath,
+            truncationBiasNote: TRUNCATION_BIAS_NOTE,
+            nextAction:
+              `Corpus written to ${corpusPath}, shared across every tool this ` +
+              `machine has run — a later tally re-reads transcripts, but a ` +
+              `later score does not. Run score once a tool has a review.yaml.` +
+              (corpus.pathBoundHits > 0
+                ? ` ${corpus.pathBoundHits} invocation(s) hit the ` +
+                  `subcommand-path bound — a reported condition, not a ` +
+                  `silent truncation, but worth reading before trusting the ` +
+                  `ranked queue for those tools.`
+                : "") + ` ${TRUNCATION_BIAS_NOTE}`,
+          }),
+        ];
+
+        for (const tool of wanted) {
+          const entries = ranked.get(tool) ?? [];
+          const denials = rankDenials(corpus.denials, tool);
+          const dir = workspace(ctx.repoDir, g, tool);
+          await ensureDir(dir);
+          // Command paths here can carry attacker-influenced free text past
+          // N3's own mitigation (a whitespace-bearing token is excluded, but
+          // an unquoted argument-shaped one is not) — tightened past
+          // ensureDir's and writeTextFile's defaults for the same reason
+          // corpus.json is (finding N7).
+          await tightenPerms(dir, 0o700, ctx.logger, `${tool}'s workspace`);
+          const profilePath = `${dir}/usage-profile.json`;
+          await Deno.writeTextFile(
+            profilePath,
+            JSON.stringify(
+              {
+                cli: tool,
+                generatedAt: corpus.generatedAt,
+                windowDays: corpus.windowDays,
+                commands: entries,
+                denials,
+              },
+              null,
+              2,
+            ),
+            { mode: 0o600 },
+          );
+          await tightenPerms(
+            profilePath,
+            0o600,
+            ctx.logger,
+            "usage-profile.json",
+          );
+          const totalInvocations = entries.reduce((s, e) => s + e.count, 0);
+          ctx.logger.info(
+            "{tool}: {commands} distinct command(s), {total} invocation(s), {denied} denied",
+            {
+              tool,
+              commands: entries.length,
+              total: totalInvocations,
+              denied: denials.length,
+            },
+          );
+          handles.push(
+            await ctx.writeResource(
+              "usageProfile",
+              dataName("usage-profile", tool),
+              {
+                cli: tool,
+                generatedAt: corpus.generatedAt,
+                windowDays: corpus.windowDays,
+                commandCount: entries.length,
+                totalInvocations,
+                denialCount: denials.length,
+                profilePath,
+                top: entries.slice(0, 25),
+                nextAction:
+                  `${profilePath} is ${tool}'s usage queue, ranked by ` +
+                  `frequency — scope discover and classify to it rather than ` +
+                  `the tool's whole surface. Frequency is a coarse proxy, not ` +
+                  `a priority ranking: a command run once that blocks an ` +
+                  `unattended run may matter more than one run fifty times ` +
+                  `interactively.`,
+              },
+            ),
+          );
+        }
+
+        return { dataHandles: handles };
+      },
+    },
+
+    // -----------------------------------------------------------------------
+    score: {
+      description:
+        "Score an approved review file against the tallied corpus: false refusals (the babysitting number), leakage (a wrapper exceeding its own segment's ceiling), an optional coarse settings.json prompt estimate, and classifier agreement against the hand-labelled fixture. Deterministic — spawns nothing, runs nothing.",
+      arguments: ScoreArgs,
+      execute: async (
+        args: ScoreArgs,
+        ctx: {
+          globalArgs: GlobalArgs;
+          repoDir: string;
+          logger: Logger;
+          writeResource: WriteResource;
+          extensionFile: (path: string) => string;
+        },
+      ) => {
+        const g = ctx.globalArgs;
+        const dir = workspace(ctx.repoDir, g, args.cli);
+        const reviewPath = `${dir}/review.yaml`;
+        let review: Review;
+        try {
+          review = fromYaml(await Deno.readTextFile(reviewPath));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          throw new Error(`could not read ${reviewPath}: ${reason}`);
+        }
+
+        const corpus = await readJson<{ invocations: Invocation[] }>(
+          `${workRoot(ctx.repoDir, g)}/corpus.json`,
+          "corpus — run tally first",
+        );
+        const name = baseName(review.cli);
+        const scoped = corpus.invocations.filter((i) => i.binary === name);
+
+        // Read settings once, up front: it decides both which wrappers
+        // `falseRefusals` treats as unattended (Decision A — a real ruleset
+        // beats guessing from the segment name) and the coarse `wouldPrompt`
+        // estimate below. A missing or malformed file is a config mistake,
+        // not an internal error, so it gets a message naming the path and
+        // the reason rather than a bare NotFound or SyntaxError.
+        let settingsRuleset: SettingsRuleset | undefined;
+        if (args.settingsPath !== "") {
+          // The unwrap used to sit outside this try/catch — a settings file
+          // whose content parses to valid JSON that is not an object (`null`,
+          // a bare number, an array) threw a bare, uncaught TypeError from
+          // `raw.permissions`, exactly what this block exists to prevent
+          // (finding N8). Reading `raw` as `unknown` and narrowing inside the
+          // same try closes that.
+          try {
+            const raw: unknown = JSON.parse(
+              await Deno.readTextFile(args.settingsPath),
+            );
+            const asObject = raw && typeof raw === "object"
+              ? raw as { permissions?: SettingsRuleset } & SettingsRuleset
+              : undefined;
+            settingsRuleset = asObject?.permissions ?? asObject;
+          } catch (error) {
+            const reason = error instanceof Error
+              ? error.message
+              : String(error);
+            throw new Error(
+              `could not read settings from ${args.settingsPath}: ${reason}`,
+            );
+          }
+        }
+
+        const { mode: falseRefusalMode, refusals, grantsNoWrapper } =
+          falseRefusals(
+            review,
+            corpus.invocations,
+            settingsRuleset,
+          );
+        const leaks = leakage(review, corpus.invocations);
+        const refusalOccurrences = refusals.reduce(
+          (sum, r) => sum + r.invocation.count,
+          0,
+        );
+
+        let promptEstimate = {
+          used: false,
+          certainlyAllowedCount: 0,
+          wouldPromptCount: 0,
+        };
+        if (settingsRuleset) {
+          const estimates = wouldPrompt(settingsRuleset, scoped);
+          promptEstimate = {
+            used: true,
+            certainlyAllowedCount: estimates.filter((e) =>
+              e.certainlyAllowed
+            ).length,
+            wouldPromptCount: estimates.filter((e) =>
+              !e.certainlyAllowed
+            ).length,
+          };
+        }
+
+        const labelled = await readJson<
+          { entries: Parameters<typeof agreement>[1] }
+        >(
+          ctx.extensionFile("testdata/labelled.json"),
+          "labelled fixture",
+        );
+        const agreementResult = agreement(review, labelled.entries);
+
+        ctx.logger.info(
+          "{cli}: {refusals} false refusal(s) ({occurrences} occurrence(s), " +
+            "{mode} mode), {leaks} leak(s) out of {n} corpus invocation(s)",
+          {
+            cli: review.cli,
+            refusals: refusals.length,
+            occurrences: refusalOccurrences,
+            mode: falseRefusalMode,
+            leaks: leaks.length,
+            n: scoped.length,
+          },
+        );
+        if (leaks.length > 0) {
+          ctx.logger.warning(
+            "{count} invocation(s) are admitted by a wrapper above its " +
+              "segment's own ceiling — the failure fail-closed exists to prevent",
+            { count: leaks.length },
+          );
+        }
+        if (agreementResult.mismatches.length > 0) {
+          ctx.logger.warning(
+            "{count} labelled command(s) are tiered differently than the fixture says",
+            { count: agreementResult.mismatches.length },
+          );
+        }
+
+        const handle = await ctx.writeResource(
+          "score",
+          dataName("score", review.cli),
+          {
+            cli: review.cli,
+            scoredAt: new Date().toISOString(),
+            corpusInvocationCount: scoped.length,
+            falseRefusalMode,
+            settingsGrantsNoWrapper: grantsNoWrapper,
+            truncationBiasNote: TRUNCATION_BIAS_NOTE,
+            falseRefusalCount: refusals.length,
+            falseRefusalOccurrences: refusalOccurrences,
+            falseRefusalSamples: refusals.slice(0, 20).map((r) => ({
+              command: [r.invocation.binary, ...r.invocation.argv].join(" "),
+              count: r.invocation.count,
+            })),
+            leakageCount: leaks.length,
+            leakageSamples: leaks.slice(0, 20).map((l) => ({
+              wrapper: l.wrapper,
+              command: [l.invocation.binary, ...l.invocation.argv].join(" "),
+              commandTier: l.commandTier,
+              segmentCeiling: l.segmentCeiling,
+            })),
+            promptEstimate,
+            agreement: agreementResult,
+            nextAction: leaks.length > 0
+              ? `Fix ${reviewPath} before trusting any wrapper generated ` +
+                `from it: leakage means a wrapper admits a command tiered ` +
+                `above what its own segment promises.`
+              : grantsNoWrapper
+              ? `settingsPath grants not a single wrapper by name — before ` +
+                `trusting these ${refusalOccurrences} occurrence(s) as the ` +
+                `babysitting count, confirm settingsPath actually names ` +
+                `the aliases fka generated (e.g. ` +
+                `"${review.prefix}-safe-${baseName(review.cli)}"), not ` +
+                `fka's own per-segment snippet — Claude Code's matching is ` +
+                `token-bounded, so "Bash(${review.prefix}-safe:*)" does ` +
+                `not cover a hyphenated alias name. This is a settings ` +
+                `mismatch to check, not a claim that ${reviewPath} is ` +
+                `unsafe. ${TRUNCATION_BIAS_NOTE}`
+              : refusals.length > 0
+              ? `${refusalOccurrences} corpus invocation occurrence(s) ` +
+                `(${refusals.length} distinct command shape(s)) still cost ` +
+                `a prompt or a refusal, decided in ${falseRefusalMode} mode` +
+                (falseRefusalMode === "segment-bucket"
+                  ? " (pass settingsPath for the real answer — a pinned " +
+                    "alias an operator has actually allowed does not show " +
+                    "up in this fallback)"
+                  : "") +
+                `. Add the missing ones to ${reviewPath}, or accept the ` +
+                `babysitting — this is the number that measures it. ` +
+                TRUNCATION_BIAS_NOTE
+              : `No false refusals (${falseRefusalMode} mode) and no ` +
+                `leakage against this corpus. Run verify before trusting ` +
+                `the wrappers on disk, and re-run tally periodically — ` +
+                `this score is only as current as the corpus it read. ` +
+                TRUNCATION_BIAS_NOTE,
+          },
         );
         return { dataHandles: [handle] };
       },
