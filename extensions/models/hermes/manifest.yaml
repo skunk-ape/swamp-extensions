@@ -1,0 +1,62 @@
+manifestVersion: 1
+name: "@skunk-ape/hermes"
+version: 2026.09.22.1
+description: |
+  Run Hermes agents on macOS or Linux, each one confined to its own directory by
+  a nono sandbox.
+
+  One bot is one declaration. The `@skunk-ape/hermes/bot` model type renders its
+  sandbox profile, environment library, entrypoints and service definitions from
+  that declaration, builds the workdir it runs in, loads it into the host's
+  service manager, and probes the running sandbox to report what it actually
+  enforces.
+
+  | Method | What it does |
+  | --- | --- |
+  | `scaffold` | Write a starter declaration for a new bot. |
+  | `render` | Write the sandbox profile, environment library, entrypoints and service definitions. |
+  | `provision` | Build the workdir: checkout, interpreter, venv, memory tooling, starter config. |
+  | `verify` | Probe the sandbox from inside and report what it enforces. |
+  | `install` / `uninstall` | Load and unload the bot's services. |
+  | `status` / `restart` | What is running, and put it back. |
+  | `snapshot` / `restore` | Move a bot to another machine without losing its memory. |
+
+  The `@skunk-ape/hermes/fleet` report renders one table across every bot in an
+  audit run, including a side-by-side comparison of their boundaries.
+
+  Two platforms, one declaration. Services are launchd user agents on macOS and
+  systemd user units on Linux; both unit files are rendered on both platforms so
+  the drift check stays meaningful on either machine. The confinement is nono —
+  Seatbelt on macOS, Landlock on Linux, where enforcing a `network` block needs
+  kernel 6.7+ and `install` refuses below it.
+
+  See README.md for the declaration format, the sandbox fields, and what each
+  verification outcome means.
+
+repository: "https://github.com/skunk-ape/swamp-extensions"
+paths:
+  base: manifest
+models:
+  - hermes.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - fleet.ts
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - hermes
+  - agent
+  - sandbox
+  - nono
+  - macos
+  - linux
+  - launchd
+  - systemd
+  - migration
+  - security
+dependencies: []

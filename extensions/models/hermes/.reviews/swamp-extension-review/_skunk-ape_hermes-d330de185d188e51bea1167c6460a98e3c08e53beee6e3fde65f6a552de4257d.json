@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.09.09.2",
+  "reviewedAt": "2026-09-10T01:16:00Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "The type never handles a secret value. secretKeys.anthropic and secretKeys.telegram name KEYS in a vault; the generated entrypoint resolves them at launch via `swamp vault read-secret` into an exported env var in process memory, and nothing is written to disk. The push scanner flags the default value \"telegram-bot-token\" as looking like a secret; it is a key name, so .meta({ sensitive: true }) would mark a non-secret as sensitive rather than fix anything. One vault per bot is enforced by the schema, and no sandboxed agent can read the repository the vault lives in."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Every method logs progress and completion with structured placeholders ({slug}, {label}, {path}), never string interpolation. warning is reserved for real degradation: drift found in check mode, a service that failed to load, a probe that could not bind its listener. No secret values pass through this code at all, so none can be logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Messages name the operation, the bot and the remedy (an inconsistent declaration lists each problem; a failed clone/sync includes the last lines of stderr). Two methods deliberately write their resource BEFORE throwing: install records the launchd state it achieved, and verify records the checks that failed. The data written is complete and accurate, and it is the evidence the failure exists to produce. install also refuses to abort its loop on one failed bootstrap, because aborting would leave earlier services booted out and never restarted."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "79 tests. _lib is pure and tested directly; hermes_test.ts covers the method bodies over temp directories, including failure paths: render refusing a declaration whose MCP port the profile never opened, scaffold refusing to overwrite a filled-in declaration (and keeping the model id when forced), and provision --check reporting a workdir that does not exist without creating it. The two bugs found in the first real provision run both lived in method bodies, which is why that file exists."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "render, provision and install are all re-runnable. provision skips every step whose result it finds and reports `complete` when nothing had to be done — verified on a throwaway bot: 12 steps did work on the first run, 0 on the second. Interruption leaves a partially built workdir that a re-run completes rather than a broken one, because each step's presence test is the artifact itself (a .git dir, an importable hermes_cli, a bound interpreter). uninstall tolerates a service with no plist installed."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "No HTTP client. External interaction is subprocesses (launchctl, git, uv, nono, funes) and a loopback TCP connect test, and every subprocess result is checked by exit code with stderr surfaced."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "verify closes its probe listener and removes the generated probe script in a finally block, on every path. provision removes the temporary empty XDG_CONFIG dir before it decides whether to throw. Nothing here creates a cloud resource; what it creates is a workdir, and uninstall deliberately never touches it."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Fixed during this review: the README's example declaration carried a real Telegram user id and a real home-directory path. Both are now placeholders (100000001, /Users/example/notes-vault). No real identifiers remain in README, manifest or sources; the loopback ports named in the verification note are localhost ports, not topology. Test fixtures use /Users/x/agents/demo."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Plain z.object throughout, no .passthrough(). BotSchema is deliberately unrefined — swamp calls .partial() on globalArguments and zod refuses that on a refined object — so cross-field rules live in crossCheck() and every method that acts on a declaration calls it."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "All four specs are configured: rendered infinite/20 and provisioned infinite/20 (what a runtime is made of should outlive a retention window), verification 90d/20, status 30d/50."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "No sync method. The lifecycle is covered — scaffold/provision/render/install create, render rewrites, uninstall removes, status observes — and `render --input check=true` is a genuine drift detector in the create direction. What is missing is reconciliation the other way: nothing reads a hand-edited profile or a live launchd job back into the declaration. Deliberate for now (a generated file edited by hand is a decision a person should make, not one a method should absorb) but it is the honest gap."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "issue",
+      "note": "The mutating methods validate inline and throw before acting — install renders every plist and refuses on any unresolved placeholder before bootstrapping any of them; provision and render both run crossCheck() first — but none of this is expressed as labelled pre-flight checks, so a caller cannot skip or select them. Not a correctness problem; it is a missing affordance."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "One instance per spec per bot, named <spec>-<slug>. The four writers of the status spec all go through a single writeStatus() so the shape cannot diverge between install, uninstall, status and restart."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No method reads stored state back — each measures the host directly, which is the point of a method that reports what is actually running. Cross-model reading happens in the workflow-scoped fleet report through the report API, never dataRepository."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "First publish: the registry has no version of this extension, so 2026.09.09.2 has no predecessor to migrate from. The model version moved 2026.09.09.1 to .2 locally when the runtime block was added, and that block is fully defaulted, so declarations written against .1 parse unchanged."
+    }
+  ]
+}
