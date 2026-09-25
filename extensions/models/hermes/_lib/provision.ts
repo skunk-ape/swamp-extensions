@@ -349,6 +349,7 @@ export function decideFile(
 export function uvSteps(
   agentDir: string,
   pythonVersion: string,
+  extras: string[] = [],
 ): { install: string[]; venv: string[]; sync: string[] } {
   return {
     // `--no-bin` is not a nicety. Without it `uv python install` also writes a
@@ -369,8 +370,54 @@ export function uvSteps(
     // service with no chat platform, logging "requirements not met" on every
     // start. Every bot this model provisions enables Telegram, so every bot
     // gets it from the lock, on the host, before the sandbox ever starts.
-    sync: ["sync", "--extra", "all", "--extra", "messaging", "--locked"],
+    //
+    // `extras` are the declaration's own: the SDK behind each model provider
+    // it names, which upstream lazy-installs the same way (providerDeps).
+    sync: [
+      "sync",
+      "--extra",
+      "all",
+      "--extra",
+      "messaging",
+      ...extras.flatMap((e) => ["--extra", e]),
+      "--locked",
+    ],
   };
+}
+
+/**
+ * Model providers whose SDK upstream installs from PyPI on first use rather
+ * than shipping in `[all]`: the uv.lock extra that pins it, and the module
+ * that proves it is there. Mirrors the `provider.*` entries in the checkout's
+ * `tools/lazy_deps.py`. A provider absent here needs nothing beyond `[all]`
+ * (openai-codex rides on the core `openai` dependency).
+ *
+ * After the Linux cutover Stuart, provider `anthropic` behind a four-host
+ * allowlist, failed every turn at agent construction — "The 'anthropic'
+ * package is required" — before its fallback provider was ever consulted.
+ */
+export const PROVIDER_DEPS: Record<string, { extra: string; module: string }> =
+  {
+    anthropic: { extra: "anthropic", module: "anthropic" },
+    bedrock: { extra: "bedrock", module: "boto3" },
+    vertex: { extra: "vertex", module: "google.auth" },
+  };
+
+/** The declared providers, primary then fallbacks, deduplicated. */
+function declaredProviders(b: Bot): string[] {
+  return [
+    ...new Set([
+      b.runtime.provider,
+      ...b.runtime.fallback.map((f) => f.provider),
+    ]),
+  ];
+}
+
+/** The uv.lock extras this bot's declared providers need. */
+export function providerExtras(b: Bot): string[] {
+  return declaredProviders(b).flatMap((p) =>
+    PROVIDER_DEPS[p] ? [PROVIDER_DEPS[p].extra] : []
+  );
 }
 
 /**
@@ -398,10 +445,19 @@ export function refSteps(ref: string): {
  * `hermes_cli` proves the project is installed; it does not prove the gateway
  * can reach anyone. The platform adapter is imported lazily and installed on
  * first use, so a venv without it passes every other test here and then starts
- * a gateway that talks to nothing. Each entry is one that the provisioned
- * config.yaml needs at startup.
+ * a gateway that talks to nothing. The same is true of a provider SDK, except
+ * the gateway connects fine and then fails every turn. Each entry is one that
+ * the provisioned config.yaml needs.
  */
-export const REQUIRED_IMPORTS = ["hermes_cli", "telegram"];
+export function requiredImports(b: Bot): string[] {
+  return [
+    "hermes_cli",
+    "telegram",
+    ...declaredProviders(b).flatMap((p) =>
+      PROVIDER_DEPS[p] ? [PROVIDER_DEPS[p].module] : []
+    ),
+  ];
+}
 
 /** The environment every uv step runs with. Each variable keeps a write inside
  * the workdir that would otherwise land in a shared cache on the host. */

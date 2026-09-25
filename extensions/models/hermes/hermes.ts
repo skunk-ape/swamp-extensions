@@ -92,8 +92,9 @@ import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
   decideFile,
   directories,
+  providerExtras,
   refSteps,
-  REQUIRED_IMPORTS,
+  requiredImports,
   resolvedWorkdir,
   uvEnv,
   uvSteps,
@@ -1111,7 +1112,7 @@ export const model = {
           );
         }
 
-        const uv = uvSteps(agentDir, args.pythonVersion);
+        const uv = uvSteps(agentDir, args.pythonVersion, providerExtras(b));
 
         // -- the interpreter, INSIDE the workdir ---------------------------
         // The one that bites on a fresh install. Copying a uv interpreter in
@@ -1188,7 +1189,8 @@ export const model = {
         // Each module is probed on its own so the report names what is
         // missing, not merely that something is.
         const unimportable: string[] = [];
-        for (const mod of REQUIRED_IMPORTS) {
+        const mustImport = requiredImports(b);
+        for (const mod of mustImport) {
           const ok = await exists(venvPy) &&
             (await run(venvPy, ["-c", `import ${mod}`], ctx.signal, {
                 env,
@@ -1204,7 +1206,7 @@ export const model = {
           say(
             "dependencies",
             "present",
-            `${REQUIRED_IMPORTS.join(", ")} import`,
+            `${mustImport.join(", ")} import`,
           );
         } else if (args.skipDeps) {
           say("dependencies", "skipped", "skipDeps");

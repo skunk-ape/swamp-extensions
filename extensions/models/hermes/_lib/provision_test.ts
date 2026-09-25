@@ -6,8 +6,9 @@ import {
   decideFile,
   directories,
   indexHook,
+  providerExtras,
   refSteps,
-  REQUIRED_IMPORTS,
+  requiredImports,
   resolvedWorkdir,
   soulMd,
   uvEnv,
@@ -87,8 +88,43 @@ Deno.test("the chat platform comes from the lock, not a first-run pip install", 
   // The config provision writes enables Telegram, so the probe must prove the
   // venv can load it, or a venv missing it reports complete.
   assert(configYaml(bot(), WD).includes("telegram:"));
-  assert(REQUIRED_IMPORTS.includes("telegram"));
-  assert(REQUIRED_IMPORTS.includes("hermes_cli"));
+  assert(requiredImports(bot()).includes("telegram"));
+  assert(requiredImports(bot()).includes("hermes_cli"));
+});
+
+// Stuart, provider anthropic behind a four-host allowlist, connected to
+// Telegram and then failed every turn: upstream lazy-installs the provider SDK
+// from PyPI, which the allowlist cannot reach.
+Deno.test("each declared provider's SDK comes from the lock and must import", () => {
+  const b = bot({
+    runtime: {
+      provider: "anthropic",
+      model: "claude-opus-5",
+      fallback: [
+        { provider: "openai-codex", model: "gpt-5.6-sol" },
+        { provider: "anthropic", model: "claude-sonnet-5" },
+      ],
+    },
+  });
+  // Deduplicated, and a provider on core dependencies adds nothing.
+  assertEquals(providerExtras(b), ["anthropic"]);
+  assert(requiredImports(b).includes("anthropic"));
+  const s = uvSteps(`${WD}/hermes/hermes-agent`, "3.11", providerExtras(b));
+  const extras = s.sync.flatMap((a, i) =>
+    s.sync[i - 1] === "--extra" ? [a] : []
+  );
+  assertEquals(extras, ["all", "messaging", "anthropic"]);
+  assertEquals(s.sync.at(-1), "--locked");
+  // A fallback counts: it is only useful if it can be constructed.
+  const viaFallback = bot({
+    runtime: {
+      provider: "openai-codex",
+      model: "gpt-5.6-sol",
+      fallback: [{ provider: "bedrock", model: "x" }],
+    },
+  });
+  assertEquals(providerExtras(viaFallback), ["bedrock"]);
+  assert(requiredImports(viaFallback).includes("boto3"));
 });
 
 // A ref edit in the declaration used to reach no existing workdir: provision
