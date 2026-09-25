@@ -331,7 +331,8 @@ ${
   # setting them before nono runs makes it refuse the grant ("overlaps protected
   # nono state root") and lose its profiles.
   mkdir -p "$WORKDIR/hermes/xdg/state" "$WORKDIR/hermes/xdg/data" \\
-           "$WORKDIR/hermes/xdg/cache" "$WORKDIR/hermes/xdg/config"
+           "$WORKDIR/hermes/xdg/cache" "$WORKDIR/hermes/xdg/config" \\
+           "$WORKDIR/hermes/cache/scratch"
 }
 `;
   return {
@@ -353,6 +354,16 @@ ${
  * The XDG exports happen INSIDE here rather than in the launcher because nono
  * keeps its own state root under $XDG_STATE_HOME/nono: setting them before nono
  * runs makes it refuse the grant and lose its profiles.
+ *
+ * TMPDIR is here for the same reason the XDG ones are: the default is outside
+ * the workdir. macOS hands every process a per-user TMPDIR; Linux leaves it
+ * unset, and SQLite then walks /var/tmp, /usr/tmp, /tmp and takes the first
+ * that passes access(2) — which Landlock does not mediate — so it picks
+ * /var/tmp, is refused at open, and reports "unable to open database file".
+ * Only turns large enough to spill to a temp file fail, so after the Linux
+ * cutover Apalone intermittently dropped turns with "session storage could not
+ * be written". `hermes/cache/scratch` is where upstream points TMPDIR when it
+ * is unset, so an upgrade does not move it.
  */
 function inner(argv: string): string {
   return `/bin/sh -c '
@@ -361,6 +372,7 @@ function inner(argv: string): string {
       export XDG_DATA_HOME="$W/hermes/xdg/data"
       export XDG_CACHE_HOME="$W/hermes/xdg/cache"
       export XDG_CONFIG_HOME="$W/hermes/xdg/config"
+      export TMPDIR="$W/hermes/cache/scratch"
       exec "$W/hermes/hermes-agent/venv/bin/python" -m hermes_cli.main ${argv}
     '`;
 }

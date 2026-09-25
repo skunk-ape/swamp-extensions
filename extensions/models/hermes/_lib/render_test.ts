@@ -11,6 +11,7 @@ import {
   renderUnit,
 } from "./render.ts";
 import { unresolvedPlaceholders } from "./proc.ts";
+import { directories } from "./provision.ts";
 
 function bot(over: Record<string, unknown> = {}): Bot {
   return BotSchema.parse({
@@ -90,6 +91,32 @@ Deno.test("all four XDG homes are redirected inside the inner shell", () => {
     const at = c.indexOf(`export ${v}=`);
     assert(at > innerStart, `${v} is exported outside the inner shell`);
   }
+});
+
+// Linux leaves TMPDIR unset, and SQLite then picks /var/tmp — which passes
+// access(2) under Landlock and is refused at open, so session writes that
+// spill to a temp file fail with "unable to open database file".
+Deno.test("TMPDIR points inside the workdir, and the launcher creates it", () => {
+  for (
+    const f of [
+      renderGateway(bot()),
+      renderChat(
+        bot({
+          entrypoints: ["gateway", "chat"],
+          chat: { workIn: "$HOME/notes", workInEnvVar: "DEMO_CHAT_DIR" },
+        }),
+      ),
+    ]
+  ) {
+    const c = f.content;
+    const at = c.indexOf('export TMPDIR="$W/hermes/cache/scratch"');
+    assert(
+      at > c.indexOf("/bin/sh -c"),
+      `${f.path}: TMPDIR not in the inner shell`,
+    );
+  }
+  assertStringIncludes(renderEnvLib(bot()).content, "hermes/cache/scratch");
+  assert(directories(bot()).includes("hermes/cache/scratch"));
 });
 
 // nono keeps its own state root under $XDG_STATE_HOME/nono, so exporting these

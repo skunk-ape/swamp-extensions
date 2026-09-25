@@ -75,6 +75,9 @@ export function directories(_b: Bot): string[] {
     "hermes",
     "hermes/cache/uv",
     "hermes/cache/npm",
+    // TMPDIR inside the sandbox. Without it SQLite's temp files land in
+    // /var/tmp, which the sandbox refuses.
+    "hermes/cache/scratch",
     "hermes/python",
     "hermes/hooks",
     "hermes/memories",
