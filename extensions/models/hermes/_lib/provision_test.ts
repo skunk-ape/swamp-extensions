@@ -6,6 +6,7 @@ import {
   decideFile,
   directories,
   indexHook,
+  REQUIRED_IMPORTS,
   resolvedWorkdir,
   soulMd,
   uvEnv,
@@ -71,6 +72,22 @@ Deno.test("the dependency sync is locked, never re-resolved", () => {
   assert(s.sync.includes("--extra"));
   assertEquals(s.install, ["python", "install", "--no-bin", "3.11"]);
   assert(s.venv.includes("--python"));
+});
+
+Deno.test("the chat platform comes from the lock, not a first-run pip install", () => {
+  // Upstream lazy-installs Telegram from PyPI at gateway start. A bot with a
+  // named egress allowlist cannot reach PyPI, so without this the gateway runs
+  // with no platform at all.
+  const s = uvSteps(`${WD}/hermes/hermes-agent`, "3.11");
+  const extras = s.sync.flatMap((a, i) =>
+    s.sync[i - 1] === "--extra" ? [a] : []
+  );
+  assertEquals(extras, ["all", "messaging"]);
+  // The config provision writes enables Telegram, so the probe must prove the
+  // venv can load it, or a venv missing it reports complete.
+  assert(configYaml(bot(), WD).includes("telegram:"));
+  assert(REQUIRED_IMPORTS.includes("telegram"));
+  assert(REQUIRED_IMPORTS.includes("hermes_cli"));
 });
 
 Deno.test("config.yaml reaches MCPs over loopback and never spawns them", () => {
@@ -183,11 +200,17 @@ Deno.test("provision keeps what it found and owns what it produced", () => {
 
   // A config.yaml that was already on disk before this run is state Hermes or
   // a person owns, whatever it says.
-  assertEquals(decideFile(config, "model:\n  provider: openai\n", true), "kept");
+  assertEquals(
+    decideFile(config, "model:\n  provider: openai\n", true),
+    "kept",
+  );
 
   // A config.yaml that appeared DURING this run is boilerplate one of our own
   // steps caused — `funes add hermes` writes one — so the declaration wins.
-  assertEquals(decideFile(config, "mcp_servers:\n  funes:\n", false), "replaced");
+  assertEquals(
+    decideFile(config, "mcp_servers:\n  funes:\n", false),
+    "replaced",
+  );
 
   // Derived files track the template in both cases.
   assertEquals(decideFile(hook, "#!/bin/sh\nold\n", true), "updated");

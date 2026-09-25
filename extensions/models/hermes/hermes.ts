@@ -92,6 +92,7 @@ import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
   decideFile,
   directories,
+  REQUIRED_IMPORTS,
   resolvedWorkdir,
   uvEnv,
   uvSteps,
@@ -1127,18 +1128,32 @@ export const model = {
         // first probe run reported dependencies "present" one line after
         // creating an empty venv. From outside, only an installed project
         // answers.
-        const imports = await exists(venvPy)
-          ? (await run(venvPy, ["-c", "import hermes_cli"], ctx.signal, {
-            env,
-            cwd: workdir,
-          })).code === 0
-          : false;
-        if (imports) {
-          say("dependencies", "present", "hermes_cli imports");
+        //
+        // Each module is probed on its own so the report names what is
+        // missing, not merely that something is.
+        const unimportable: string[] = [];
+        for (const mod of REQUIRED_IMPORTS) {
+          const ok = await exists(venvPy) &&
+            (await run(venvPy, ["-c", `import ${mod}`], ctx.signal, {
+                env,
+                cwd: workdir,
+              })).code === 0;
+          if (!ok) unimportable.push(mod);
+        }
+        const syncCmd = `uv ${uv.sync.join(" ")}`;
+        if (unimportable.length === 0) {
+          say(
+            "dependencies",
+            "present",
+            `${REQUIRED_IMPORTS.join(", ")} import`,
+          );
         } else if (args.skipDeps) {
           say("dependencies", "skipped", "skipDeps");
         } else if (
-          !wouldChange("dependencies", "uv sync --extra all --locked")
+          !wouldChange(
+            "dependencies",
+            `${syncCmd} (cannot import ${unimportable.join(", ")})`,
+          )
         ) {
           // `--locked` reproduces the checkout's uv.lock instead of
           // re-resolving, which is the difference between two bots on one ref
@@ -1169,7 +1184,7 @@ export const model = {
               }`,
             );
           }
-          say("dependencies", "created", "uv sync --extra all --locked");
+          say("dependencies", "created", syncCmd);
         }
 
         let venvPythonVersion: string | null = null;

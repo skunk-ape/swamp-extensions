@@ -359,9 +359,27 @@ export function uvSteps(
     // way, for a uv that ever changes what the flag means.
     install: ["python", "install", "--no-bin", pythonVersion],
     venv: ["venv", `${agentDir}/venv`, "--python", pythonVersion],
-    sync: ["sync", "--extra", "all", "--locked"],
+    // `messaging` because upstream took the Telegram adapter out of `[all]`
+    // and now pip-installs it the first time the gateway starts. That works
+    // for a bot with unrestricted egress and fails for one with a named
+    // allowlist, which has no route to PyPI: Stuart ran for a day as a healthy
+    // service with no chat platform, logging "requirements not met" on every
+    // start. Every bot this model provisions enables Telegram, so every bot
+    // gets it from the lock, on the host, before the sandbox ever starts.
+    sync: ["sync", "--extra", "all", "--extra", "messaging", "--locked"],
   };
 }
+
+/**
+ * Modules the venv must import before its dependencies count as present.
+ *
+ * `hermes_cli` proves the project is installed; it does not prove the gateway
+ * can reach anyone. The platform adapter is imported lazily and installed on
+ * first use, so a venv without it passes every other test here and then starts
+ * a gateway that talks to nothing. Each entry is one that the provisioned
+ * config.yaml needs at startup.
+ */
+export const REQUIRED_IMPORTS = ["hermes_cli", "telegram"];
 
 /** The environment every uv step runs with. Each variable keeps a write inside
  * the workdir that would otherwise land in a shared cache on the host. */
