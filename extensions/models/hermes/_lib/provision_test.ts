@@ -6,6 +6,7 @@ import {
   decideFile,
   directories,
   indexHook,
+  refSteps,
   REQUIRED_IMPORTS,
   resolvedWorkdir,
   soulMd,
@@ -88,6 +89,28 @@ Deno.test("the chat platform comes from the lock, not a first-run pip install", 
   assert(configYaml(bot(), WD).includes("telegram:"));
   assert(REQUIRED_IMPORTS.includes("telegram"));
   assert(REQUIRED_IMPORTS.includes("hermes_cli"));
+});
+
+// A ref edit in the declaration used to reach no existing workdir: provision
+// saw a checkout, called it present, and --check reported complete.
+Deno.test("moving a checkout fetches exactly the declared tag, shallow", () => {
+  const s = refSteps("fleet-2026-09-25");
+  assertEquals(s.fetch, [
+    "fetch",
+    "--depth",
+    "1",
+    "--no-tags",
+    "origin",
+    "tag",
+    "fleet-2026-09-25",
+  ]);
+  // Detached at the tag, never a branch tip that could move under the fleet.
+  assertEquals(s.checkout, [
+    "checkout",
+    "--quiet",
+    "--detach",
+    "refs/tags/fleet-2026-09-25",
+  ]);
 });
 
 Deno.test("config.yaml reaches MCPs over loopback and never spawns them", () => {

@@ -92,6 +92,7 @@ import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
   decideFile,
   directories,
+  refSteps,
   REQUIRED_IMPORTS,
   resolvedWorkdir,
   uvEnv,
@@ -1006,18 +1007,73 @@ export const model = {
 
         // -- the checkout --------------------------------------------------
         let head: string | null = null;
+        // True when the checkout was not already on the declared ref — moved
+        // by this run, or (in check mode) due to be. The old venv still imports
+        // hermes_cli after a move, so the import test below cannot be what
+        // decides whether dependencies need a sync.
+        let refMoved = false;
+        const git = async (argv: string[]) =>
+          await run("git", ["-C", agentDir, ...argv], ctx.signal);
+        const gitFail = (what: string, r: { stdout: string; stderr: string }) =>
+          new Error(
+            `${what} failed: ${
+              (r.stderr || r.stdout).trim().split("\n").slice(-3).join(" ")
+            }`,
+          );
         if (await exists(`${agentDir}/.git`)) {
-          const r = await run(
-            "git",
-            ["-C", agentDir, "rev-parse", "HEAD"],
-            ctx.signal,
-          );
+          const r = await git(["rev-parse", "HEAD"]);
           head = r.code === 0 ? r.stdout.trim() : null;
-          say(
-            "hermes-agent",
-            "present",
-            `${hermesRef} at ${head?.slice(0, 12) ?? "unknown"}`,
-          );
+          // Resolved locally: a tag the checkout has never fetched is by
+          // definition not what it is running.
+          const want = await git([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            `refs/tags/${hermesRef}^{commit}`,
+          ]);
+          const onRef = want.code === 0 && head !== null &&
+            want.stdout.trim() === head;
+          refMoved = !onRef;
+          if (onRef) {
+            say(
+              "hermes-agent",
+              "present",
+              `${hermesRef} at ${head!.slice(0, 12)}`,
+            );
+          } else if (
+            !wouldChange(
+              "hermes-agent",
+              `at ${head?.slice(0, 12) ?? "unknown"}, declared ${hermesRef}`,
+            )
+          ) {
+            // Refuse rather than discard: a local edit in a runtime checkout
+            // is somebody's experiment, and checkout would carry or clobber it.
+            const dirty = await git(["status", "--porcelain"]);
+            if (dirty.code !== 0 || dirty.stdout.trim() !== "") {
+              throw new Error(
+                `hermes-agent has local changes; not moving it to ${hermesRef}. Commit or discard them in ${agentDir} first.`,
+              );
+            }
+            const origin = (await git(["remote", "get-url", "origin"])).stdout
+              .trim();
+            if (origin !== hermesRepo) {
+              throw new Error(
+                `hermes-agent's origin is ${origin}, not the declared ${hermesRepo}; not moving it.`,
+              );
+            }
+            const steps = refSteps(hermesRef);
+            const f = await git(steps.fetch);
+            if (f.code !== 0) throw gitFail(`fetch ${hermesRef}`, f);
+            const c = await git(steps.checkout);
+            if (c.code !== 0) throw gitFail(`checkout ${hermesRef}`, c);
+            const from = head?.slice(0, 12) ?? "unknown";
+            head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+            say(
+              "hermes-agent",
+              "updated",
+              `${from} -> ${hermesRef} at ${head.slice(0, 12)}`,
+            );
+          }
         } else if (
           !wouldChange(
             "hermes-agent",
@@ -1141,7 +1197,10 @@ export const model = {
           if (!ok) unimportable.push(mod);
         }
         const syncCmd = `uv ${uv.sync.join(" ")}`;
-        if (unimportable.length === 0) {
+        const why = unimportable.length > 0
+          ? `cannot import ${unimportable.join(", ")}`
+          : "the checkout moved to a new ref";
+        if (unimportable.length === 0 && !refMoved) {
           say(
             "dependencies",
             "present",
@@ -1149,12 +1208,7 @@ export const model = {
           );
         } else if (args.skipDeps) {
           say("dependencies", "skipped", "skipDeps");
-        } else if (
-          !wouldChange(
-            "dependencies",
-            `${syncCmd} (cannot import ${unimportable.join(", ")})`,
-          )
-        ) {
+        } else if (!wouldChange("dependencies", `${syncCmd} (${why})`)) {
           // `--locked` reproduces the checkout's uv.lock instead of
           // re-resolving, which is the difference between two bots on one ref
           // running the same dependency set and merely believing they do.

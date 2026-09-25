@@ -374,6 +374,25 @@ export function uvSteps(
 }
 
 /**
+ * The git invocations that move an existing checkout to the declared ref.
+ *
+ * Without these a ref edit in the declaration reached no existing workdir:
+ * provision saw a checkout, called it present, and `--check` reported the
+ * workdir complete while it ran the old commit. Shallow like the clone, and a
+ * detached checkout of exactly the named ref, because a tag is what pins a
+ * fleet and a branch tip would move under it.
+ */
+export function refSteps(ref: string): {
+  fetch: string[];
+  checkout: string[];
+} {
+  return {
+    fetch: ["fetch", "--depth", "1", "--no-tags", "origin", "tag", ref],
+    checkout: ["checkout", "--quiet", "--detach", `refs/tags/${ref}`],
+  };
+}
+
+/**
  * Modules the venv must import before its dependencies count as present.
  *
  * `hermes_cli` proves the project is installed; it does not prove the gateway
