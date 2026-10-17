@@ -42,20 +42,6 @@
     "filesChecksum": "06a1956f2eb48e66c1f2d43177e4ebbc9fc7396d08ab42ce4e2687485ba97fd7",
     "serverUrl": "https://swamp-club.com"
   },
-  "@mgreten/hermes-env": {
-    "version": "2026.05.30.1",
-    "pulledAt": "2026-08-21T13:18:59.178Z",
-    "files": [
-      ".swamp/bundles/b4e71ffc/hermes_env.js",
-      ".swamp/pulled-extensions/@mgreten/hermes-env/files/LICENSE.txt",
-      ".swamp/pulled-extensions/@mgreten/hermes-env/files/README.md",
-      ".swamp/pulled-extensions/@mgreten/hermes-env/manifest.yaml",
-      ".swamp/pulled-extensions/@mgreten/hermes-env/models/hermes_env.ts"
-    ],
-    "checksum": "e80af9c5bf11fddcff24017bc57717d1c261c2f784493c78c238c77c44aa1d06",
-    "filesChecksum": "003aa78eb56ca174ed28f90e8887ea40426f71cb446ec6bd59c671a8835c0ab0",
-    "serverUrl": "https://swamp-club.com"
-  },
   "@mgreten/brief-sanitize": {
     "version": "2026.07.20.7",
     "pulledAt": "2026-08-21T15:43:41.953Z",
