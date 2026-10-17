@@ -27,7 +27,11 @@ function bot(over: Record<string, unknown> = {}): Bot {
 
 const REPO = "/Users/x/src/hermes-ops";
 
-const spec = (b: Bot, probePort = 9099, over: Record<string, unknown> = {}) => ({
+const spec = (
+  b: Bot,
+  probePort = 9099,
+  over: Record<string, unknown> = {},
+) => ({
   bot: b,
   workdir: "/Users/x/agents/demo",
   granted: b.sandbox.filesystemAllow.map((path) => ({
@@ -56,7 +60,14 @@ Deno.test("the repo is always a denied path, on either platform", () => {
 
 Deno.test("denied paths cover credentials and keychains", () => {
   const d = deniedPaths("/repo", "darwin");
-  for (const p of ["~/.ssh", "~/.aws", "~/.config/gh/hosts.yml", "~/Library/Keychains"]) {
+  for (
+    const p of [
+      "~/.ssh",
+      "~/.aws",
+      "~/.config/gh/hosts.yml",
+      "~/Library/Keychains",
+    ]
+  ) {
     assert(d.includes(p), `missing ${p}`);
   }
 });
@@ -85,7 +96,10 @@ Deno.test("an allowlisted bot probes its OWN domains, not a neutral one", () => 
   })));
   assertStringIncludes(p, '"api.anthropic.com"');
   assertStringIncludes(p, '"api.telegram.org"');
-  assert(!p.includes("api.github.com"), "used a neutral host for an allowlisted bot");
+  assert(
+    !p.includes("api.github.com"),
+    "used a neutral host for an allowlisted bot",
+  );
   assertStringIncludes(p, "UNRESTRICTED = False");
 });
 
@@ -176,7 +190,10 @@ Deno.test("the generated probe contains no JSON booleans", () => {
 // holding the vault.
 Deno.test("existence comes from the host, not from inside the sandbox", () => {
   const p = buildProbe(spec(bot()));
-  assert(!p.includes("if not os.path.exists(p):"), "probe decides existence itself");
+  assert(
+    !p.includes("if not os.path.exists(p):"),
+    "probe decides existence itself",
+  );
   assertStringIncludes(p, "for path, exists_on_host in DENIED:");
   assertStringIncludes(p, `["${REPO}", True]`);
 });

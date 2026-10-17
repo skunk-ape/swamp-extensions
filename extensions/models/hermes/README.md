@@ -14,11 +14,11 @@ reports on what the sandbox actually enforces.
 Nothing in a declaration names a platform, because none of it is a per-platform
 decision. What differs is underneath:
 
-| | macOS | Linux |
-| --- | --- | --- |
-| Services | launchd user agents in `~/Library/LaunchAgents` | systemd user units in `~/.config/systemd/user` |
-| Confinement | Seatbelt | Landlock |
-| Established sockets | `lsof` | `ss`, falling back to `lsof` |
+|                     | macOS                                           | Linux                                          |
+| ------------------- | ----------------------------------------------- | ---------------------------------------------- |
+| Services            | launchd user agents in `~/Library/LaunchAgents` | systemd user units in `~/.config/systemd/user` |
+| Confinement         | Seatbelt                                        | Landlock                                       |
+| Established sockets | `lsof`                                          | `ss`, falling back to `lsof`                   |
 
 Both unit files are rendered for every bot on **both** platforms, and both are
 committed. Rendering only the host's would make `render --input check=true` —
@@ -62,8 +62,8 @@ globalArguments:
   vault: mybot-secrets
 
   telegram:
-    allowedUsers: ["000000000"]      # numeric Telegram user ids
-    homeChannel: "000000000"         # where cron results and notices land
+    allowedUsers: ["000000000"] # numeric Telegram user ids
+    homeChannel: "000000000" # where cron results and notices land
     homeChannelName: "Owner DM"
 
   sandbox:
@@ -78,36 +78,36 @@ globalArguments:
   # sandbox.openPorts.
   mcps: []
 
-  entrypoints: [gateway]             # add `chat` for a terminal session
+  entrypoints: [gateway] # add `chat` for a terminal session
   runtime:
     provider: anthropic
     model: anthropic/claude-opus-5
 ```
 
-`render` turns that into `profiles/<slug>.nono.json`,
-`bin/lib-<slug>-env.sh`, `bin/run-<slug>.sh`,
-`launchd/sh.<slug>.gateway.plist`, `systemd/sh.<slug>.gateway.service` and,
-with the `chat` entrypoint, `bin/<slug>-chat.sh`. The files are written to the
-repository and committed; nothing is rendered at boot.
+`render` turns that into `profiles/<slug>.nono.json`, `bin/lib-<slug>-env.sh`,
+`bin/run-<slug>.sh`, `launchd/sh.<slug>.gateway.plist`,
+`systemd/sh.<slug>.gateway.service` and, with the `chat` entrypoint,
+`bin/<slug>-chat.sh`. The files are written to the repository and committed;
+nothing is rendered at boot.
 
 ## Methods
 
-| Method | What it does |
-| --- | --- |
-| `scaffold` | Write a starter declaration for a new bot, with every field present and commented. |
-| `render` | Write the sandbox profile, environment library, entrypoints and both platforms' service definitions. |
-| `provision` | Build the workdir: directory tree, Hermes checkout, an interpreter and venv inside the workdir, the `funes` binary and its index hook, a starter `config.yaml` and `SOUL.md`. |
-| `verify` | Probe the sandbox from inside and report what it enforces. |
-| `install` | Substitute the unit placeholders into this platform's unit directory and load every service the bot owns, MCPs before gateway. Refuses first if the host cannot enforce the declared boundary. |
-| `uninstall` | Unload the services and remove their unit files. The workdir is left alone. |
-| `status` | Supervisor state and pid per service, whether each MCP port answers, and whether the gateway holds a live session to it. |
-| `restart` | Bounce the MCPs, wait for their ports, bounce the gateway, confirm the sessions came back. |
-| `snapshot` | Archive what another machine cannot rebuild, and nothing it can. |
-| `restore` | Put a snapshot back, rewriting the old machine's absolute paths. |
+| Method      | What it does                                                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scaffold`  | Write a starter declaration for a new bot, with every field present and commented.                                                                                                             |
+| `render`    | Write the sandbox profile, environment library, entrypoints and both platforms' service definitions.                                                                                           |
+| `provision` | Build the workdir: directory tree, Hermes checkout, an interpreter and venv inside the workdir, the `funes` binary and its index hook, a starter `config.yaml` and `SOUL.md`.                  |
+| `verify`    | Probe the sandbox from inside and report what it enforces.                                                                                                                                     |
+| `install`   | Substitute the unit placeholders into this platform's unit directory and load every service the bot owns, MCPs before gateway. Refuses first if the host cannot enforce the declared boundary. |
+| `uninstall` | Unload the services and remove their unit files. The workdir is left alone.                                                                                                                    |
+| `status`    | Supervisor state and pid per service, whether each MCP port answers, and whether the gateway holds a live session to it.                                                                       |
+| `restart`   | Bounce the MCPs, wait for their ports, bounce the gateway, confirm the sessions came back.                                                                                                     |
+| `snapshot`  | Archive what another machine cannot rebuild, and nothing it can.                                                                                                                               |
+| `restore`   | Put a snapshot back, rewriting the old machine's absolute paths.                                                                                                                               |
 
-`render` and `provision` both take `--input check=true`, which reports what would
-change and writes nothing. For `render` that is a drift check on the generated
-files; for `provision` it is a completeness check on the workdir.
+`render` and `provision` both take `--input check=true`, which reports what
+would change and writes nothing. For `render` that is a drift check on the
+generated files; for `provision` it is a completeness check on the workdir.
 
 ## The sandbox
 
@@ -137,12 +137,12 @@ relative path in `filesystemAllow` (nono resolves it against nothing).
 `verify` builds its probe from the declaration, runs it inside the sandbox, and
 reports one of four outcomes per check:
 
-| Outcome | Meaning |
-| --- | --- |
-| `PASS` | The claim held. |
-| `FAIL` | The claim did not hold. |
+| Outcome   | Meaning                                        |
+| --------- | ---------------------------------------------- |
+| `PASS`    | The claim held.                                |
+| `FAIL`    | The claim did not hold.                        |
 | `VACUOUS` | The probe could not prove anything either way. |
-| `GAP` | The claim did not hold, and is known not to. |
+| `GAP`     | The claim did not hold, and is known not to.   |
 
 `VACUOUS` is never treated as a pass. A denial check against a path that does
 not exist, or a loopback check with nothing listening on the far end, proves
@@ -178,17 +178,17 @@ verified".
 ## Secrets
 
 Each bot names one vault. The entrypoint resolves secrets at startup with
-`swamp vault read-secret` and holds them in process memory; nothing is written to
-disk, and the sandbox denies the bot access to the repository the vault lives in.
-`secretKeys` names which keys to read, and defaults to `anthropic-key` and
+`swamp vault read-secret` and holds them in process memory; nothing is written
+to disk, and the sandbox denies the bot access to the repository the vault lives
+in. `secretKeys` names which keys to read, and defaults to `anthropic-key` and
 `telegram-bot-token`.
 
 ## Moving a bot to another machine
 
 A workdir is several gigabytes and almost none of it should travel. The
 interpreter, the venv, the staged `funes` binary and the caches are all
-architecture-specific — on another machine they are the wrong object format,
-and the failure arrives late and looks unrelated — and all of them are what
+architecture-specific — on another machine they are the wrong object format, and
+the failure arrives late and looks unrelated — and all of them are what
 `provision` exists to rebuild. `snapshot` carries the roughly thirty megabytes
 that are irreplaceable: `state.db`, the Funes memory, cron, skills, `SOUL.md`
 and the `config.yaml` the agent has been editing since it was provisioned.

@@ -137,7 +137,10 @@ Deno.test("a bot records its own Hermes, and defaults to upstream main", () => {
   // The default has to stay generic: this model type is published, and a
   // personal fork is not a sensible default for anyone else.
   const d = BotSchema.parse(minimal());
-  assertEquals(d.agent.repo, "https://github.com/NousResearch/hermes-agent.git");
+  assertEquals(
+    d.agent.repo,
+    "https://github.com/NousResearch/hermes-agent.git",
+  );
   assertEquals(d.agent.ref, "main");
 });
 
@@ -159,8 +162,14 @@ Deno.test("agent is not named hermesRepo/hermesRef, and that is deliberate", () 
   // forced RestartArgs to say `only` rather than `mcps`.
   const shape = Object.keys(BotSchema.shape);
   assert(shape.includes("agent"));
-  assert(!shape.includes("hermesRepo"), "would collide with provision's argument");
-  assert(!shape.includes("hermesRef"), "would collide with provision's argument");
+  assert(
+    !shape.includes("hermesRepo"),
+    "would collide with provision's argument",
+  );
+  assert(
+    !shape.includes("hermesRef"),
+    "would collide with provision's argument",
+  );
 });
 
 Deno.test("a narrow allowlist and loopback MCPs cannot both be honoured", () => {

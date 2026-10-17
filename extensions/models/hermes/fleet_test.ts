@@ -41,7 +41,11 @@ Deno.test("verdict reports the most serious thing first", () => {
         pass: 3,
         fail: 1,
         vacuous: 0,
-        checks: [{ label: "~/.ssh is unreadable", outcome: "FAIL", detail: "READ SUCCEEDED" }],
+        checks: [{
+          label: "~/.ssh is unreadable",
+          outcome: "FAIL",
+          detail: "READ SUCCEEDED",
+        }],
       },
     }),
     "~/.ssh is unreadable",

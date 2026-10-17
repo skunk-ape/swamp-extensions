@@ -32,7 +32,11 @@ function bot(over: Record<string, unknown> = {}): Bot {
   });
 }
 
-type Written = { specName: string; name: string; data: Record<string, unknown> };
+type Written = {
+  specName: string;
+  name: string;
+  data: Record<string, unknown>;
+};
 
 /** A method context over a throwaway directory. Nothing here reaches the host
  * beyond that directory: no launchd, no network, no subprocess. */

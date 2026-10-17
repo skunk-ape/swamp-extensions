@@ -31,7 +31,9 @@ function bot(over: Record<string, unknown> = {}): Bot {
 // ---------------------------------------------------------------------------
 
 Deno.test("the memory and the live config travel", () => {
-  const paths = carriedPaths(bot(), { includeHfCache: false }).map((c) => c.path);
+  const paths = carriedPaths(bot(), { includeHfCache: false }).map((c) =>
+    c.path
+  );
   for (
     const p of [
       "hermes/state.db",
@@ -51,7 +53,9 @@ Deno.test("the memory and the live config travel", () => {
 Deno.test("nothing architecture-specific travels", () => {
   // The whole failure this manifest exists to prevent: a Mach-O interpreter or
   // funes binary arriving on a Linux box, where it fails at exec far from here.
-  const paths = carriedPaths(bot(), { includeHfCache: true }).map((c) => c.path);
+  const paths = carriedPaths(bot(), { includeHfCache: true }).map((c) =>
+    c.path
+  );
   for (
     const p of [
       "hermes/python",
@@ -75,7 +79,9 @@ Deno.test("nothing architecture-specific travels", () => {
 Deno.test("the WAL travels but the shared-memory index does not", () => {
   // A checkpoint that failed silently must not cost the last conversations, so
   // -wal is carried; -shm is pure shared memory and SQLite rebuilds it.
-  const paths = carriedPaths(bot(), { includeHfCache: false }).map((c) => c.path);
+  const paths = carriedPaths(bot(), { includeHfCache: false }).map((c) =>
+    c.path
+  );
   assert(paths.includes("hermes/state.db-wal"));
   assert(EXCLUDES.includes("*-shm"));
   assert(!EXCLUDES.includes("*-wal"));
@@ -84,8 +90,12 @@ Deno.test("the WAL travels but the shared-memory index does not", () => {
 });
 
 Deno.test("the embedding cache is opt-in", () => {
-  const without = carriedPaths(bot(), { includeHfCache: false }).map((c) => c.path);
-  const with_ = carriedPaths(bot(), { includeHfCache: true }).map((c) => c.path);
+  const without = carriedPaths(bot(), { includeHfCache: false }).map((c) =>
+    c.path
+  );
+  const with_ = carriedPaths(bot(), { includeHfCache: true }).map((c) =>
+    c.path
+  );
   assert(!without.includes("funes/hf"));
   assert(with_.includes("funes/hf"));
 });
@@ -160,6 +170,8 @@ Deno.test("mentions of the old host that the rewrite cannot fix are reported", (
 });
 
 Deno.test("residual reporting is capped so one bad file cannot bury the rest", () => {
-  const content = Array.from({ length: 50 }, (_, i) => `/Users/x/x${i}`).join("\n");
+  const content = Array.from({ length: 50 }, (_, i) => `/Users/x/x${i}`).join(
+    "\n",
+  );
   assertEquals(residualMentions(content, "/Users/x").length, 5);
 });

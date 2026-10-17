@@ -53,7 +53,10 @@ Deno.test("every entrypoint uses `nono run`, never `nono wrap`", () => {
 
 Deno.test("the profile records that it requires `nono run`", () => {
   const p = JSON.parse(renderProfileFor(bot(), "darwin").content);
-  assertStringIncludes(p.meta.description, "wrap leaves the network block inert");
+  assertStringIncludes(
+    p.meta.description,
+    "wrap leaves the network block inert",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -82,12 +85,14 @@ Deno.test("the inner shell binds the workdir before it is used", () => {
 Deno.test("all four XDG homes are redirected inside the inner shell", () => {
   const c = renderGateway(bot()).content;
   const innerStart = c.indexOf("/bin/sh -c");
-  for (const v of [
-    "XDG_STATE_HOME",
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_CONFIG_HOME",
-  ]) {
+  for (
+    const v of [
+      "XDG_STATE_HOME",
+      "XDG_DATA_HOME",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+    ]
+  ) {
     const at = c.indexOf(`export ${v}=`);
     assert(at > innerStart, `${v} is exported outside the inner shell`);
   }
@@ -157,19 +162,32 @@ Deno.test("an unrestricted bot emits no allow_domain, so loopback survives", () 
   // loopback connect even to a port in open_port — which silently costs a bot
   // every one of its MCPs. ["*"] means "no allowlist", so omitting the key is
   // the same policy and keeps the ports reachable.
-  const p = JSON.parse(renderProfileFor(bot({
-    sandbox: { egress: ["*"], openPorts: [8811, 8813] },
-  }), "linux").content);
-  assert(!("allow_domain" in p.network), "allow_domain must be absent on linux");
+  const p = JSON.parse(
+    renderProfileFor(
+      bot({
+        sandbox: { egress: ["*"], openPorts: [8811, 8813] },
+      }),
+      "linux",
+    ).content,
+  );
+  assert(
+    !("allow_domain" in p.network),
+    "allow_domain must be absent on linux",
+  );
   // connect_port is the Linux allowlist: its own MCPs, plus the ports it needs
   // to reach anything off the machine at all.
   assertEquals(p.network.connect_port, [8811, 8813, 443, 80]);
 });
 
 Deno.test("macOS keeps allow_domain and open_port, which is what it enforces with", () => {
-  const p = JSON.parse(renderProfileFor(bot({
-    sandbox: { egress: ["*"], openPorts: [8811, 8813] },
-  }), "darwin").content);
+  const p = JSON.parse(
+    renderProfileFor(
+      bot({
+        sandbox: { egress: ["*"], openPorts: [8811, 8813] },
+      }),
+      "darwin",
+    ).content,
+  );
   // Without allow_domain macOS enforces NOTHING — an undeclared port with a
   // live listener is reachable. Measured; do not "simplify" this away.
   assertEquals(p.network.allow_domain, ["*"]);
@@ -181,18 +199,28 @@ Deno.test("a bot with no ports KEEPS allow_domain, because the proxy is its loop
   // On Linux an empty open_port with no allow_domain is "no port rules", not
   // "deny all". Dropping the key here removed the only confinement Beta had
   // and let the work agent reach the personal agent's credential-holding MCPs.
-  const p = JSON.parse(renderProfileFor(bot({
-    sandbox: { egress: ["*"], openPorts: [] },
-  }), "linux").content);
+  const p = JSON.parse(
+    renderProfileFor(
+      bot({
+        sandbox: { egress: ["*"], openPorts: [] },
+      }),
+      "linux",
+    ).content,
+  );
   // No MCPs: connect_port lists only the egress ports, so every loopback port
   // is denied by simply never being named.
   assertEquals(p.network.connect_port, [443, 80]);
 });
 
 Deno.test("a named allowlist still emits allow_domain", () => {
-  const p = JSON.parse(renderProfileFor(bot({
-    sandbox: { egress: ["api.anthropic.com"], openPorts: [] },
-  }), "linux").content);
+  const p = JSON.parse(
+    renderProfileFor(
+      bot({
+        sandbox: { egress: ["api.anthropic.com"], openPorts: [] },
+      }),
+      "linux",
+    ).content,
+  );
   // A named allowlist needs the proxy to filter by host, so it keeps
   // allow_domain on both platforms — and therefore cannot have loopback ports.
   assertEquals(p.network.allow_domain, ["api.anthropic.com"]);
@@ -200,13 +228,18 @@ Deno.test("a named allowlist still emits allow_domain", () => {
 });
 
 Deno.test("the profile carries egress, ports and extra grants verbatim", () => {
-  const p = JSON.parse(renderProfileFor(bot({
-    sandbox: {
-      egress: ["api.anthropic.com", "api.telegram.org"],
-      openPorts: [8811],
-      filesystemAllow: ["/Users/x/src/notes-vault"],
-    },
-  }), "darwin").content);
+  const p = JSON.parse(
+    renderProfileFor(
+      bot({
+        sandbox: {
+          egress: ["api.anthropic.com", "api.telegram.org"],
+          openPorts: [8811],
+          filesystemAllow: ["/Users/x/src/notes-vault"],
+        },
+      }),
+      "darwin",
+    ).content,
+  );
   assertEquals(p.network.allow_domain, [
     "api.anthropic.com",
     "api.telegram.org",
