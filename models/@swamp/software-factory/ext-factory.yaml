@@ -1,0 +1,261 @@
+type: '@swamp/software-factory'
+typeVersion: 2026.06.24.1
+id: 5dad95e8-ff7d-4879-b56b-ee7f9051e449
+name: ext-factory
+version: 1
+tags: {}
+
+# The factory that governs work on the extensions in this monorepo (fka, stef,
+# and whatever comes next).
+#
+# The issue lives in the factory itself — there is no external tracker to sync —
+# so `status` with no workItem is the backlog view, and `summary` is the record
+# of how one issue was actually done.
+#
+# Intake branches. A mechanical issue takes `accept` straight to implementing;
+# an issue with real design content takes `plan` and gets an approved plan
+# first. Both transitions share the issue-approval gate, so the choice of path
+# is made once, by the person who approved the issue.
+#
+# Work items are named <EXT>-<n>: FKA-1, STEF-1.
+globalArguments:
+  stages:
+    - id: intake
+      initial: true
+      description: >-
+        Write the issue down before any work starts. The artifact is the issue:
+        what is wrong or missing, why it matters, and what "done" looks like.
+        The approval gate is where a person says this is worth doing.
+      work:
+        mode: interactive
+        skills: [swamp]
+        systemPrompt: >-
+          Capture the work item as an issue. Be concrete about scope: an issue
+          that says what it will NOT change is worth more than one that lists
+          everything it might touch. Acceptance criteria must be checkable by
+          someone who did not write them.
+      artifacts:
+        - name: issue
+          schema:
+            type: object
+            required: [title, extension, motivation, scope, acceptance]
+            properties:
+              title: { type: string, minLength: 1 }
+              extension:
+                type: string
+                description: The extension this issue is against, e.g. fka.
+                minLength: 1
+              motivation:
+                type: string
+                minLength: 1
+                description: What is wrong or missing today, and what it costs.
+              scope:
+                type: object
+                required: [inScope]
+                properties:
+                  inScope: { type: array, minItems: 1, items: { type: string } }
+                  outOfScope: { type: array, items: { type: string } }
+              acceptance:
+                type: array
+                minItems: 1
+                items: { type: string }
+              references:
+                type: array
+                items: { type: string }
+      transitions:
+        - name: accept
+          to: implementing
+          gates:
+            - type: artifact-exists
+              config: { artifact: issue }
+            - type: human-approval
+              config: { id: issue-approval }
+        - name: plan
+          to: planning
+          gates:
+            - type: artifact-exists
+              config: { artifact: issue }
+            - type: human-approval
+              config: { id: issue-approval }
+
+    - id: planning
+      description: >-
+        Design before code, for issues where the design is the risky part. The
+        plan is an artifact you approve, so what was intended stays legible next
+        to what was built — and review can judge the change against both.
+      work:
+        mode: interactive
+        skills: [swamp]
+        systemPrompt: |
+          Produce an implementation plan for this issue:
+
+          ${{ data.latest(self.name, "artifact-issue").payload.motivation }}
+
+          It must satisfy these acceptance criteria:
+
+          ${{ data.latest(self.name, "artifact-issue").payload.acceptance }}
+
+          Name the design decision that carries the most risk and say what you
+          chose instead of the alternatives. A plan that lists steps without
+          naming a trade-off has not planned anything. Prefer extending an
+          existing model over adding one; check `swamp model type describe`
+          before proposing new surface.
+      artifacts:
+        - name: plan
+          schema:
+            type: object
+            required: [approach, steps, risks]
+            properties:
+              approach:
+                type: string
+                minLength: 1
+                description: The chosen design, and what it was chosen over.
+              steps:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required: [description]
+                  properties:
+                    description: { type: string, minLength: 1 }
+                    files: { type: array, items: { type: string } }
+              risks:
+                type: array
+                items: { type: string }
+              testingStrategy: { type: string }
+      transitions:
+        - name: approve
+          to: implementing
+          gates:
+            - type: artifact-exists
+              config: { artifact: plan }
+            - type: human-approval
+              config: { id: plan-approval }
+
+    - id: implementing
+      description: >-
+        Do the work. Dispatched to one cold subagent on a cheaper model rather
+        than driven in conversation: the issue and the plan are validated
+        artifacts, so the context this stage needs is in the run data, not in
+        the driving session's history. The driver keeps the test evidence.
+      work:
+        mode: dispatch
+        skills: [swamp]
+        command: >-
+          Spawn exactly one subagent, subagent_type "general-purpose", model
+          "sonnet". Not "fork" — a fork inherits the driver's model and ignores
+          the override. The subagent starts with no conversation history, so
+          the prompt must carry the work item id and the query recipe below and
+          nothing it cannot fetch for itself.
+        systemPrompt: >-
+          Implement the approved issue and nothing beyond it. You start cold.
+          Fetch the issue with `swamp data query 'modelName == "ext-factory" &&
+          name == "artifact-<workItem>-issue"' --repo-dir
+          /Users/seth/src/swamp-extensions --json`, and the plan the same way
+          from `artifact-<workItem>-plan` if one was approved; implement that
+          plan, and put a deliberate departure from it in your report rather
+          than making it silently. Extension npm deps are bundled rather than
+          lockfile-tracked, so pin explicit versions in npm: specifiers. Run the
+          extension's own test suite and report the exact command you ran with
+          its raw output — but do not assert pass and fail counts as fact, and
+          do not record any artifact or call any factory method yourself. The
+          driver re-runs the suite and owns the tests field of the change
+          summary, because a claim of green tests is the one thing review cannot
+          catch. Report what you changed, which files, and anything you left
+          undone.
+      artifacts:
+        - name: change-summary
+          schema:
+            type: object
+            required: [summary, files, tests]
+            properties:
+              summary: { type: string, minLength: 1 }
+              files:
+                type: array
+                minItems: 1
+                items: { type: string }
+              tests:
+                type: object
+                required: [command, passed, failed]
+                properties:
+                  command: { type: string, minLength: 1 }
+                  passed: { type: integer, minimum: 0 }
+                  failed: { type: integer, minimum: 0 }
+              followUps:
+                type: array
+                items: { type: string }
+      transitions:
+        - name: submit
+          to: review
+          gates:
+            - type: artifact-exists
+              config: { artifact: change-summary }
+            - type: cel
+              config:
+                expr: artifacts.change_summary.tests.failed == 0
+                message: >-
+                  The recorded test run has failures. Fix them, re-run, and
+                  record a fresh change-summary before submitting for review.
+
+    - id: review
+      description: >-
+        Adversarial review of the change, one subagent per skill. Re-entry
+        forces a fresh review — a sign-off from the previous round does not
+        carry across rework.
+      work:
+        mode: dispatch
+        skills: [code-review, security-review]
+        systemPrompt: |
+          You are an adversarial reviewer of a change to a swamp extension.
+          Try to refute it. The change claims:
+
+          ${{ data.latest(self.name, "artifact-change-summary").payload.summary }}
+
+          It was accepted against these criteria:
+
+          ${{ data.latest(self.name, "artifact-issue").payload.acceptance }}
+
+          Judge the change against the acceptance criteria, not against what you
+          would have built. Record findings with severities and do not soften
+          them. Scope creep beyond the issue's inScope list is a finding.
+      artifacts:
+        - name: review
+          kind: findings
+          reviews: change-summary
+      transitions:
+        - name: ship
+          to: done
+          gates:
+            - type: artifact-fresh
+              config: { artifact: review, recordedThisCycle: true }
+            - type: findings-clear
+              config: { artifact: review, blocking: [critical, high] }
+            - type: human-approval
+              config: { id: ship-approval }
+        - name: rework
+          to: implementing
+
+    - id: done
+      terminal: true
+      description: Shipped and signed off. `summary` renders the whole history.
+
+    - id: aborted
+      terminal: true
+      description: Dropped on purpose. The record of why stays queryable.
+
+  globalTransitions:
+    - name: abort
+      to: aborted
+      gates:
+        - type: human-approval
+          config: { id: abort-confirmation }
+
+# Scope the bundled summary report to the `summary` method, so stored versions
+# are real histories instead of empty placeholders written after every
+# record_artifact and advance.
+reports:
+  require:
+    - name: "@swamp/software-factory/work-item-summary"
+      methods: [summary]
+
+methods: {}

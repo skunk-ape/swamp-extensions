@@ -1,0 +1,191 @@
+id: f9bbb87f-0f77-4c36-a2e6-eca1ecc92388
+name: "@skunk-ape/fka"
+description: >-
+  Analyse a CLI's commands, sort them into permission tiers, and generate
+  wrappers that enforce the result. Suspends at `review` so a person approves
+  the table before anything is generated from it.
+tags: {}
+inputs:
+  properties:
+    cli:
+      type: string
+      description: >-
+        The tool to wrap, as a bare command name on PATH (gh, git, kubectl). A
+        path also works, but the workspace and the wrappers are named after the
+        last segment either way.
+    include:
+      type: array
+      items:
+        type: string
+      default: []
+      description: >-
+        Top-level subtrees to crawl, and nothing else. This is how a tool with
+        thousands of operations stays reviewable by a person: ["s3", "ec2"]
+        turns an unreadable aws table into one somebody finishes.
+    exclude:
+      type: array
+      items:
+        type: string
+      default: []
+      description: Subtrees never crawled, matched as a command path prefix.
+    docsMode:
+      type: string
+      enum: ["none", "web"]
+      default: "none"
+      description: >-
+        Whether the classifier may read the tool's documentation. Help text
+        often does not say whether an operation is billable or reaches a private
+        resource, and the docs do — at the cost of a network-capable session
+        reading pages you do not control.
+    maxDepth:
+      type: integer
+      default: 3
+      description: How deep below the root to descend when reading help.
+    maxCommands:
+      type: integer
+      default: 400
+      description: >-
+        Ceiling on help invocations. Prefer scoping with `include` over raising
+        this — the ceiling protects the reviewer as much as the clock.
+    listCommand:
+      type: string
+      default: ""
+      description: >-
+        An argv suffix that enumerates the tool's full command list, for tools
+        whose root help names only the common commands — git lists 25 of ~200,
+        but `git help -a` lists them all, so `--input listCommand='help -a'`
+        gives the crawl the whole tree. Empty crawls what the root help lists.
+    model:
+      type: string
+      default: ""
+      description: >-
+        Model the classifier's spawned `claude -p` sessions run on. Empty
+        inherits the caller's Claude Code default — the child receives the
+        caller's environment and saved model. Set it to pin one, e.g.
+        `--input model=claude-sonnet-5`.
+  required: ["cli"]
+jobs:
+  - name: wrap
+    description: Discover, classify, review, generate, verify.
+    steps:
+      - name: discover
+        description: >-
+          Read the command tree out of the tool's own help output. The only
+          stage with ground truth, so the only one that decides what the
+          commands are called.
+        task:
+          type: model_method
+          modelType: '@skunk-ape/fka'
+          modelName: fka-${{ inputs.cli }}
+          methodName: discover
+          globalArgs:
+            maxDepth: ${{ inputs.maxDepth }}
+            maxCommands: ${{ inputs.maxCommands }}
+            docsMode: ${{ inputs.docsMode }}
+            listCommand: ${{ inputs.listCommand }}
+          inputs:
+            cli: ${{ inputs.cli }}
+            include: ${{ inputs.include }}
+            exclude: ${{ inputs.exclude }}
+        dependsOn: []
+
+      - name: found-commands
+        description: >-
+          Stop before spending model calls if the crawl came back empty. A tool
+          whose help could not be read is a problem to fix, not to classify.
+        task:
+          type: assert
+          expr: >-
+            data.latest("fka-" + inputs.cli, "surface-" + inputs.cli).attributes.commandCount > 0
+          message: >-
+            No commands were discovered. Check that the tool is on PATH and that
+            its help flag is `--help`; some tools want `help` or `-h` instead.
+          severity: high
+        dependsOn:
+          - step: discover
+            condition:
+              type: succeeded
+
+      - name: classify
+        description: >-
+          Propose a tier for each command, an option allowlist, and an
+          environment scrub list, then write the review file. The proposal
+          grants nothing.
+        task:
+          type: model_method
+          modelType: '@skunk-ape/fka'
+          modelName: fka-${{ inputs.cli }}
+          methodName: classify
+          globalArgs:
+            docsMode: ${{ inputs.docsMode }}
+            model: ${{ inputs.model }}
+          inputs:
+            cli: ${{ inputs.cli }}
+        dependsOn:
+          - step: found-commands
+            condition:
+              type: succeeded
+
+      - name: review
+        description: The gate. A person reads the table and edits it.
+        task:
+          type: manual_approval
+          prompt: >-
+            Read the review file this run wrote, and edit it before approving.
+            By default it is at ~/.config/fka/${{ inputs.cli }}/review.yaml —
+            `swamp data get fka-${{ inputs.cli }} proposal-${{ inputs.cli }}`
+            reports the exact path as `reviewPath` if you changed workRoot.
+
+            Read the read-safe block carefully. read-safe is the only tier that
+            runs with nobody watching; every other tier still stops at a prompt,
+            so a mistake there costs one keystroke and a mistake in read-safe
+            does not.
+
+            Read the wrappers block too. It is short, and it is not a tier: an
+            option pinned there with prepend or append applies at every command
+            that alias admits, whatever the table says about it elsewhere.
+
+            Deleting a line is always the safe edit — anything absent from the
+            table is refused by every wrapper.
+
+            Then set `approved: true` at the top of that file. Approving this
+            step releases the workflow; the flag in the file is what releases
+            `generate`, which refuses to render anything while it is false.
+        dependsOn:
+          - step: classify
+            condition:
+              type: succeeded
+
+      - name: generate
+        description: >-
+          Render the wrappers, the permission snippet, and the skill snippet
+          from the edited review file. Writes no settings.
+        task:
+          type: model_method
+          modelType: '@skunk-ape/fka'
+          modelName: fka-${{ inputs.cli }}
+          methodName: generate
+          inputs:
+            cli: ${{ inputs.cli }}
+        dependsOn:
+          - step: review
+            condition:
+              type: succeeded
+
+      - name: verify
+        description: >-
+          Prove each wrapper permits its own tier and refuses everything above
+          it. Never executes the wrapped tool.
+        task:
+          type: model_method
+          modelType: '@skunk-ape/fka'
+          modelName: fka-${{ inputs.cli }}
+          methodName: verify
+          inputs:
+            cli: ${{ inputs.cli }}
+        dependsOn:
+          - step: generate
+            condition:
+              type: succeeded
+    dependsOn: []
+version: 1
