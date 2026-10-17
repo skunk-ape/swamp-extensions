@@ -14,7 +14,7 @@ projects:
     path: extensions/models/fka
   - prefix: STEF
     project: stef
-    path: extensions/models/stef.ts
+    path: extensions/models/stef
   - prefix: HERMES
     project: hermes
     path: extensions/models/hermes
