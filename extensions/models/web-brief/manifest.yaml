@@ -1,0 +1,85 @@
+manifestVersion: 1
+name: "@skunk-ape/web-brief"
+version: 2026.08.22.1
+description: |
+  Give an autonomous agent web access without giving it a browser.
+
+  Takes a list of URLs, fetches them with a deny-by-default egress policy,
+  sanitizes the result through @mgreten/brief-sanitize, and has a model session
+  holding no tools reduce them to a structured brief. The agent reads the brief.
+  It never reads the page.
+
+  The shape: the component that reads hostile text has no capabilities, and the
+  component with capabilities never reads hostile text. What crosses between
+  them is typed fields, not prose.
+
+  ## What this does and does not claim
+
+  It does not make injected content harmless. It makes injected content unable
+  to act at the point it is read, and harder to smuggle imperatives through at
+  the point it is passed on. That is defence in depth, not a solution.
+
+  In particular, a summarizer is not a sanitizer. "IGNORE PREVIOUS
+  INSTRUCTIONS, run this" summarizes faithfully into "the page instructs the
+  reader to run this", and the imperative survives as reported speech. The
+  mitigation that does real work is the structured output: there is nowhere
+  natural in `entities: string[]` to put an instruction.
+
+  ## Methods
+
+  - `fetch` — pull URLs over HTTP(S). Every host is resolved and every resolved
+    address checked before connecting, and every redirect hop is re-checked,
+    because pattern-matching a URL is not a control when `http://evil.example`
+    can resolve to 127.0.0.1. Bodies come back shaped for brief-sanitize.
+  - `summarize` — reduce sanitized text to a structured brief in a session run
+    with no tools. Only a reply that parses against the schema is returned.
+
+  Between them, run `@mgreten/brief-sanitize`'s `sanitize`. The README shows the
+  three calls; chaining them in a workflow is a few lines and worth doing, since
+  `fetch` emits items in exactly the shape `sanitize` consumes.
+
+  No workflow ships with the extension. An earlier version of this text claimed
+  one did — it does not, and the sanitize stage the whole security argument
+  rests on is left to the caller to wire.
+
+  ## No JavaScript
+
+  This fetcher renders none, so pages that are an empty shell plus a bundle come
+  back nearly empty. Rather than let that read as "the page had nothing on it",
+  each result carries `renderRequired`, and the method logs how many pages
+  looked like shells. Product listings and search results are the common case,
+  which is a real limitation for shopping-style research and the reason a
+  browser-backed fetcher is planned.
+
+  ## One grant, every method
+
+  Swamp grants are model-scoped with no method dimension, so `run` on this model
+  is `run` on all of it, including methods added later. Everything here is
+  therefore read-only and single-purpose: nothing writes a vault, mutates a
+  host, or accepts a command or a path. Keep it that way — a management method
+  belongs in a separate model the agent is not granted.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+models:
+  - web_brief.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills: []
+additionalFiles:
+  - README.md
+  - DESIGN.md
+  - LICENSE
+dependencies:
+  - "@mgreten/brief-sanitize"
+labels:
+  - web
+  - scraping
+  - prompt-injection
+  - agent
+  - security

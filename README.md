@@ -1,131 +1,53 @@
-# @skunk-ape/stef
+# swamp-extensions
 
-Simple Technical English Flavored — a deterministic prose linter, a mechanical
-fixer, and two ways to drive a rewrite loop against them.
+Swamp extensions published under `@skunk-ape`.
 
-The design is a split rather than a pipeline. A linter decides the eleven
-mechanical ASD-STE100 rules a script can decide, and it is the oracle: nothing
-grades its own work, so the rework loop has a real exit condition. A model
-handles only the rules no script can judge.
+## Extensions
 
-## Install
-
-```bash
-swamp extension pull @skunk-ape/stef
-swamp model create @skunk-ape/stef ste
-```
-
-`lint` and `normalize` need nothing else. `rewrite` needs Claude Code on
-`PATH`. It runs on whatever credential Claude Code already holds. A
-subscription token from `claude setup-token` works, so no API key is stored in
-a vault.
-
-## Methods
-
-| Method | Needs a model | What it does |
+| Extension | Path | What it does |
 | --- | --- | --- |
-| `lint` | no | Run the eleven checks, emit `kind: findings` |
-| `normalize` | no | Apply the fixes a script can make, then re-lint |
-| `rewrite` | yes | Run the whole loop in one command |
-| `start` / `record` | no | Hold state and gate while a calling agent writes |
+| `@skunk-ape/stef` | `extensions/models/stef/` | Simple Technical English Flavored — a deterministic prose linter, a mechanical fixer, and a bounded LLM rewrite loop. |
+| `@skunk-ape/rocky-road` | `extensions/reports/rocky-road/` | Chunked implementation for `@swamp/software-factory` — a factory definition, a board report, and the skill that drives it. |
+| `@skunk-ape/hermes` | `extensions/models/hermes/` | Install and configure the Hermes agent on a host reached over SSH. In design. See `DESIGN.md`. |
 
-Every method takes the same arguments. Pass `text` or `path` to say what to
-read. Pass `session` to name the state slot to write. `session` defaults to
-`latest`, so `lint --input session=readme` writes `findings-readme` and two
-drafts never overwrite each other.
+## Layout
 
-## Lint a draft
+Each extension is self-contained. The manifest sits beside the code it names,
+and it sets `paths: base: manifest`, so typed entries and `additionalFiles`
+both resolve from the manifest directory rather than from the repository root.
+Add a new extension as a new directory. Do not add a manifest at the root.
 
-```bash
-swamp model method run ste lint --input path=DRAFT.md
-swamp data get ste findings-latest --json |
-  jq -r '.content.findings[] | select(.category != "recon") | .description'
-```
+Skills are the exception to that rule. Swamp installs a skill to
+`.claude/skills/<name>/` at the repository root, so a manifest names the skill
+and swamp resolves it from there.
 
-Pass `--input text=` for a snippet, or `--input textType=procedural` to drop the
-sentence limit from 25 words to 20.
+Some state is shared across every extension in this repository:
 
-## Fix what a script can fix
+- `.swamp.yaml` — the repository identity, written by `swamp repo init`.
+- `grants/` — authorization policy. Read the caveat at the top of
+  `grants/sandbox.yaml` before you add a model. A model that reaches outward,
+  meaning anything that posts, ships, or deploys, stays out of the sandbox
+  grants and runs from the host.
+- `vaults/` — vault configuration.
+- `models/` — model instances, both local and pulled.
 
-Three checks have deterministic repairs: emphasis punctuation, Latin
-abbreviations, and unambiguous contractions. On a sample `CLAUDE.md` that
-cleared 21 of 35 findings with no model call.
+## Work on one extension
 
-```bash
-swamp model method run ste normalize --input path=DRAFT.md
-swamp data get ste normalized-latest --json | jq -r '.content.text'
-```
-
-`rewrite` and `start` both apply this first. Set `normalizeFirst: false` in
-`globalArguments` to turn it off.
-
-## Rewrite in one command
+Every command takes the path to that extension's manifest:
 
 ```bash
-swamp model method run ste rewrite --input path=DRAFT.md
-swamp data get ste rewrite-latest --json |
-  jq -r '.content | "attempts=\(.attempts) clean=\(.clean)"'
+swamp extension fmt     extensions/models/stef/manifest.yaml
+swamp extension quality extensions/models/stef/manifest.yaml
+swamp extension push    extensions/models/stef/manifest.yaml
 ```
 
-The result is data, not a file write, so you diff it before it lands.
-
-## Rewrite with a calling agent
-
-Referee mode splits the work: the agent writes and the model gates. When the
-draft is already in the agent's context, use this mode.
+Tests run under the deno that swamp vendors, so no separate deno install is
+needed:
 
 ```bash
-swamp model method run ste start --input path=DRAFT.md
-swamp data get ste session-latest --json | jq -r '.content.nextAction'
-swamp model method run ste record --input path=REWRITE.md
+~/.swamp/deno/deno test --allow-all extensions/models/stef/
 ```
 
-`record` re-lints, counts the attempt against the cap, and refuses once the
-session is clean or exhausted. The bundled `simple-english` skill drives this
-loop and carries the rules the linter cannot check.
+## License
 
-## The checks
-
-| Check | Rule |
-| --- | --- |
-| long-sentence | 25 words descriptive, 20 procedural |
-| contraction | spell it out |
-| banned-modal | no `should`, `would`, `may`, `might`, `could` |
-| perfect-tense | `has shipped` becomes `shipped` |
-| ing-clause | a trailing `, ensuring X` becomes a new sentence |
-| semicolon | write two sentences |
-| latin-abbrev | `e.g.` becomes `for example` |
-| slop-word | cut filler such as `leverage` or `robust` |
-| trailing-condition | put the `if` or `when` clause first |
-| synonym-rotation | one term per idea |
-| emphasis | no bold or italics, except a short leading term |
-
-The linter removes code blocks, inline code, headings, tables, URLs,
-blockquotes, shell-prompt lines, and YAML frontmatter before any check runs. A
-command or a quoted log line is never rewritten.
-
-## Configuration
-
-The style guide is data. Per-check severities, the blocking severity list, the
-sentence limit, the guidance block given to the model, and wrong/right
-anti-pattern examples all live in `globalArguments`. A writer tunes the style
-without republishing.
-
-```yaml
-globalArguments:
-  textType: descriptive
-  maxAttempts: 3
-  severities:
-    emphasis: low
-```
-
-## Interoperability
-
-Findings use the `kind: findings` contract that `@swamp/software-factory`'s
-`findings-clear` gate consumes, so a scripted rule and a judgement-based
-reviewer merge behind one gate.
-
-## Attribution
-
-The linter is a TypeScript port of the MIT-licensed `simple_english_lint.py` by
-AminBlg. See `LICENSE`.
+Apache 2.0. See `LICENSE`.
