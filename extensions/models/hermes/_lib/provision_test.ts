@@ -92,7 +92,7 @@ Deno.test("the chat platform comes from the lock, not a first-run pip install", 
   assert(requiredImports(bot()).includes("hermes_cli"));
 });
 
-// Stuart, provider anthropic behind a four-host allowlist, connected to
+// Gamma, provider anthropic behind a four-host allowlist, connected to
 // Telegram and then failed every turn: upstream lazy-installs the provider SDK
 // from PyPI, which the allowlist cannot reach.
 Deno.test("each declared provider's SDK comes from the lock and must import", () => {

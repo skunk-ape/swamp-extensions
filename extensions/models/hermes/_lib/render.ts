@@ -361,7 +361,7 @@ ${
  * that passes access(2) — which Landlock does not mediate — so it picks
  * /var/tmp, is refused at open, and reports "unable to open database file".
  * Only turns large enough to spill to a temp file fail, so after the Linux
- * cutover Apalone intermittently dropped turns with "session storage could not
+ * cutover Beta intermittently dropped turns with "session storage could not
  * be written". `hermes/cache/scratch` is where upstream points TMPDIR when it
  * is unset, so an upgrade does not move it.
  */

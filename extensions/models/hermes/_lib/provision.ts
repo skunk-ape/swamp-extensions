@@ -366,7 +366,7 @@ export function uvSteps(
     // `messaging` because upstream took the Telegram adapter out of `[all]`
     // and now pip-installs it the first time the gateway starts. That works
     // for a bot with unrestricted egress and fails for one with a named
-    // allowlist, which has no route to PyPI: Stuart ran for a day as a healthy
+    // allowlist, which has no route to PyPI: Gamma ran for a day as a healthy
     // service with no chat platform, logging "requirements not met" on every
     // start. Every bot this model provisions enables Telegram, so every bot
     // gets it from the lock, on the host, before the sandbox ever starts.
@@ -392,7 +392,7 @@ export function uvSteps(
  * `tools/lazy_deps.py`. A provider absent here needs nothing beyond `[all]`
  * (openai-codex rides on the core `openai` dependency).
  *
- * After the Linux cutover Stuart, provider `anthropic` behind a four-host
+ * After the Linux cutover Gamma, provider `anthropic` behind a four-host
  * allowlist, failed every turn at agent construction — "The 'anthropic'
  * package is required" — before its fallback provider was ever consulted.
  */
