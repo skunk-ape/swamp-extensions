@@ -1,0 +1,44 @@
+# Authorization for sandboxed factory agents.
+#
+# A sandboxed agent runs as a separate uid with no network egress except the
+# mitmproxy and this repo's `swamp serve` on loopback. It holds no swamp
+# credentials of its own: model methods execute server-side, so vault contents
+# and any API keys the work needs stay on the host.
+#
+# What the agent can reach is therefore decided entirely here.
+#
+# Caveat, deliberate: `run` on a model is `run` on every one of its methods.
+# Grant resources are model-scoped with no method dimension, so a principal
+# with `run` on the factory can also call `approve`, and the factory reads
+# `actor` from method input rather than from the authenticated principal.
+# Self-approval is detectable — cross-check each approval record against the
+# `initiatedBy` on the run that wrote it — but it is not preventable today.
+# Keep outward-facing models (anything that posts, ships, or deploys) out of
+# these grants and run those methods from the host.
+
+grants:
+  # Implementing agents. `run` on the factory only.
+  - subject: user:dev1
+    effect: allow
+    actions: [run]
+    resource: model:rocky-road
+
+  # Read access to run data, so an agent can query artifacts and the breakdown
+  # without going through a method call.
+  - subject: user:dev1
+    effect: allow
+    actions: [read]
+    resource: data:*
+
+  # Reviewing agents. Separate principal from the implementer on purpose: the
+  # grants are identical today, but run history records `initiatedBy`, so
+  # "a different agent reviewed this" becomes checkable rather than assumed.
+  - subject: user:reviewer1
+    effect: allow
+    actions: [run]
+    resource: model:rocky-road
+
+  - subject: user:reviewer1
+    effect: allow
+    actions: [read]
+    resource: data:*

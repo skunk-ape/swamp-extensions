@@ -1,0 +1,355 @@
+type: '@swamp/software-factory'
+typeVersion: 2026.06.24.1
+id: 9cf586c5-fb87-4651-87de-69ce8b3ace79
+name: rocky-road
+version: 1
+tags: {}
+globalArguments:
+  stages:
+    - id: triage
+      initial: true
+      description: Classify the work item and gather context before decomposing.
+      work:
+        mode: interactive
+        skills: [triage]
+        constraints: agent-constraints/triage-conventions.md
+      artifacts:
+        - name: classification
+          schema:
+            type: object
+            required: [type, confidence, reasoning]
+            properties:
+              type: { type: string, enum: [bug, feature, platform, security] }
+              confidence: { type: string, enum: [high, medium, low] }
+              reasoning: { type: string, minLength: 1 }
+              isRegression: { type: boolean }
+              regressionEvidence: { type: string }
+      transitions:
+        - name: submit
+          to: breakdown
+          gates:
+            - type: artifact-exists
+              config: { artifact: classification }
+
+    - id: breakdown
+      description: >
+        Break the work into small, individually completable chunks. Re-entered
+        whenever execution discovers the breakdown was wrong, which forces a
+        fresh review and a fresh human approval.
+      maxCycles: 8
+      work:
+        mode: interactive
+        skills: [breakdown]
+        constraints: agent-constraints/decomposition-conventions.md
+      artifacts:
+        - name: breakdown
+          schema:
+            type: object
+            required: [chunks, rationale]
+            properties:
+              rationale: { type: string, minLength: 1 }
+              chunks:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required: [id, description, origin]
+                  properties:
+                    id: { type: string, minLength: 1 }
+                    description: { type: string, minLength: 1 }
+                    files: { type: array, items: { type: string } }
+                    dependsOn: { type: array, items: { type: string } }
+                    sizeEstimate: { type: string, enum: [S, M, L] }
+                    origin: { type: string, enum: [initial, split, added] }
+                    parentChunk: { type: string }
+                    addedReason: { type: string }
+      transitions:
+        - name: submit
+          to: breakdown-review
+          gates:
+            - type: artifact-exists
+              config: { artifact: breakdown }
+
+    - id: breakdown-review
+      description: Adversarial review of the seams, sizing, and ordering.
+      work:
+        mode: dispatch
+        skills: [architecture, decomposition]
+        systemPrompt: |
+          You are reviewing a decomposition, not a plan. Try to refute it:
+          ${{ data.latest(self.name, "artifact-breakdown").payload.rationale }}
+
+          Attack the seams. Is any chunk too large to finish in one sitting?
+          Does any chunk depend on a chunk listed after it? Are two chunks
+          secretly the same change? Is there work the breakdown misses
+          entirely? Record findings with severities; do not soften them.
+      artifacts:
+        - name: breakdown-review
+          kind: findings
+          reviews: breakdown
+      transitions:
+        - name: approve
+          to: executing
+          gates:
+            # Forces a re-review whenever the breakdown changed — this is what
+            # makes "new sub-tickets were added" impossible to slip past.
+            - type: artifact-fresh
+              config: { artifact: breakdown-review, recordedThisCycle: true }
+            - type: findings-clear
+              config: { artifact: breakdown-review, blocking: [critical, high] }
+            # Cycle-scoped: an approval of breakdown v1 does not carry to v2.
+            - type: human-approval
+              config: { id: breakdown-approval }
+        - name: rework
+          to: breakdown
+
+    - id: executing
+      description: >
+        Work one wave of chunks. A wave is one chunk, or several chunks that do
+        not depend on each other and do not touch the same files.
+        Agent-autonomous — the human is not involved here. Progress is
+        re-recorded after each wave, so `progress` moves constantly while
+        `breakdown` stays still.
+      # Generous on purpose. Once work is chunked, entries into this stage count
+      # progress (next wave) as well as thrash (the same chunk bouncing), so this
+      # number cannot distinguish the two. The real runaway guard is the
+      # per-chunk `reviewRounds` gate on chunk-review's rework edge.
+      maxCycles: 40
+      maxDispatchesPerCycle: 3
+      work:
+        mode: interactive
+        skills: [implementation]
+        constraints: agent-constraints/implementation-conventions.md
+      artifacts:
+        - name: progress
+          schema:
+            type: object
+            required: [currentChunks, chunks]
+            properties:
+              currentChunks:
+                type: array
+                minItems: 1
+                items: { type: string, minLength: 1 }
+                description: >
+                  The wave just worked — the chunk ids under review right now.
+                  Binds into the chunk-review prompt, so the review covers this
+                  wave rather than the whole diff. One entry is the normal case.
+              chunks:
+                type: array
+                minItems: 1
+                items:
+                  type: object
+                  required: [id, status]
+                  properties:
+                    id: { type: string, minLength: 1 }
+                    status:
+                      type: string
+                      enum: [pending, in_progress, done, dropped]
+                    reviewRounds:
+                      type: integer
+                      minimum: 0
+                      description: >
+                        Times this chunk has come back from review. Incremented
+                        when recording progress at the start of a rework round.
+                    actualChanges: { type: string }
+                    droppedReason: { type: string }
+                    note: { type: string }
+      transitions:
+        - name: submit_chunk
+          to: chunk-review
+          gates:
+            - type: artifact-exists
+              config: { artifact: progress }
+            # Ordering is enforced here rather than trusted to the driving
+            # agent: nothing in the wave may depend on work that is still open.
+            - type: cel
+              config:
+                expr: >
+                  artifacts.progress.currentChunks.all(id,
+                    artifacts.breakdown.chunks.exists(c, c.id == id &&
+                      (!has(c.dependsOn) || c.dependsOn.all(d,
+                        artifacts.progress.chunks.exists(p, p.id == d &&
+                          (p.status == "done" || p.status == "dropped"))))))
+                message: >
+                  Every chunk in the wave needs its dependsOn chunks done or
+                  dropped first. Finish the blocking chunks, or send a smaller
+                  wave.
+            # A wave is a set of peers. Two chunks that depend on each other are
+            # sequential by definition and cannot be reviewed as one wave.
+            - type: cel
+              config:
+                expr: >
+                  artifacts.progress.currentChunks.all(id,
+                    artifacts.breakdown.chunks.exists(c, c.id == id &&
+                      (!has(c.dependsOn) || c.dependsOn.all(d,
+                        !(d in artifacts.progress.currentChunks)))))
+                message: >
+                  A wave cannot contain a chunk that depends on another chunk in
+                  the same wave. Split the wave and submit the dependency first.
+
+        # Material adaptation: new work discovered, a chunk must be dropped, or
+        # scope changed. Goes back through review and human approval on purpose.
+        - name: adapt
+          to: breakdown
+
+        - name: complete
+          to: conformance-review
+          gates:
+            - type: cel
+              config:
+                expr: >
+                  artifacts.progress.chunks.all(c,
+                    c.status == "done" || c.status == "dropped")
+                message: >
+                  Every chunk must be done or explicitly dropped before the
+                  change can go to conformance review.
+            - type: cel
+              config:
+                expr: >
+                  artifacts.progress.chunks.all(c,
+                    c.status != "dropped" ||
+                    (has(c.droppedReason) && c.droppedReason != ""))
+                message: >
+                  Every dropped chunk needs a droppedReason. Cancelling work is
+                  a scope change and has to say why.
+
+    - id: chunk-review
+      description: >
+        Review the wave just finished, against its description in the approved
+        breakdown. No human here — findings-clear is the kickback.
+      maxCycles: 40
+      work:
+        mode: dispatch
+        skills: [code-review]
+        systemPrompt: |
+          Review only these chunks, against their descriptions in the approved
+          breakdown. Ignore changes belonging to other chunks.
+
+          Wave: ${{ data.latest(self.name, "artifact-progress").payload.currentChunks }}
+
+          The chunks in a wave were implemented in parallel and are meant to be
+          independent. Two extra questions apply because of that: does one chunk
+          change a file another chunk in the wave also changed, and does one
+          chunk assume behaviour another chunk in the wave introduced?
+
+          Name the chunk id in every finding, so rework can shrink the wave to
+          the chunks that failed. Record findings with severities. A critical or
+          high finding sends the wave back for rework, so be precise about
+          severity.
+      artifacts:
+        - name: chunk-review
+          kind: findings
+          reviews: progress
+      transitions:
+        - name: accept
+          to: executing
+          gates:
+            - type: artifact-fresh
+              config: { artifact: chunk-review, recordedThisCycle: true }
+            - type: findings-clear
+              config: { artifact: chunk-review, blocking: [critical, high] }
+
+        # The per-chunk circuit breaker. Goes unavailable on the 4th round,
+        # which strands the wave — accept is blocked by findings-clear and
+        # rework is blocked here, so a human must pick one of the exits below.
+        # The count is per chunk, not per wave, so one bad chunk trips it while
+        # a wide healthy wave never does.
+        - name: rework
+          to: executing
+          gates:
+            - type: cel
+              config:
+                # An absent count reads as zero rounds. Direct field access on a
+                # missing key aborts CEL evaluation, which would fail the gate
+                # for the wrong reason on a chunk's first rework.
+                expr: >
+                  artifacts.progress.currentChunks.all(id,
+                    artifacts.progress.chunks.exists(c,
+                      c.id == id &&
+                      (!has(c.reviewRounds) || c.reviewRounds < 3)))
+                message: >
+                  A chunk in this wave has failed review 3 times. A human must
+                  choose: escalate to re-slice it, force_rework to grant another
+                  round, or adapt to drop it.
+
+        # Human grants one more round, mirroring the engine's cycle-override.
+        - name: force_rework
+          to: executing
+          gates:
+            - type: human-approval
+              config: { id: chunk-rework-override }
+
+        # The chunk was wrong, not the implementation. Re-slice it.
+        - name: escalate
+          to: breakdown
+
+    - id: conformance-review
+      description: >
+        Compare the whole diff against the final breakdown. The adaptation
+        history supplies the justifications rather than reconstructing them.
+      work:
+        mode: dispatch
+        skills: [code-conformance]
+        systemPrompt: |
+          Compare the working tree against the approved breakdown. For each
+          chunk, decide: implemented, deviated, partially_implemented,
+          missing, or added. Anything not `implemented` needs a justification.
+          The breakdown's chunk `origin` and `addedReason` fields, and the
+          version history of the breakdown artifact, tell you what changed
+          mid-flight and why — use them.
+      artifacts:
+        - name: conformance-review
+          kind: findings
+          reviews: progress
+      transitions:
+        - name: accept
+          to: pull-request
+          gates:
+            - type: artifact-fresh
+              config: { artifact: conformance-review, recordedThisCycle: true }
+            - type: findings-clear
+              config: { artifact: conformance-review, blocking: [critical, high] }
+        - name: rework
+          to: executing
+
+    - id: pull-request
+      description: One pull request for the whole breakdown.
+      work:
+        mode: interactive
+        skills: [pull-request]
+        constraints: agent-constraints/implementation-conventions.md
+      evidence:
+        - name: change-request
+          schema:
+            type: object
+            required: [url, headSha]
+            properties:
+              url: { type: string, minLength: 1 }
+              headSha: { type: string, minLength: 7 }
+      transitions:
+        - name: ship
+          to: done
+          gates:
+            - type: evidence-recorded
+              config: { name: change-request }
+            - type: human-approval
+              config: { id: ship-approval }
+        - name: rework
+          to: executing
+
+    - id: done
+      terminal: true
+
+    - id: aborted
+      terminal: true
+
+  globalTransitions:
+    - name: abort
+      to: aborted
+      gates:
+        - type: human-approval
+          config: { id: abort-confirmation }
+reports:
+  require:
+    - { name: "@swamp/software-factory/work-item-summary", methods: [summary] }
+    - { name: "@skunk-ape/rocky-road/breakdown-board", methods: [status] }
