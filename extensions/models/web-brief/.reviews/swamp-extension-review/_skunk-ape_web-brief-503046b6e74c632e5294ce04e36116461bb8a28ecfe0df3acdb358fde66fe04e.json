@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/web-brief",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:19:41Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "firecrawlApiKey is .meta({ sensitive: true }) and vault-sourced; the key is never logged; firecrawlApiUrl hostname is matched exactly and a non-hosted target with a key logs a warning. Minor: an http:// firecrawlApiUrl is accepted, which sends the Bearer key in cleartext to a non-loopback host."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "issue",
+      "note": "Neither fetch nor summarize logs an info-level completion line (fetch never logs succeeded/failed counts; summarize never logs that the brief was written). Per-URL refusals/failures are logged at info, not warning. The logged {url} is the raw caller-supplied URL, so any user:pass@ userinfo in it lands in logs."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Per-URL failures are soft errors carried in results; summarize validates (nonce/preamble mismatch, unparseable reply, schema) and throws before writeResource; HTTP errors include status and a body excerpt; firecrawl 401/402/429 are named. Minor: a firecrawl request timeout is reported as a generic 'request failed' rather than as a timeout."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "36 tests pass, but the two load-bearing security behaviours are untested: (1) no test that a 3xx redirect to a private/metadata address is refused on the second hop (fetchOne redirect re-check has zero coverage); (2) no test of the argv runClaude passes, so nothing would catch the tool boundary being incomplete (it is: see api-contracts). No createModelTestContext test of either method's execute/writeResource path. The 'localhost resolves to loopback' test comment claims the same logic stops DNS rebinding, which it does not."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Both methods are read-only with respect to external systems and write one resource each at the end; a mid-run per-URL failure no longer aborts the batch."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "BLOCKER (tool boundary): runClaude spawns `claude -p --tools \"\"`, but --tools only restricts the built-in tool set. MCP servers from user/project/local config and claude.ai connectors still load. Verified on this machine via the stream-json init event: with `--tools \"\"` the session exposed mcp__funes__get/recall/scan/sessions/sketch/status (funes connected; 'claude.ai Claude Docs' pending); adding --strict-mcp-config gave tools: [] and mcp_servers: []. So the 'summarizer holds no tools' claim is false whenever MCP is configured, and attacker-controlled page text reaches a session that can call them (subject only to the user's permission settings). Fix: add --strict-mcp-config (and consider --setting-sources \"\" / --bare plus a scratch cwd so hooks, plugins and the repo CLAUDE.md do not load), and assert the argv in a test. BLOCKER (egress): hostResolvesPublicly resolves with Deno.resolveDns and then fetch() resolves the hostname again independently, so the check is TOCTOU: a TTL-0 rebinding name answering public then 127.0.0.1/169.254.169.254 passes the check and connects privately. The two resolvers also differ (resolveDns ignores /etc/hosts; HTTP(S)_PROXY env makes fetch go via a proxy that resolves on its own). README ('which is also what stops a DNS-rebinding host...') and the test comment claim the opposite. Fix: pin the connection to the vetted address (or route via an enforcing egress proxy), or at minimum retract the rebinding claim and document the residual risk. Follow-up gaps: fec0::/10 and Teredo 2001::/32 not blocked; NAT64 64:ff9b:1::/48 embeddings other than /96 are unwrapped from the wrong groups; no Retry-After/backoff on firecrawl 429 (reported, not retried)."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "issue",
+      "note": "firecrawlOne adds an anonymous abort listener to ctx.signal per URL and never removes it (the leak fetchOne already fixed); runClaude likewise never removes its abort listener. firecrawlOne reads the response with res.text() unbounded and only truncates afterwards, so maxBytesPerUrl does not bound memory on that path, and truncation/bytes there count UTF-16 chars, not bytes."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README 192.168.1.1 example is intentionally accepted in quality.yaml (it demonstrates refusal of RFC1918). No other real IPs, internal hostnames, account IDs or local paths found in README.md, DESIGN.md or tests; test addresses are range-boundary values."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "All schemas are plain z.object without .passthrough(); BriefSchema bounds every free-text field and strips unknown keys."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "fetched: 7d / gc 20; brief: 30d / gc 50."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model; read-only fetch/summarize by design."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "fetch writes only fetched/fetched, summarize only brief/brief; each spec has a single writer and shape."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "No method reads back stored state."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Model version moved 2026.08.21.1 -> .2 -> 2026.08.22.1 (adding droppedUrls, bounding brief fields) with no upgrades entries, but no version was ever published (registry: never-published), so no released data needs migrating. Any future schema change after this publish needs an upgrades entry."
+    }
+  ]
+}

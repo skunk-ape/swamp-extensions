@@ -1,0 +1,47 @@
+{
+  "extension": "@skunk-ape/rocky-road",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:18:19Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No credentials, vault refs or secrets anywhere. The report reads only factory run data and echoes workItem, which is not sensitive."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "issue",
+      "note": "breakdown_board.ts never uses context.logger. Most visibly, readEnvelope's catch drops repository and JSON-parse errors without logging, so a broken read looks the same as 'not a Rocky Road run' (empty board). Add a warning log in the catch and a debug log saying which work item and data names were read."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "(1) readEnvelope's bare catch {} swallows every error, including I/O failures, and returns null, so the report goes silent instead of saying why. It should only treat a missing item as null. (2) Payloads are cast (as Chunk[] / ChunkProgress[]) without checking them. A non-array chunks or dependsOn (possible for any factory with a differently shaped artifact named 'breakdown') throws TypeError from .map/.filter. (3) Text is not escaped for its output: chunk ids only need minLength 1, so ids containing spaces, quotes, brackets, '-->' or the Mermaid keyword 'end' produce an invalid flowchart, and a '|' or newline in a description breaks the Markdown table row."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "All 9 tests pass and cover state derivation, the wave and legacy currentChunk, the stalled section, and silence when there is no breakdown. Untested: the failed-execution placeholder, a non-factory modelType, status without workItem, a lossy workItem slug (the FNV-1a mirror of the engine's run_names.ts is the most fragile piece and has no parity test), malformed JSON or a missing progress artifact, the 'Added after the initial breakdown' section, and the Mermaid output."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only projection. It writes nothing and the same data always gives the same output. The factory.yaml gates are deterministic CEL / engine gates. human-approval is scoped to stage+cycle (checked in the engine's gates.ts), so each force_rework needs a fresh approval."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "No HTTP calls. Against the engine's data contract: workItemSlug, the artifact-/state- instance names, the envelope fields and the top-level state.stageId all match @swamp/software-factory's _lib/run_names.ts and run_data.ts. Mismatches: (1) No era filtering. The engine hides records whose recordedAt is earlier than state.startedAt after a 'reset' (run_data.ts era filtering), but the report reads the latest breakdown/progress with no check. After a reset it shows the previous era's chunks as current until a new breakdown is recorded. (2) The stalled-chunk guidance names an exit the graph lacks: the 'Needs a human' text (and the rework gate message, SKILL.md and DESIGN.md stranded-exit tables, README and manifest description) offers 'adapt to drop it', but adapt exists only on executing, not on chunk-review where the wave is stranded. Only escalate/force_rework/rework/accept/abort are available there, so following the text gets a rejected transition. README also says all three exits 'route back through breakdown-review', which is false for force_rework (it goes to executing). (3) 'Needs a human' fires at reviewRounds >= 3, which by the skill's increment-at-rework-start rule is the chunk's third rework round, still running in executing. The wave is not stranded until that round's review also fails, so the section appears one round early."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "No handles, connections or temp files. Only reads through dataRepository.getContent."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Scanned README, DESIGN, factory.yaml, agent-constraints and the skill. The only IPs are 127.0.0.1 loopback with <you>/<name>.<secret> placeholders in DESIGN.md. No internal hostnames, account IDs or topology. The test fixture uses 'test-item' and 'factory-1'."
+    }
+  ]
+}

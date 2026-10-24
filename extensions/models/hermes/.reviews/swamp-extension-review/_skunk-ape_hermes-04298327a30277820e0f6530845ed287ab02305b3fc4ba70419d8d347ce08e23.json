@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:21:28Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "issue",
+      "note": "BLOCKER (sandbox escape): provision runs code from the bot-writable workdir on the host, outside the sandbox. The profile grants $WORKDIR readwrite, and that includes hermes/hermes-agent/venv, tools/funes and hermes/hermes-agent/.git. provision then runs `<workdir>/hermes/hermes-agent/venv/bin/python -c 'import ...'` and `--version` on every run, even with check=true. It also runs `git -C <checkout> rev-parse/status/remote/fetch`, so the bot can set core.fsmonitor or hooks in .git/config. It runs `<workdir>/tools/funes add hermes` whenever hermes/hooks/funes-index.sh is missing, which the bot can arrange by deleting it. It runs `uv sync` against the checkout's pyproject and build backends. A prompt-injected agent can plant a sitecustomize.py or .pth file, replace tools/funes, or edit .git/config, and get code execution as the host user at the next provision. That user can read the repository and vault the sandbox exists to keep away from the agent. Fix: run the import probes and funes inside `nono run` with the bot's profile, and pass `-c core.fsmonitor= -c core.hooksPath=/dev/null` to git (or check the venv from outside without executing it). Also: verify writes .verify-probe.py and provision writes <file>.provisioning into the workdir with Deno.writeTextFile, which follows symlinks, so a bot-planted symlink redirects that host-side write to any file the user can write. FOLLOW-UP: snapshot carries hermes/auth.json and state.db into <repo>/snapshots/*.tar.gz with umask permissions. That puts credentials in the ops repo by default, with no 0600 mode and no gitignore guidance. No secret value is otherwise handled: secretKeys only name vault keys."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Every method logs progress and an outcome line with structured placeholders. Warnings are kept for real degradation (drift, MISSING steps, load failures, unbindable probe port, residual paths). No secret value passes through the code, so none can be logged. Composite strings are sometimes built before they reach a placeholder (`line`). That is cosmetic."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "FOLLOW-UP: verify ignores the `nono run` exit code and never checks that the probe ran to completion. parseProbeOutput turns stray output into a FAIL, which is good. But a probe killed partway through (signal, OOM, seccomp kill) that printed only PASS lines before dying, or a nono that exits non-zero with no output, gives clean=true. Zero checks summarizes as clean. Emit a final sentinel line from the probe and require both it and exit code 0. Smaller: uninstall ignores the unload result, and its broad catch on Deno.remove logs any error (EACCES included) as 'had no unit file installed'. The fleet report's readJson swallows every error as null. install, verify and restore deliberately write their resource before throwing, and the data is complete, so that is accepted."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "FOLLOW-UP: 118 tests pass, and _lib is well covered. But hermes_test.ts only exercises render, scaffold, provision --check on an absent workdir, and the method inventory. install, uninstall, status, restart, verify, snapshot and restore method bodies have no tests, and nothing uses withMockedCommand or createModelTestContext. The provision re-run path on an existing checkout has no test either, and that test would have caught the branch-ref bug under idempotency-resilience."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "BLOCKER (correctness): provision is not re-runnable with a branch ref, and the default declaration uses one. agent.ref defaults to \"main\" and is documented as 'branch or tag', and scaffold does not set it. The first run clones with `--branch main`. Every later run checks `refs/tags/main^{commit}`, which does not exist, so it sets refMoved=true and then runs `git fetch --depth 1 --no-tags origin tag main`. That fails with 'couldn't find remote ref refs/tags/main' (reproduced with a local repo), so provision throws 'fetch main failed'. check=true reports hermes-agent as missing forever, and `complete` is never true. Fix: resolve branches as well as tags (or ls-remote the ref), or restrict agent.ref to tags in the schema, and change the default and docs to match. ALSO A CORRECTNESS BUG (small fix): renderPlist and renderUnit hard-code the log paths as __HOME__/agents/<slug>/logs and ignore workdirRoot. install and provision create <workdirRoot>/<slug>/logs. With any workdirRoot other than $HOME/agents, launchd or systemd cannot open the log file (the directory is never created), and the gateway fails to start. Derive both paths from workdirOf(b). FOLLOW-UP: restore copies staged files one by one, so a failure partway leaves a partly applied workdir, even though the comment says staging prevents that."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "There is no HTTP client. External interaction is subprocesses (launchctl, systemctl, loginctl, git, uv, nono, tar, funes, lsof/ss) and loopback TCP connects. Exit codes are checked and stderr is surfaced, except in the verify exit-code case under error-handling."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "issue",
+      "note": "FOLLOW-UP, minor: provision's temporary XDG_CONFIG dir is removed non-recursively in a swallowing catch, so it leaks whenever uv writes into it. snapshot reads the whole archive into memory to hash it, which can be gigabytes with includeHfCache, and restore reads every destination file as text just to test for existence. install writes earlier unit files into the unit directory before it throws on a later missing unit. verify closes its listener and removes the probe in finally, snapshot removes its list file, and restore removes its staging directory, all correctly."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README uses placeholders (000000000 Telegram ids, /Users/example, /Users/you), and test fixtures use /Users/x. Bot names are anonymized (Alpha, Beta, Gamma). The only IP literal is 127.0.0.1. The envlib template cites a public upstream PR and fork branch, which are not infrastructure identifiers."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "issue",
+      "note": "FOLLOW-UP: plain z.object throughout, with no .passthrough(), and crossCheck() replaces refinements for a documented reason. But free-form strings are put unescaped into generated shell and YAML. secretKeys.telegram is unquoted in the envlib. telegram.homeChannelName and vault sit inside double-quoted ${VAR:-...}. A displayName containing a newline breaks out of a `#` comment line into executable shell. runtime.provider, model and skin are unquoted YAML. The declaration is operator-written and the output is committed for review, so this is not exploitable by the agent, but those fields should have charset regexes or be escaped. agent.ref is described as 'branch or tag' although only tags work (see idempotency-resilience)."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "All six specs set both: rendered, provisioned, snapshot and restored are infinite/20; verification is 90d/20; status is 30d/50."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "FOLLOW-UP, deliberate: there is no sync/reconcile method. scaffold, provision, render and install create; render rewrites; uninstall removes; status observes; `render check=true` detects drift in one direction. Nothing reads a hand-edited generated file or a live unit back into the declaration. That is a reasonable design choice, recorded as the honest gap."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "issue",
+      "note": "FOLLOW-UP: mutating methods validate inline and throw before acting. render and provision run crossCheck. install runs supervisor.preflight (kernel >= 6.7 and lingering on Linux) and refuses on unresolved placeholders before loading anything. snapshot refuses while the gateway is running. None of this is expressed as labelled swamp pre-flight checks, so callers can skip it only with the ad-hoc ignorePreflight/force flags."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "One instance per spec per bot, named <spec>-<slug>: rendered-, provisioned-, verification-, snapshot-, restored-, status-. The four writers of status (install, uninstall, status, restart) all go through writeStatus(), so the shape cannot diverge. No method writes two specs under one name."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "No method reads stored state back. Each one measures the host directly. The workflow-scoped fleet report reads step data through context.dataRepository.getContent, which is the report API, not a raw repository walk."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "Never published. The dry run's version-drift check reports no previously published version, so model version 2026.09.22.1 has no registry predecessor to migrate from."
+    }
+  ]
+}
