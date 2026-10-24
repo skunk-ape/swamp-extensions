@@ -106,3 +106,27 @@ Deno.test("normalize: un-masks sentence boundaries hidden by `**Term.**`", () =>
     0,
   );
 });
+
+Deno.test("normalize: never edits a URL, even one that looks like emphasis", () => {
+  const draft = "See https://example.com/_draft_/page and it's done.";
+  const { text } = normalize(draft);
+  assertEquals(text, "See https://example.com/_draft_/page and it is done.");
+});
+
+Deno.test("normalize: never edits leading frontmatter", () => {
+  const draft = [
+    "---",
+    "description: It's **fast**, e.g. instant.",
+    "---",
+    "It's here.",
+  ].join("\n");
+  assertEquals(
+    normalize(draft).text,
+    [
+      "---",
+      "description: It's **fast**, e.g. instant.",
+      "---",
+      "It is here.",
+    ].join("\n"),
+  );
+});

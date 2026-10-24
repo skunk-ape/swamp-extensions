@@ -40,6 +40,9 @@ function harness(opts: {
         info: (msg: string, props?: Record<string, unknown>) => {
           logs.push({ msg, props: props ?? {} });
         },
+        warning: (msg: string, props?: Record<string, unknown>) => {
+          logs.push({ msg, props: props ?? {} });
+        },
       },
       writeResource: (
         spec: string,
@@ -180,6 +183,22 @@ Deno.test("lint: severity config decides what blocks", async () => {
   assertEquals((h.writes[0].data.findings as unknown[]).length > 1, true);
 });
 
+Deno.test("lint: severities can name one check and keep the rest", async () => {
+  // The README's own example: tuning one check must not require all eleven.
+  const h = harness({ globals: { severities: { "semicolon": "low" } } });
+  await run("lint", { text: DIRTY }, h);
+  const findings = h.writes[0].data.findings as Array<
+    { category: string; severity: string }
+  >;
+  const semi = findings.filter((f) => f.category === "semicolon");
+  const modal = findings.filter((f) => f.category === "banned-modal");
+  assertEquals(semi.length > 0 && semi.every((f) => f.severity === "low"), true);
+  assertEquals(
+    modal.length > 0 && modal.every((f) => f.severity === "high"),
+    true,
+  );
+});
+
 // --- normalize -------------------------------------------------------------
 
 Deno.test("normalize: reports its fixes and re-lints the fixed text", async () => {
@@ -221,6 +240,47 @@ Deno.test("rewrite: the mechanical pass alone can clear the loop", async () => {
   assertEquals(d.attempts, 0);
   assertEquals(d.clean, true);
   assertStringIncludes(d.text as string, "for example");
+});
+
+/** A stand-in for `claude` that ignores its prompt and prints `reply`. */
+async function fakeClaude(reply: string): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "stef-fake-claude-" });
+  const path = `${dir}/claude`;
+  await Deno.writeTextFile(
+    path,
+    `#!/bin/sh\ncat >/dev/null\ncat <<'EOF'\n${reply}\nEOF\n`,
+  );
+  await Deno.chmod(path, 0o755);
+  return path;
+}
+
+const MODAL_WITH_CODE = "The team may run `make build` now.";
+
+Deno.test("rewrite: a reply that drops a code span is blocked, not clean", async () => {
+  // The linter blanks code, so without the preservation check this reply
+  // would lint clean while silently losing the command.
+  const claudePath = await fakeClaude("The team runs the build now.");
+  const h = harness({ globals: { claudePath } });
+  await run("rewrite", { text: MODAL_WITH_CODE, maxAttempts: 1 }, h);
+  const d = h.writes[0].data;
+  const findings = d.findings as Array<{ category: string; severity: string }>;
+  assertEquals(d.attempts, 1);
+  assertEquals(d.clean, false);
+  assertEquals(
+    findings.some((f) => f.category === "preserve" && f.severity === "critical"),
+    true,
+  );
+  assertEquals(h.logs.some((l) => l.msg.includes("gave up")), true);
+});
+
+Deno.test("rewrite: a reply that keeps the code span closes clean", async () => {
+  const claudePath = await fakeClaude("The team runs `make build` now.");
+  const h = harness({ globals: { claudePath } });
+  await run("rewrite", { text: MODAL_WITH_CODE, maxAttempts: 1 }, h);
+  const d = h.writes[0].data;
+  assertEquals(d.attempts, 1);
+  assertEquals(d.clean, true);
+  assertEquals(d.text, "The team runs `make build` now.");
 });
 
 // --- referee mode: start ---------------------------------------------------

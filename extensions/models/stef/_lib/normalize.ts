@@ -19,11 +19,21 @@ import {
   BOLD,
   CONTRACTION,
   EMPHASIS_MAX_WORDS,
+  frontmatterLineCount,
+  INLINE_CODE,
   ITALIC,
   latinPatterns,
   LIST_MARKER,
   SENTENCE_FINAL,
+  URL_PATTERN,
 } from "./lint.ts";
+
+/**
+ * Inline spans the linter blanks, and so the fixer must never edit: code and
+ * URLs. Capturing, so `split` keeps them as their own parts.
+ */
+const VERBATIM = new RegExp(`(${INLINE_CODE.source}|${URL_PATTERN.source})`);
+const VERBATIM_ALL = new RegExp(VERBATIM.source, "g");
 
 export interface Fix {
   /** The check whose findings this fix targets. */
@@ -95,11 +105,12 @@ function fixEmphasisInLine(
     ? marker[0].length
     : line.length - line.trimStart().length;
 
-  // Blank inline code to equal-length spaces before detecting. Same-length
-  // keeps every index valid against the original line, and a blanked span can
-  // never look like emphasis — `**Term**.` and `__init__` inside backticks are
-  // code, not markup, and editing them would corrupt the document.
-  const masked = line.replace(/`[^`\n]+`/g, (m) => " ".repeat(m.length));
+  // Blank inline code and URLs to equal-length spaces before detecting.
+  // Same-length keeps every index valid against the original line, and a
+  // blanked span can never look like emphasis — `__init__` inside backticks
+  // and `/_draft_/` inside a URL are not markup, and editing them would
+  // corrupt the document.
+  const masked = line.replace(VERBATIM_ALL, (m) => " ".repeat(m.length));
 
   // Bold first, then italics over the bold-blanked line — the linter's order.
   const spans: Array<{ start: number; end: number; content: string }> = [];
@@ -204,7 +215,12 @@ export function normalize(text: string): NormalizeResult {
   let inFence = false;
   let prevBlank = true;
 
-  const lines = text.split("\n").map((line) => {
+  const source = text.split("\n");
+  // Frontmatter is metadata the linter never checks, so it is never edited.
+  const frontmatter = frontmatterLineCount(source);
+
+  const lines = source.map((line, i) => {
+    if (i < frontmatter) return line;
     if (/^\s*(?:```|~~~)/.test(line)) {
       inFence = !inFence;
       prevBlank = true;
@@ -218,9 +234,10 @@ export function normalize(text: string): NormalizeResult {
     const blockStart = prevBlank || LIST_MARKER.test(line);
     prevBlank = line.trim().length === 0;
 
-    // Split on inline code so a command or identifier is never rewritten.
-    const fixed = line.split(/(`[^`\n]+`)/).map((part) => {
-      if (part.startsWith("`")) return part;
+    // Split on inline code and URLs so a command, identifier, or link is never
+    // rewritten. Odd indexes are the captured verbatim spans.
+    const fixed = line.split(VERBATIM).map((part, j) => {
+      if (j % 2 === 1) return part;
       let out = applyTable(part, CONTRACTIONS, "contraction", fixes, true);
       out = applyTable(out, latin, "latin-abbrev", fixes, false);
       return out;

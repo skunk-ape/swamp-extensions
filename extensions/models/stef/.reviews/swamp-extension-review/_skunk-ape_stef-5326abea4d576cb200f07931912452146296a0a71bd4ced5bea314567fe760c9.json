@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/stef",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:20:19Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "issue",
+      "note": "No secrets stored; rewrite defers to Claude Code's own credential (good). But _lib/generate.ts spawns `claude -p` with no tool restriction (no `--tools \"\"`, no --strict-mcp-config/--setting-sources), in swamp's cwd. The draft is untrusted input in the prompt, so a prompt-injected draft gets the user's full tool set, project CLAUDE.md, hooks and MCP servers, including any pre-approved Bash/WebFetch permissions. A text rewriter needs no tools: pass `--tools \"\"` (and ideally --strict-mcp-config)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "issue",
+      "note": "Structured placeholders throughout and no sensitive data. But `rewrite` has no entry log and no completion log: with normalizeFirst=false on a clean draft it logs nothing, and it never logs the final outcome (attempts used, clean vs exhausted). An exhausted rewrite loop is not logged at warning level."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "All methods throw before writeResource. generate() errors name the binary, exit code, stderr, timeout and cancellation. record refuses clean/exhausted sessions with actionable messages."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "56 tests pass, but _lib/generate.ts is untested (spawn failure, wall timeout, abort, non-zero exit, empty output), and rewrite is only tested on paths that never call the model: no injectable generator or withMockedCommand covers the feedback loop. No test sets a partial `severities` map, which would have caught the README example failing validation. No test covers normalize on URLs or frontmatter, which would have caught it rewriting text the linter skips (see api-contracts)."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "lint/normalize/start overwrite their session slot, so re-runs are idempotent. But rewrite holds every attempt in memory and writes only at the end: a timeout or crash on attempt N throws away attempts 1..N-1, including the mechanical pass, and the operator has to pay for the whole loop again."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "(1) The output of `claude -p` is accepted as-is. Nothing strips a preamble or code fences, and nothing checks that fenced code, inline code or URLs survived. The linter blanks those regions, so a rewrite that changed a command can still come back clean=true. That contradicts the README/manifest claim that a command is never rewritten, which holds only for lint/normalize. (2) normalize does not share the linter's URL/frontmatter stripping. Verified: `https://example.com/_draft_/page` becomes `https://example.com/draft/page`, and YAML frontmatter values are rewritten although lint reports nothing there. This breaks the file's own invariant that the fixer only edits what the linter flags. It affects normalize, plus rewrite/start by default (normalizeFirst=true)."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "generate() clears the timer, removes the abort listener, and kills and reaps the child on every path, including a broken stdin pipe. No temp files are created."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "issue",
+      "note": "No real IPs, hostnames or account IDs. Two problems: (1) README and _lib/lint.ts say the upstream MIT-licensed simple_english_lint.py copyright by AminBlg is in LICENSE, but the shipped LICENSE (and the repo-root LICENSE) holds only 'Copyright (c) 2026 Seth Falcon'. MIT requires the original notice to ship with substantial portions. (2) The README Configuration example `severities: {emphasis: low}` fails validation. Verified with zod@4: `z.record(z.enum(CHECKS), ...)` is exhaustive, so a partial map is rejected. Every check has to be listed, or the schema must switch to z.partialRecord (toContract already falls back to 'high')."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "All schemas are plain z.object or z.strictObject. No passthrough."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "findings/rewrite/normalized: 30d, gc 10. session: 30d, gc 20."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model. It is a linter plus a rewrite-session state machine with no external resource."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No method mutates external resources. They write only swamp data, and rewrite spawns a local process."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "One write per execution, named <spec>-<session>. start and record share session-<session> with an identical SessionSchema shape."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "record reads prior state through ctx.readResource. Minor: the result is cast to Session, not parsed through SessionSchema."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "The behavior version 2026.08.16.1 matches the published release, and stef.ts is byte-identical since then (only a rename in 95ce411). No schema change, so no upgrade entry is needed. The push's versionBumpUpgrade warning is generic."
+    }
+  ]
+}

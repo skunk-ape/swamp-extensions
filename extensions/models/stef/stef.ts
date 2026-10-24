@@ -23,7 +23,14 @@
 // flight never overwrite each other.
 
 import { z } from "npm:zod@4";
-import { type Check, CHECKS, type Finding, LIMITS, lint } from "./_lib/lint.ts";
+import {
+  type Check,
+  CHECKS,
+  type Finding,
+  LIMITS,
+  lint,
+  protectedSpans,
+} from "./_lib/lint.ts";
 import { generate } from "./_lib/generate.ts";
 import { type Fix, normalize } from "./_lib/normalize.ts";
 
@@ -67,8 +74,11 @@ const GlobalArgsSchema = z.object({
   textType: z.enum(["procedural", "descriptive"]).default("descriptive"),
   /** Override the sentence word limit from textType. */
   maxWords: z.number().int().positive().optional(),
-  /** Per-check severity. Anything in `blocking` must be fixed. */
-  severities: z.record(z.enum(CHECKS), SeveritySchema).default(
+  /**
+   * Per-check severity. Anything in `blocking` must be fixed. Partial: a check
+   * left out keeps the default, so tuning one check means naming one check.
+   */
+  severities: z.partialRecord(z.enum(CHECKS), SeveritySchema).default(
     DEFAULT_SEVERITIES,
   ),
   /** Severities that block. */
@@ -153,7 +163,7 @@ type Session = z.infer<typeof SessionSchema>;
 
 function toContract(
   f: Finding,
-  severities: Record<Check, Severity>,
+  severities: Partial<Record<Check, Severity>>,
 ): ContractFinding {
   return {
     id: `STE-${f.check}-L${f.line}`,
@@ -161,6 +171,35 @@ function toContract(
     category: f.check,
     description: `line ${f.line}: ${f.message}`,
   };
+}
+
+/**
+ * Protected spans of `before` that `after` no longer contains, as a multiset.
+ *
+ * The linter blanks code and URLs, so it would pass a rewrite that changed a
+ * command. Each lost span becomes a critical finding that always blocks.
+ */
+function lostSpans(before: string[], after: string): ContractFinding[] {
+  const left = new Map<string, number>();
+  for (const s of protectedSpans(after)) left.set(s, (left.get(s) ?? 0) + 1);
+  const lost: ContractFinding[] = [];
+  for (const s of before) {
+    const n = left.get(s) ?? 0;
+    if (n > 0) {
+      left.set(s, n - 1);
+      continue;
+    }
+    const shown = s.length > 80 ? `${s.slice(0, 77)}...` : s;
+    lost.push({
+      id: `STE-preserve-${lost.length + 1}`,
+      severity: "critical",
+      category: "preserve",
+      description:
+        `The rewrite changed or dropped text that must stay exact: ${shown}. ` +
+        `Restore it unchanged.`,
+    });
+  }
+  return lost;
 }
 
 function countBlocking(
@@ -339,8 +378,16 @@ function sessionPacket(
  */
 export const model = {
   type: "@skunk-ape/stef",
-  version: "2026.08.16.1",
+  version: "2026.10.24.1",
   globalArguments: GlobalArgsSchema,
+  upgrades: [
+    {
+      toVersion: "2026.10.24.1",
+      description:
+        "severities became a partial map; every full map is still valid",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+  ],
   resources: {
     "findings": {
       description:
@@ -475,6 +522,7 @@ export const model = {
           signal: AbortSignal;
           logger: {
             info: (msg: string, props?: Record<string, unknown>) => void;
+            warning: (msg: string, props?: Record<string, unknown>) => void;
           };
           writeResource: WriteResource;
         },
@@ -483,6 +531,10 @@ export const model = {
         const g = ctx.globalArgs;
         const cap = args.maxAttempts ?? g.maxAttempts;
         const system = buildSystemPrompt(g);
+        ctx.logger.info(
+          "Rewriting {source} into session {session}, up to {cap} attempt(s)",
+          { source, session: args.session, cap },
+        );
 
         let current = original;
         let mechanical: Fix[] = [];
@@ -497,6 +549,8 @@ export const model = {
             },
           );
         }
+        // Taken after the mechanical pass, which never edits these spans.
+        const keep = protectedSpans(current);
         let state = runLint(current, g, args);
         let attempts = 0;
 
@@ -516,6 +570,26 @@ export const model = {
             signal: ctx.signal,
           });
           state = runLint(current, g, args);
+          const lost = lostSpans(keep, current);
+          if (lost.length > 0) {
+            state = {
+              ...state,
+              findings: [...state.findings, ...lost],
+              blockingCount: state.blockingCount + lost.length,
+            };
+          }
+        }
+
+        if (state.blockingCount === 0) {
+          ctx.logger.info(
+            "Rewrite of {source} is clean after {attempts} attempt(s)",
+            { source, attempts },
+          );
+        } else {
+          ctx.logger.warning(
+            "Rewrite of {source} gave up after {attempts} attempt(s) with {blocking} blocking finding(s)",
+            { source, attempts, blocking: state.blockingCount },
+          );
         }
 
         const handle = await ctx.writeResource(

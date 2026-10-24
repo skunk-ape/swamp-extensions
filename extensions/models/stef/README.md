@@ -102,7 +102,9 @@ loop and carries the rules the linter cannot check.
 
 The linter removes code blocks, inline code, headings, tables, URLs,
 blockquotes, shell-prompt lines, and YAML frontmatter before any check runs. A
-command or a quoted log line is never rewritten.
+command or a quoted log line is never rewritten: `normalize` skips those spans,
+and `rewrite` rejects any attempt that changes a code block, inline code, a URL,
+or a shell-prompt line.
 
 ## Configuration
 

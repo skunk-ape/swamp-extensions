@@ -6,7 +6,7 @@
 // clarity — is left to the reason-checked guidance in the skill prose.
 //
 // Ported to TypeScript from the MIT-licensed simple_english_lint.py by AminBlg;
-// see LICENSE at the repository root for the original copyright and terms.
+// see LICENSE beside this extension's manifest for the original copyright and terms.
 // Behavior matches the original check-for-check and line-for-line.
 
 /** Word limits per text type. Procedural is instructions; descriptive is prose. */
@@ -43,8 +43,8 @@ const TABLE_ROW = /^\s*\|/;
 const SHELL_PROMPT = /^\s*\$\s/;
 const THEMATIC_BREAK = /^\s{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 export const LIST_MARKER = /^\s*(?:[-*+]|\d+[.)])\s+/;
-const INLINE_CODE = /`[^`\n]+`/g;
-const URL = /https?:\/\/\S+/g;
+export const INLINE_CODE = /`[^`\n]+`/g;
+export const URL_PATTERN = /https?:\/\/\S+/g;
 
 // --- Check patterns ---------------------------------------------------------
 
@@ -129,12 +129,59 @@ const FRONTMATTER_FENCE = /^---\s*$/;
  * because a lone `---` mid-document is a thematic break, not an open fence.
  */
 function stripFrontmatterBlock(lines: string[]): string[] {
-  if (lines.length === 0 || !FRONTMATTER_FENCE.test(lines[0])) return lines;
+  const n = frontmatterLineCount(lines);
+  return n === 0 ? lines : lines.map((line, i) => (i < n ? "" : line));
+}
+
+/**
+ * Number of lines, delimiters included, in a leading YAML frontmatter block.
+ *
+ * Zero when there is none. Exported so the fixer skips exactly the lines the
+ * linter does.
+ */
+export function frontmatterLineCount(lines: string[]): number {
+  if (lines.length === 0 || !FRONTMATTER_FENCE.test(lines[0])) return 0;
   const close = lines.findIndex((line, i) =>
     i > 0 && FRONTMATTER_FENCE.test(line)
   );
-  if (close === -1) return lines;
-  return lines.map((line, i) => (i <= close ? "" : line));
+  return close === -1 ? 0 : close + 1;
+}
+
+/**
+ * The non-prose spans a rewrite must carry over byte for byte.
+ *
+ * Fenced blocks, inline code, URLs, and shell-prompt lines are blanked before
+ * any check runs, so the linter cannot see a rewrite that changed one. This
+ * lists them so a caller can compare before and after. Trailing sentence
+ * punctuation is trimmed from URLs, since a reworded sentence may move it.
+ */
+export function protectedSpans(text: string): string[] {
+  const spans: string[] = [];
+  let fence: string[] | null = null;
+  for (const line of text.split("\n")) {
+    if (FENCE.test(line)) {
+      if (fence === null) {
+        fence = [];
+      } else {
+        spans.push(fence.join("\n"));
+        fence = null;
+      }
+      continue;
+    }
+    if (fence !== null) {
+      fence.push(line);
+      continue;
+    }
+    if (SHELL_PROMPT.test(line)) {
+      spans.push(line.trim());
+      continue;
+    }
+    for (const m of line.matchAll(INLINE_CODE)) spans.push(m[0]);
+    for (const m of line.replace(INLINE_CODE, " ").matchAll(URL_PATTERN)) {
+      spans.push(m[0].replace(/[.,;:!?)]+$/, ""));
+    }
+  }
+  return spans;
 }
 
 /**
@@ -175,7 +222,9 @@ export function stripNonProse(
     }
     // List markers stay as a sentence-split signal; splitSentences strips them
     // before it counts words.
-    out.push(raw.replace(INLINE_CODE, " CODESPAN ").replace(URL, " URL "));
+    out.push(
+      raw.replace(INLINE_CODE, " CODESPAN ").replace(URL_PATTERN, " URL "),
+    );
   }
   return out.join("\n");
 }

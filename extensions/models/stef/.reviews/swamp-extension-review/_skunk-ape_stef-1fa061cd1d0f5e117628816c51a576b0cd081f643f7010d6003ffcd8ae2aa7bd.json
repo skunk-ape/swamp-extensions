@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/stef",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:32:20Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "No secrets stored; rewrite reuses Claude Code's credential. generate.ts now spawns claude -p with --tools \"\" --strict-mcp-config --setting-sources \"\" --safe-mode --disable-slash-commands --no-session-persistence from an empty temp directory, so an injected draft reaches a session with no tools, MCP servers, hooks, skills, CLAUDE.md or memory. Verified against the init event: tools 0, mcp_servers []. claudeArgs is unit-tested."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "rewrite now logs on entry, per attempt, on clean completion (info), and on exhaustion (warning). Structured placeholders throughout; no sensitive data logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "All methods throw before writeResource. generate() errors name the binary, exit code, stderr, timeout and cancellation. record refuses clean/exhausted sessions with actionable messages."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "64 tests pass. New coverage: claude args, URL and frontmatter safety in normalize, partial severities, protectedSpans, and the rewrite loop end to end with a fake claude binary (lost code span blocks; kept span closes clean). Still untested: generate() spawn failure, wall timeout, abort and non-zero exit paths. Follow-up."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "lint/normalize/start overwrite their session slot, so re-runs are idempotent. But rewrite holds every attempt in memory and writes only at the end: a timeout or crash on attempt N throws away attempts 1..N-1, including the mechanical pass, and the operator has to pay for the whole loop again."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "(1) rewrite now compares the protected spans (fenced blocks, inline code, URLs, shell-prompt lines) before and after each attempt; any lost span becomes a critical finding that always blocks and is fed back. (2) normalize now skips leading frontmatter and URLs using the linter's own exported patterns. Both covered by tests."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "generate() clears the timer, removes the abort listener, and kills and reaps the child on every path, including a broken stdin pipe. No temp files are created."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "LICENSE carries both Seth Falcon and the upstream AminBlg MIT notice, and lint.ts points at it. severities is now z.partialRecord, so the README example validates (tested). No real IPs, hostnames or account IDs."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "All schemas are plain z.object or z.strictObject. No passthrough."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "findings/rewrite/normalized: 30d, gc 10. session: 30d, gc 20."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model. It is a linter plus a rewrite-session state machine with no external resource."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No method mutates external resources. They write only swamp data, and rewrite spawns a local process."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "One write per execution, named <spec>-<session>. start and record share session-<session> with an identical SessionSchema shape."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "record reads prior state through ctx.readResource. Minor: the result is cast to Session, not parsed through SessionSchema."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "Behavior version bumped 2026.08.16.1 -> 2026.10.24.1 with a no-op upgrade: severities loosened from a full to a partial map, so every existing value stays valid."
+    }
+  ]
+}

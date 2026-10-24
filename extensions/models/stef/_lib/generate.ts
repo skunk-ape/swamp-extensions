@@ -17,17 +17,60 @@ export interface GenerateOptions {
 }
 
 /**
+ * Arguments for a rewrite session that can only write text.
+ *
+ * The draft is untrusted input: a document under review can carry injected
+ * instructions, so the session it reaches must hold nothing to act with.
+ * `--tools ""` removes the built-in tools, but not MCP servers or claude.ai
+ * connectors — `--strict-mcp-config` with no `--mcp-config` drops those.
+ * `--setting-sources ""` skips settings files and the hooks they declare,
+ * `--safe-mode` skips CLAUDE.md, skills, plugins and memory, and the rest keep
+ * slash commands and session files out. `--bare` would also do most of this,
+ * but it refuses the OAuth login this file exists to reuse.
+ */
+export function claudeArgs(model: string, system: string): string[] {
+  return [
+    "-p",
+    "--model",
+    model,
+    "--system-prompt",
+    system,
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--safe-mode",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+  ];
+}
+
+/**
  * Run `claude -p` with the prompt on stdin and return its text.
  *
  * The prompt goes on stdin rather than argv so a large draft cannot hit the
  * ~1MB argv ceiling, and so the model is guaranteed to have seen the bytes —
  * pointing it at a file path instead would delegate that to a tool call the
  * model can skip or truncate.
+ *
+ * The session runs in an empty temp directory, so a CLAUDE.md in the caller's
+ * repository is never discovered.
  */
 export async function generate(o: GenerateOptions): Promise<string> {
+  const cwd = await Deno.makeTempDir({ prefix: "stef-rewrite-" });
+  try {
+    return await generateIn(cwd, o);
+  } finally {
+    await Deno.remove(cwd, { recursive: true }).catch(() => {});
+  }
+}
+
+async function generateIn(cwd: string, o: GenerateOptions): Promise<string> {
   // swamp-quality-ignore deno-command
   const command = new Deno.Command(o.claudePath, {
-    args: ["-p", "--model", o.model, "--system-prompt", o.system],
+    args: claudeArgs(o.model, o.system),
+    cwd,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",

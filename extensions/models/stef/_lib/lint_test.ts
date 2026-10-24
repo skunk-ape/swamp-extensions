@@ -1,5 +1,12 @@
 import { assertEquals } from "jsr:@std/assert@1";
-import { type Check, lint, splitSentences, stripNonProse } from "./lint.ts";
+import {
+  type Check,
+  frontmatterLineCount,
+  lint,
+  protectedSpans,
+  splitSentences,
+  stripNonProse,
+} from "./lint.ts";
 
 /** Check names fired by linting `text`, sorted. */
 function checks(text: string, opts?: { maxWords?: number }): Check[] {
@@ -151,4 +158,26 @@ Deno.test("lint: a mid-document --- is a thematic break, not frontmatter", () =>
 
 Deno.test("lint: an unterminated leading --- strips nothing", () => {
   assertEquals(lint(["---", "It's unterminated."].join("\n")).length, 1);
+});
+
+Deno.test("frontmatterLineCount: counts both delimiters, or zero", () => {
+  assertEquals(frontmatterLineCount(["---", "a: 1", "---", "Prose."]), 3);
+  assertEquals(frontmatterLineCount(["---", "unterminated"]), 0);
+  assertEquals(frontmatterLineCount(["Prose.", "---", "x", "---"]), 0);
+});
+
+Deno.test("protectedSpans: lists fences, inline code, URLs and prompts", () => {
+  const text = [
+    "Run `make build`, then see https://example.com/docs.",
+    "$ swamp lint",
+    "```",
+    "echo hi",
+    "```",
+  ].join("\n");
+  assertEquals(protectedSpans(text), [
+    "`make build`",
+    "https://example.com/docs",
+    "$ swamp lint",
+    "echo hi",
+  ]);
 });
