@@ -1,0 +1,39 @@
+manifestVersion: 1
+name: "@skunk-ape/swamp-lab"
+version: 2026.10.24.1
+license: MIT
+description: |
+  A daily digest of Swamp Club's public Lab: what shipped and who shipped it,
+  what was opened and in which areas, what moved in Stagecraft, which new
+  issues repeat older ones, and which land near your own recent work.
+
+  `sync` mirrors every public issue into one versioned record. `digest`
+  compares it with the baseline the last recorded digest saved, so the window
+  is always "since the last digest" and nothing is announced twice. Every
+  section is computed; the agent delivering the digest adds its own reading on
+  top. A partial or stale scan is reported as a coverage gap and does not move
+  the window, so a failed day is never reported as a quiet one.
+
+  Read-only towards Swamp Club: public endpoints, no authentication.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+models:
+  - swamp_lab.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - digest_report.ts
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - swamp-club
+  - lab
+  - digest
+dependencies: []
