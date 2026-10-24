@@ -1,0 +1,70 @@
+manifestVersion: 1
+name: "@skunk-ape/coros"
+version: 2026.10.24.1
+license: MIT
+description: |
+  COROS sleep, recovery, training data and workouts as swamp data, without an
+  MCP host in the way.
+
+  ## Two behaviors, because COROS has two doors
+
+  - `@skunk-ape/coros/official` calls COROS's official MCP server directly. It
+    is stateless JSON-RPC behind standard OAuth, so this behavior registers its
+    own client, signs in once in a browser, and refreshes by itself. It is the
+    only source of sleep, and the way workouts are created: COROS validates
+    them on its side, and running, trail running and cycling with pace, heart
+    rate or power targets are all supported.
+  - `@skunk-ape/coros/hub` calls the unofficial Training Hub web API with an
+    email and password. It returns activities and daily metrics as JSON rather
+    than prose, and it can take a workout off the calendar, which the official
+    server cannot.
+
+  ## The official server answers in prose
+
+  Every official tool returns text written for a model to read. `recent`
+  parses it into typed day records and keeps the original text beside them,
+  so a reworded label costs one field rather than the record. Training Hub
+  covers what most needs to be exact.
+
+  ## Workouts are written the way a runner says them
+
+  `createWorkout` takes steps like `{kind: work, distance: "800m", pace:
+  "6:50/mi"}` and does the unit conversion and COROS's rule checks in code
+  before sending anything. A dry run shows the course COROS would receive.
+
+  ## No sleep from Training Hub, on purpose
+
+  Training Hub reaches sleep only through COROS's mobile login, which signs
+  the account owner out of the COROS app on their phone. This extension has
+  no mobile code.
+
+  ## One grant, every method
+
+  Swamp grants are behavior-scoped. `run` on an official instance includes
+  `createWorkout`, and `run` on a hub instance includes
+  `removeScheduledWorkout`. Grant an agent workflows rather than instances
+  where the difference matters.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+models:
+  - official.ts
+  - hub.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - recent_report.ts
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - coros
+  - fitness
+  - health
+  - running
+dependencies: []
