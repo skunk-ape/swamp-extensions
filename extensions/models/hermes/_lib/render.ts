@@ -291,10 +291,9 @@ ${
   #   shell-init: error retrieving current directory: getcwd: ...
   # which broke write_file's post-write hash check: it read the first token of
   # the combined stream as the digest and reported a false "the write did not
-  # persist correctly" on good writes (fixed upstream in seth/hermes-agent
-  # fix/write-verify-digest-parsing; PR NousResearch#105277). TERMINAL_CWD
-  # outranks getcwd entirely *and* is the first fallback inside _safe_getcwd,
-  # so one variable pins both paths.
+  # persist correctly" on good writes (fixed upstream in NousResearch#105277).
+  # TERMINAL_CWD outranks getcwd entirely *and* is the first fallback inside
+  # _safe_getcwd, so one variable pins both paths.
   export TERMINAL_CWD="$WORKDIR"
 
 ${note(b.notes.funes)}  #

@@ -148,7 +148,7 @@ Deno.test("a bot can pin a fork and a tag", () => {
   const d = BotSchema.parse({
     ...minimal(),
     agent: {
-      repo: "https://github.com/seth/hermes-agent.git",
+      repo: "https://github.com/example/hermes-agent.git",
       ref: "fleet-2026-09-23",
     },
   });
