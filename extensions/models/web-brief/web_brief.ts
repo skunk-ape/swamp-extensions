@@ -23,7 +23,7 @@ const GlobalArgsSchema = z.object({
   fetcher: z.enum(["http", "firecrawl"]).default("http").describe(
     'How pages are fetched. "http" is a plain request from this machine — free, private, and unable to run JavaScript, so app-shell pages come back nearly empty. "firecrawl" renders the page on Firecrawl\'s infrastructure and returns markdown, which is what makes product listings and search results usable. Firecrawl also strengthens the process boundary, since no browser runs on your machine at all, and weakens privacy, since every URL is seen by a third party.',
   ),
-  firecrawlApiKey: z.string().default("").describe(
+  firecrawlApiKey: z.string().default("").meta({ sensitive: true }).describe(
     'API key for Firecrawl, required when fetcher is "firecrawl" against the hosted service. Source it from a vault, and keep it on the orchestrator: an agent asks this model for a brief and should never hold the fetching credential itself.',
   ),
   firecrawlApiUrl: z.string().default("https://api.firecrawl.dev").describe(

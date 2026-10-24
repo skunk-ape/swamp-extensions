@@ -1,0 +1,6 @@
+version: 1
+accept:
+  - rule: ipv4-address-literals
+    file: README.md
+    line: 113
+    reason: The example shows the fetcher refusing a private RFC1918 address; a documentation-range address would not demonstrate that.
