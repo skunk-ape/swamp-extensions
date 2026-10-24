@@ -135,6 +135,18 @@ sandbox and lose both the credential it exists to hold and its network.`,
 
 ${
     comment(
+      `A swamp serve on loopback this bot may run workflows against, or null.
+Like an MCP, its port must also be in sandbox.openPorts. Give it
+{serverPort, secretKeys: {serverToken, apiKey, signinToken}}: a server token
+for the bot's own principal, and a collective token at the narrowest scope,
+which the CLI needs only to start. What the bot may run is decided by the
+serving repo's grants/, not here.`,
+    )
+  }
+  swamp: null
+
+${
+    comment(
       `gateway is the launchd service. Add chat for a terminal session in the
 same box, and then a chat block saying where it starts.`,
     )

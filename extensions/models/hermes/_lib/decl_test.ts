@@ -196,3 +196,20 @@ Deno.test("unrestricted egress with loopback MCPs is fine", () => {
   }));
   assertEquals(problems, []);
 });
+
+// Quieter than a missing MCP port: every swamp command from inside the box
+// fails to connect, and the bot concludes swamp is down.
+Deno.test("a swamp serve without a matching open port is reported", () => {
+  const problems = crossCheck(BotSchema.parse(minimal({
+    swamp: { serverPort: 8816 },
+    sandbox: { openPorts: [8813] },
+  })));
+  assertEquals(problems.length, 1);
+  assertStringIncludes(problems[0], "8816");
+});
+
+Deno.test("no swamp block is the default, and is clean", () => {
+  const b = BotSchema.parse(minimal());
+  assertEquals(b.swamp, null);
+  assertEquals(crossCheck(b), []);
+});

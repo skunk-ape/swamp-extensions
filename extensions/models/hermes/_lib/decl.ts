@@ -73,6 +73,35 @@ const ChatSchema = z.object({
  * why this bot's vault is separate, why its Hugging Face cache is staged
  * instead of downloaded, why it has no port-wait loop. Each key is rendered as
  * a comment above the block it explains. */
+/** A `swamp serve` on loopback this bot may run workflows against.
+ *
+ * The same split as an MCP, with grants instead of a tool list: serve runs on
+ * the host and resolves the vault there, so the bot holds a server token for
+ * its own principal and never the credentials its workflows use. What that
+ * principal may run is decided by the serving repo's grants/, not here.
+ *
+ * Three secrets cross into the sandbox, all scoped to that purpose: the server
+ * token, and a swamp-club collective token plus its sign-in proof, because the
+ * swamp CLI refuses to run at all without a club credential — even when every
+ * step executes on the serve. Mint the collective token with the narrowest
+ * scope there is (`extensions:read`); the CLI only needs it to exist. */
+const SwampSchema = z.object({
+  serverPort: z.number().int().min(1).max(65535).describe(
+    "Loopback port of the swamp serve. Must also be in sandbox.openPorts.",
+  ),
+  secretKeys: z.object({
+    serverToken: z.string().default("swamp-server-token"),
+    apiKey: z.string().default("swamp-api-key"),
+    signinToken: z.string().default("swamp-signin-token"),
+  }).default({
+    serverToken: "swamp-server-token",
+    apiKey: "swamp-api-key",
+    signinToken: "swamp-signin-token",
+  }).describe(
+    "Which KEYS in the bot's vault hold the server token (`swamp access token mint`), the collective API token and its sign-in proof (`swamp auth token create`).",
+  ),
+});
+
 const NotesSchema = z.object({
   vault: z.string().optional(),
   telegram: z.string().optional(),
@@ -180,6 +209,10 @@ export const BotSchema = z.object({
     "Host-side MCP servers this gateway waits for at startup.",
   ),
 
+  swamp: SwampSchema.nullable().default(null).describe(
+    "A swamp serve this bot runs workflows against, or null for none.",
+  ),
+
   /** State this bot accumulated that provision did not create.
    *
    * Everything provision builds is rebuildable by definition, and everything in
@@ -230,6 +263,14 @@ export function crossCheck(b: Bot): string[] {
         `MCP '${m.name}' listens on ${m.port} but sandbox.openPorts does not include it. Add the port and the MCP together, or the gateway starts toolless.`,
       );
     }
+  }
+
+  // Same failure as an undeclared MCP port, quieter: every swamp command from
+  // inside the box fails to connect, and the bot reports swamp as down.
+  if (b.swamp && !open.has(b.swamp.serverPort)) {
+    problems.push(
+      `swamp serve is on ${b.swamp.serverPort} but sandbox.openPorts does not include it. Add the port with the swamp block.`,
+    );
   }
 
   // A named egress allowlist puts nono into proxy mode, and on Linux that proxy

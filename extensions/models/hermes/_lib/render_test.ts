@@ -392,3 +392,43 @@ Deno.test("rendering is deterministic", () => {
   const z = renderBot(bot());
   assertEquals(a.map((f) => f.content), z.map((f) => f.content));
 });
+
+// ---------------------------------------------------------------------------
+// swamp serve client
+// ---------------------------------------------------------------------------
+
+Deno.test("a swamp block exports the client environment from the vault", () => {
+  const env = renderEnvLib(bot({
+    sandbox: { openPorts: [8816] },
+    swamp: {
+      serverPort: 8816,
+      secretKeys: { serverToken: "st", apiKey: "ak", signinToken: "si" },
+    },
+  })).content;
+  assertStringIncludes(env, 'export SWAMP_SERVER_URL="ws://127.0.0.1:8816"');
+  assertStringIncludes(env, 'export SWAMP_HOME="$WORKDIR/swamp/home"');
+  assertStringIncludes(env, 'export SWAMP_CONFIG_DIR="$WORKDIR/swamp/config"');
+  assertStringIncludes(env, 'read_secret "$VAULT" st');
+  assertStringIncludes(env, 'read_secret "$VAULT" ak');
+  assertStringIncludes(env, 'read_secret "$VAULT" si');
+  // Secrets are read at launch, never written into the file.
+  assert(!/SWAMP_SERVER_TOKEN="[^$]/.test(env));
+});
+
+Deno.test("without a swamp block, nothing about swamp is rendered", () => {
+  assert(!renderEnvLib(bot()).content.includes("SWAMP_"));
+});
+
+// read_secret runs the host's swamp as the operator. Point SWAMP_CONFIG_DIR at
+// the bot's empty config, or SWAMP_SERVER_URL at the serve, before it runs and
+// every read fails the account check — found by probing the rendered file.
+Deno.test("swamp secrets are read before the client environment is exported", () => {
+  const env = renderEnvLib(bot({
+    sandbox: { openPorts: [8816] },
+    swamp: { serverPort: 8816 },
+  })).content;
+  const lastRead = env.lastIndexOf("read_secret");
+  for (const v of ["SWAMP_CONFIG_DIR=", "SWAMP_HOME=", "SWAMP_SERVER_URL="]) {
+    assert(env.indexOf(v) > lastRead, `${v} is exported before a secret read`);
+  }
+});

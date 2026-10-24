@@ -230,6 +230,45 @@ read_secret() {
 // Per-bot environment library
 // ---------------------------------------------------------------------------
 
+/** The swamp client environment, for a bot that declares a serve. */
+function renderSwampEnv(s: NonNullable<Bot["swamp"]>): string {
+  return `
+  # swamp serve on loopback. Workflows run there, on the host, where the vault
+  # is; this bot holds a server token for its own principal and the serving
+  # repo's grants/ decide what that principal may run. The collective token is
+  # here only because the CLI refuses to start without a club credential, even
+  # when every step executes remotely — keep it at the narrowest scope.
+  #
+  # The swamp binary is the host's own, from ~/.local/bin, unlike funes: a
+  # client the same version as the serve is the point, and a staged copy would
+  # drift from it on the next \`swamp update\`.
+  #
+  # SWAMP_SERVER_URL and SWAMP_SERVER_TOKEN together, not --server: with the
+  # flag given, the CLI ignores the token in the environment and fails to
+  # authenticate.
+  #
+  # Read first, export after. read_secret runs the HOST's swamp against this
+  # repo's vault, signed in as the operator; exporting SWAMP_CONFIG_DIR or
+  # SWAMP_SERVER_URL before it would point that call at the bot's empty config
+  # or at the serve, and every read would fail the account check. Nothing after
+  # this block calls swamp on the host.
+  if [ -z "\${SWAMP_SERVER_TOKEN:-}" ]; then
+    if _st="$(cd "$REPO" && read_secret "$VAULT" ${s.secretKeys.serverToken})" &&
+       _ak="$(cd "$REPO" && read_secret "$VAULT" ${s.secretKeys.apiKey})" &&
+       _si="$(cd "$REPO" && read_secret "$VAULT" ${s.secretKeys.signinToken})"; then
+      export SWAMP_SERVER_TOKEN="$_st" SWAMP_API_KEY="$_ak" SWAMP_SIGNIN_TOKEN="$_si"
+    else
+      echo "warning: swamp workflows will be unavailable" >&2
+    fi
+    unset _st _ak _si
+  fi
+  export SWAMP_SERVER_URL="ws://127.0.0.1:${s.serverPort}"
+  export SWAMP_HOME="$WORKDIR/swamp/home"
+  export SWAMP_CONFIG_DIR="$WORKDIR/swamp/config"
+  mkdir -p "$SWAMP_HOME" "$SWAMP_CONFIG_DIR"
+`;
+}
+
 export function renderEnvLib(b: Bot): RenderedFile {
   const wd = workdirOf(b);
   const content =
@@ -321,7 +360,7 @@ ${
   # property of nono's default groups, not something the profile asks for — and
   # a \`funes update\` out there would silently change the binary in here.
   export PATH="$WORKDIR/tools:$PATH"
-
+${b.swamp ? renderSwampEnv(b.swamp) : ""}
   # The Telegram adapter writes to the XDG state dir, which defaults to
   # ~/.local/state — outside the sandbox. These are redirected into the workdir,
   # but they are exported for the *inner* process only (see the sh -c in each
