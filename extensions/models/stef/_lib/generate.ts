@@ -25,6 +25,7 @@ export interface GenerateOptions {
  * model can skip or truncate.
  */
 export async function generate(o: GenerateOptions): Promise<string> {
+  // swamp-quality-ignore deno-command
   const command = new Deno.Command(o.claudePath, {
     args: ["-p", "--model", o.model, "--system-prompt", o.system],
     stdin: "piped",

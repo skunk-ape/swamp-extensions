@@ -46,8 +46,8 @@ $EDITOR models/@skunk-ape/hermes/bot/mybot.yaml   # egress is left empty on purp
 
 swamp model method run mybot render               # write the runtime
 swamp model method run mybot provision            # build the workdir
-swamp vault put mybot-secrets anthropic-key      <key>
-swamp vault put mybot-secrets telegram-bot-token <token>
+swamp vault put mybot-secrets anthropic-key        # prompts for the value
+swamp vault put mybot-secrets telegram-bot-token   # prompts for the value
 swamp model method run mybot verify               # prove the boundary
 swamp model method run mybot install              # load it into launchd/systemd
 ```

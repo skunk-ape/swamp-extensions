@@ -1,6 +1,7 @@
 manifestVersion: 1
 name: "@skunk-ape/web-brief"
-version: 2026.08.22.1
+version: 2026.10.24.1
+license: MIT
 description: |
   Give an autonomous agent web access without giving it a browser.
 

@@ -23,6 +23,7 @@ export async function run(
   signal?: AbortSignal,
   opts: { cwd?: string; env?: Record<string, string> } = {},
 ): Promise<RunResult> {
+  // swamp-quality-ignore deno-command
   const cmd = new Deno.Command(bin, {
     args,
     stdout: "piped",

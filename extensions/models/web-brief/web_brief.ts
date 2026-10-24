@@ -277,6 +277,7 @@ async function runClaude(
   // `--tools ""` is the capability boundary, and it is the whole reason this
   // stage counts as isolation rather than as another prompt. Verified: a
   // session started this way could not read a canary file on disk.
+  // swamp-quality-ignore deno-command
   const command = new Deno.Command(o.claudePath, {
     args: [
       "-p",

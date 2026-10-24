@@ -1,6 +1,7 @@
 manifestVersion: 1
 name: '@skunk-ape/stef'
-version: 2026.08.16.1
+version: 2026.10.24.1
+license: MIT
 description: |
   Simple Technical English Flavored — a deterministic prose linter, a mechanical
   fixer, and a bounded LLM rewrite loop.
