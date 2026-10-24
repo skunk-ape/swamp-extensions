@@ -97,7 +97,14 @@ export async function firecrawlOne(
   const endpoint = `${o.apiUrl.replace(/\/+$/, "")}/v2/scrape`;
   const timer = new AbortController();
   const abort = setTimeout(() => timer.abort(), o.timeoutMs);
-  o.signal?.addEventListener("abort", () => timer.abort(), { once: true });
+  // Removed in release(), as in fetchOne: this runs once per URL on a signal
+  // the caller owns, and a listener left behind lives as long as the method.
+  const onOuterAbort = () => timer.abort();
+  o.signal?.addEventListener("abort", onOuterAbort, { once: true });
+  const release = () => {
+    clearTimeout(abort);
+    o.signal?.removeEventListener("abort", onOuterAbort);
+  };
 
   let res: Response;
   try {
@@ -120,18 +127,25 @@ export async function firecrawlOne(
       }),
     });
   } catch (e) {
-    clearTimeout(abort);
+    release();
     const reason = e instanceof Error ? e.message : String(e);
-    return { ...base, error: `firecrawl request failed: ${reason}` };
+    return {
+      ...base,
+      error: timer.signal.aborted
+        ? `firecrawl timed out after ${o.timeoutMs}ms`
+        : `firecrawl request failed: ${reason}`,
+    };
   }
 
   // The deadline stays armed across the body read for the same reason as in
   // fetchOne: clearing it when the headers land bounds only the handshake.
+  // The read is capped too. The envelope is JSON around the markdown, so it is
+  // allowed headroom past maxBytes, but not an unbounded pull into memory.
   let text: string;
   try {
-    text = await res.text();
+    text = await readCapped(res, responseCap(o.maxBytes));
   } catch (e) {
-    clearTimeout(abort);
+    release();
     const reason = e instanceof Error ? e.message : String(e);
     return {
       ...base,
@@ -141,7 +155,7 @@ export async function firecrawlOne(
         : `firecrawl body read failed: ${reason}`,
     };
   }
-  clearTimeout(abort);
+  release();
   if (!res.ok) {
     // Surface the status distinctly: 402 means credits exhausted and 429 means
     // rate limited, and both are operational conditions a caller can act on
@@ -176,8 +190,16 @@ export async function firecrawlOne(
   const markdown = payload.data.markdown ?? "";
   const meta = payload.data.metadata ?? {};
   const finalUrl = meta.sourceURL || meta.url || parsed.href;
-  const truncated = markdown.length > o.maxBytes;
-  const body = truncated ? markdown.slice(0, o.maxBytes) : markdown;
+  // Bytes, not UTF-16 code units, so maxBytesPerUrl means the same thing on
+  // both fetchers.
+  const encoded = new TextEncoder().encode(markdown);
+  const truncated = encoded.length > o.maxBytes;
+  const body = truncated
+    ? new TextDecoder("utf-8", { fatal: false }).decode(
+      encoded.slice(0, o.maxBytes),
+    )
+    : markdown;
+  const bytes = Math.min(encoded.length, o.maxBytes);
 
   // Firecrawl reports the target page's own status in metadata. A 200 from
   // Firecrawl saying the page 404'd is not a successful fetch.
@@ -193,7 +215,7 @@ export async function firecrawlOne(
     ok: pageOk,
     status: pageStatus,
     contentType: meta.contentType ?? "text/markdown",
-    bytes: body.length,
+    bytes,
     body,
     error: pageOk
       ? ""
@@ -203,6 +225,40 @@ export async function firecrawlOne(
     renderRequired: false,
     truncated,
   };
+}
+
+/**
+ * Most bytes of Firecrawl response read for a page capped at `maxBytes`:
+ * four times the cap, since JSON escaping can inflate markdown, plus room for
+ * metadata. Exported for tests.
+ */
+export function responseCap(maxBytes: number): number {
+  return maxBytes * 4 + 64 * 1024;
+}
+
+/** Read a response body as text, throwing once it passes `cap` bytes. */
+async function readCapped(res: Response, cap: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      throw new Error(`response exceeded ${cap} bytes`);
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    buf.set(c, at);
+    at += c.length;
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(buf);
 }
 
 /** Title from Firecrawl metadata, for the sanitizer item. Exported for tests. */

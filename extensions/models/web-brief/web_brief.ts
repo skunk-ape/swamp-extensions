@@ -264,6 +264,59 @@ export function detectNonceWrapping(
   return { wrapped: true, preambleMatches: true, reason: "" };
 }
 
+/**
+ * A URL safe to log: `user:pass@` is dropped, since logs outlive the run and
+ * are read by more people than the URL list. Exported for tests.
+ */
+export function redactUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    if (!u.username && !u.password) return raw;
+    u.username = "";
+    u.password = "";
+    return u.href;
+  } catch {
+    // Not parseable, so credentials cannot be located; log a bounded prefix
+    // with anything that looks like userinfo removed.
+    return raw.replace(/\/\/[^/@\s]*@/, "//").slice(0, 200);
+  }
+}
+
+/**
+ * Arguments for a summarizer session that holds nothing to act with.
+ *
+ * This is the capability boundary, and the whole reason this stage counts as
+ * isolation rather than as another prompt. `--tools ""` alone is not enough:
+ * it removes the built-in tools but leaves MCP servers and claude.ai
+ * connectors loaded, so hostile page text reached a session that could call
+ * them. `--strict-mcp-config` with no `--mcp-config` drops those.
+ * `--setting-sources ""` skips settings files and their hooks, `--safe-mode`
+ * skips CLAUDE.md, skills, plugins and memory, and the rest keep slash
+ * commands and session files out. Verified against the session's init event:
+ * no tools, no MCP servers. `--bare` would refuse the OAuth login.
+ */
+export function summarizerArgs(model: string, system: string): string[] {
+  return [
+    "-p",
+    "--model",
+    model,
+    "--system-prompt",
+    system,
+    "--tools",
+    "",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "",
+    "--safe-mode",
+    "--disable-slash-commands",
+    "--no-session-persistence",
+  ];
+}
+
+/**
+ * Run the summarizer in an empty temp directory, so no CLAUDE.md from the
+ * caller's repository is discovered.
+ */
 async function runClaude(
   o: {
     claudePath: string;
@@ -274,20 +327,22 @@ async function runClaude(
     signal?: AbortSignal;
   },
 ): Promise<string> {
-  // `--tools ""` is the capability boundary, and it is the whole reason this
-  // stage counts as isolation rather than as another prompt. Verified: a
-  // session started this way could not read a canary file on disk.
+  const cwd = await Deno.makeTempDir({ prefix: "web-brief-summarize-" });
+  try {
+    return await runClaudeIn(cwd, o);
+  } finally {
+    await Deno.remove(cwd, { recursive: true }).catch(() => {});
+  }
+}
+
+async function runClaudeIn(
+  cwd: string,
+  o: Parameters<typeof runClaude>[0],
+): Promise<string> {
   // swamp-quality-ignore deno-command
   const command = new Deno.Command(o.claudePath, {
-    args: [
-      "-p",
-      "--tools",
-      "",
-      "--model",
-      o.model,
-      "--system-prompt",
-      o.system,
-    ],
+    args: summarizerArgs(o.model, o.system),
+    cwd,
     stdin: "piped",
     stdout: "piped",
     stderr: "piped",
@@ -333,6 +388,7 @@ async function runClaude(
 
   const { code, stdout, stderr } = await child.output();
   clearTimeout(timer);
+  o.signal?.removeEventListener("abort", kill);
 
   if (timedOut) {
     throw new Error(`the summarizer exceeded ${o.timeoutMs}ms and was killed`);
@@ -423,6 +479,19 @@ export const model = {
           // slip past, the first sending the key to an attacker and the second
           // sending an unauthenticated request that fails confusingly.
           const isHostedService = api.hostname === "api.firecrawl.dev";
+          // A Bearer key over plain http is readable by anyone on the path.
+          // Loopback is the exception: a self-hosted instance on this machine
+          // never puts the key on a network.
+          const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
+            api.hostname,
+          );
+          if (
+            api.protocol === "http:" && g.firecrawlApiKey.trim() && !loopback
+          ) {
+            throw new Error(
+              `firecrawlApiUrl is plain http on ${api.hostname}, which would send the API key in cleartext. Use https, or leave firecrawlApiKey empty for an instance that needs no auth.`,
+            );
+          }
           if (isHostedService && !g.firecrawlApiKey.trim()) {
             throw new Error(
               'fetcher is "firecrawl" and firecrawlApiUrl is the hosted service, but firecrawlApiKey is empty. Set it from a vault, or point firecrawlApiUrl at a self-hosted instance that does not require auth.',
@@ -479,7 +548,10 @@ export const model = {
             });
           }
           if (r.error) {
-            ctx.logger.info("{url}: {error}", { url, error: r.error });
+            ctx.logger.warning("{url}: {error}", {
+              url: redactUrl(url),
+              error: r.error,
+            });
           }
         }
 
@@ -504,6 +576,10 @@ export const model = {
           failed: results.length - succeeded,
           renderRequiredCount,
           timestamp: new Date().toISOString(),
+        });
+        ctx.logger.info("Fetched {succeeded} of {count} url(s)", {
+          succeeded,
+          count: results.length,
         });
         return { dataHandles: [handle] };
       },
@@ -590,6 +666,9 @@ export const model = {
           ...parsed,
           model: g.model,
           timestamp: new Date().toISOString(),
+        });
+        ctx.logger.info("Wrote a brief with {entities} entities", {
+          entities: parsed.entities.length,
         });
         return { dataHandles: [handle] };
       },

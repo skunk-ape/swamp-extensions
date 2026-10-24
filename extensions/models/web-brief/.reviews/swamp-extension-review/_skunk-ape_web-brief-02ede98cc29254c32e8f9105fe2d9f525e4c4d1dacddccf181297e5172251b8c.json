@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/web-brief",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-24T17:47:05Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "firecrawlApiKey stays .meta({ sensitive: true }) and vault-sourced and is never logged. New: an http:// firecrawlApiUrl with a non-empty key is now refused unless the host is localhost, 127.0.0.1 or [::1], so the Bearer key no longer goes over cleartext to a remote host (covered by the 'an API key is never sent over plain http to a remote host' test)."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Both methods now log an info completion line ('Fetched {succeeded} of {count} url(s)', 'Wrote a brief with {entities} entities'). Per-URL refusals and failures are logged at warning, and the logged url goes through redactUrl, which removes user:pass@. Minor follow-ups: redactUrl does not remove secrets in query strings (?token=...); the stored results[].url and finalUrl still hold the raw URL, userinfo included."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "Both findings from the re-review are fixed. (1) A caller abort now reports \"cancelled\" (request) or \"cancelled while reading the body\", distinct from the timeout. (2) A 204 or content-length: 0 response labelled gzip is treated as an empty body, as fetch did; covered by the test \"an empty body labelled gzip is empty, not an error\". Unchanged and verified: 304 is still \"redirect without a location\"; 100/103, chunked, close-delimited and 204 behave correctly."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "45 tests pass. The gaps from the previous review are now covered: connection pinning (pinned.test does not exist in DNS, yet the request reaches the local server, so the approved address was used), the 302-to-169.254.169.254 second-hop refusal, the summarizerArgs argv, pinnedLookup by family, gzip decoding with the cap applied after decoding, the http-plus-key refusal, the capped firecrawl read, and redactUrl. Follow-ups: no test for a timeout during a gzip slow-drip, for a decompression bomb, or for a socket left open on a decode error (see resource-management). Still no createModelTestContext test of either method's execute/writeResource path."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only against external systems. One resource per method, written at the end. A failure on one URL, including a mid-body reset on a gzip stream (tested: 'body read failed: unexpected end of file'), is a soft per-URL error and does not abort the batch."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "pass",
+      "note": "Both earlier blockers are closed. TOOL BOUNDARY: a claude -p --model haiku run with the exact summarizerArgs flags, from an empty temp dir, with stream-json --verbose: the init event showed tools [], mcp_servers [], slash_commands [], skills [] and memory_paths null. The session said it could call no tools. The earlier review showed --tools \"\" alone exposed mcp__funes__*. Only the built-in plugins still loaded (agents-md, telemetry, plugin-authoring), and with no tools present they give the session no way to act. EGRESS: probes against Deno 2.9.8 node:http and node:https with agent:false show that lookup is always called (with {all:true, hints}) and its answer is used, including for uppercase names and names with a trailing dot. Pinning example.com to 127.0.0.1 gave ECONNREFUSED 127.0.0.1:443, pinning it to 192.0.2.1 timed out, and pinning it to ::1 only gave ECONNREFUSED ::1:80. The system resolver was never used. TLS and SNI still verify against the hostname: a real fetchOne of https://example.com/ and of https://example.com./ both returned 200. With HTTP_PROXY and HTTPS_PROXY (both cases) pointed at a local listener, the listener got 0 hits. IP literals skip lookup, but they are checked directly first. Every redirect hop runs the check again and re-pins. Behaviour changes to note: (a) proxy env vars are now ignored, so the http fetcher does not work in environments that need an egress proxy (the README says this); (b) the request advertises gzip and deflate only, and zstd responses are refused. Earlier follow-ups now closed: fec0::/10, Teredo 2001::/32 and the whole 64:ff9b:1::/48 are refused. Still open from before: no Retry-After or backoff on a firecrawl 429, and the Deno.resolveDns check is not bounded by timeoutMs or ctx.signal."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "The body-read catch now calls res.destroy(), so a decode error (corrupt gzip, unsupported encoding) closes the socket instead of leaving it open until the server hangs up. Covered by the test \"a corrupt gzip body closes the connection, not just the read\", which fails with the fix removed. Verified by the re-review: the deadline covers a gzip slow-drip; an outer abort ends a body read; a 2 GiB gzip bomb with maxBytes 1e6 stopped at exactly 1,000,000 bytes with bounded memory; early break destroys the socket. Firecrawl abort listener removed and its read capped; runClaude removes its abort listener and temp dir."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The new README and DESIGN text and the new tests use documentation ranges (192.0.2.x, 2001:db8::) and example.com or pinned.test. 169.254.169.254 and the 192.168.1.1 README example are intentional, as before. No local paths, internal hosts or account IDs."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Schemas unchanged in this diff: plain z.object with no .passthrough(), and BriefSchema bounds every free-text field."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Unchanged: fetched is 7d / gc 20; brief is 30d / gc 50."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Not a CRUD lifecycle model. It is read-only fetch and summarize by design."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "fetch writes only fetched/fetched and summarize writes only brief/brief. Each spec has one writer and one shape."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "No method reads back stored state."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "pass",
+      "note": "No schema change in this diff. No version has been published (the registry reports never-published), so no released data needs migrating."
+    }
+  ]
+}

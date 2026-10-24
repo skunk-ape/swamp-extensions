@@ -4,10 +4,30 @@
 // an SSRF surface with extra steps. Pattern-matching the URL is not a control:
 // `http://evil.example` resolving to 127.0.0.1 defeats any string check. So
 // every hop is resolved first and every resolved address is checked, and only
-// then is the request made.
+// then is the request made — to those addresses and no others.
+//
+// That last part is why this uses node:http rather than fetch. fetch resolves
+// the name again on its own, so a DNS server answering with a zero TTL could
+// hand the check a public address and the connection 127.0.0.1. node:http takes
+// a `lookup` function, so the connection is pinned to the answer the check
+// approved, while TLS still verifies the certificate against the hostname. It
+// also never reads HTTP(S)_PROXY or /etc/hosts, either of which would be a
+// second resolver the check never saw.
+
+import http from "node:http";
+import https from "node:https";
+import type { LookupFunction } from "node:net";
+import zlib from "node:zlib";
 
 // deno-lint-ignore no-explicit-any
 declare const Deno: any;
+
+/** What the egress check decided about one host. */
+export interface HostCheck {
+  ok: boolean;
+  addresses: string[];
+  reason: string;
+}
 
 export interface FetchOptions {
   timeoutMs: number;
@@ -17,6 +37,12 @@ export interface FetchOptions {
   /** Off by default, and only for deliberately fetching an internal host. */
   allowPrivateNetworks: boolean;
   signal?: AbortSignal;
+  /**
+   * Test seam: replaces hostResolvesPublicly. Production never sets it; tests
+   * use it to prove the connection goes where the check said, not where DNS
+   * says.
+   */
+  resolve?: (host: string) => Promise<HostCheck>;
 }
 
 export interface FetchResult {
@@ -117,6 +143,11 @@ export function parseIPv6(ip: string): number[] | null {
   return groups.length === 8 ? groups : null;
 }
 
+/** True when groups [from, to) are all zero. */
+function isZeroRange(g: number[], from: number, to: number): boolean {
+  return g.slice(from, to).every((x) => x === 0);
+}
+
 /**
  * True when an IPv6 address is not safe to connect to.
  *
@@ -133,7 +164,11 @@ function isBlockedIPv6(ip: string): boolean {
   if (isZero(7) && g[7] === 1) return true; // ::1/128 loopback
   if (isZero(8)) return true; // ::/128 unspecified
   if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((g[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 site-local (old)
   if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
+  // 2001::/32 Teredo hides the client's v4 address, obfuscated, in the low
+  // groups. Decoding it buys nothing a public fetcher needs, so refuse it.
+  if (g[0] === 0x2001 && g[1] === 0x0000) return true;
   if ((g[0] & 0xff00) === 0xff00) return true; // ff00::/8 multicast
   if ((g[0] & 0xfffe) === 0x0100) return true; // 100::/64 discard-only
 
@@ -148,8 +183,14 @@ function isBlockedIPv6(ip: string): boolean {
   if (isZero(5) && g[5] === 0xffff) return embedded(g[6], g[7]);
   // ::/96 IPv4-compatible (deprecated, still routable by some stacks).
   if (isZero(6) && !(g[6] === 0 && g[7] === 0)) return embedded(g[6], g[7]);
-  // 64:ff9b::/96 and 64:ff9b:1::/48 NAT64.
-  if (g[0] === 0x0064 && g[1] === 0xff9b) return embedded(g[6], g[7]);
+  // 64:ff9b::/96 well-known NAT64 carries the v4 address in the last 32 bits.
+  if (g[0] === 0x0064 && g[1] === 0xff9b && isZeroRange(g, 2, 6)) {
+    return embedded(g[6], g[7]);
+  }
+  // 64:ff9b:1::/48 local-use NAT64. Where the v4 address sits depends on the
+  // prefix length the operator chose (RFC 6052), which cannot be read off the
+  // address — so no single position is safe to trust. Refuse the range.
+  if (g[0] === 0x0064 && g[1] === 0xff9b) return true;
   // 2002::/16 6to4 carries the v4 address in the next two groups.
   if (g[0] === 0x2002) return embedded(g[1], g[2]);
 
@@ -159,7 +200,7 @@ function isBlockedIPv6(ip: string): boolean {
 /** True when every resolved address for `host` is safe to connect to. */
 export async function hostResolvesPublicly(
   host: string,
-): Promise<{ ok: boolean; addresses: string[]; reason: string }> {
+): Promise<HostCheck> {
   // A bare IP literal never reaches DNS, so check it directly.
   const bare = host.replace(/^\[|\]$/g, "");
   if (/^\d+\.\d+\.\d+\.\d+$/.test(bare)) {
@@ -236,6 +277,83 @@ export function looksLikeAppShell(html: string): boolean {
 }
 
 /**
+ * A `dns.lookup` stand-in that only ever answers with `addresses`.
+ *
+ * Handed to node:http, it makes the connection use the exact addresses the
+ * egress check approved. Node calls it in both shapes — one address, or
+ * `all: true` for a list — and may ask for one family only.
+ */
+export function pinnedLookup(addresses: string[]): LookupFunction {
+  return (_host, options, callback) => {
+    const want = options.family === "IPv4"
+      ? 4
+      : options.family === "IPv6"
+      ? 6
+      : Number(options.family ?? 0);
+    const list = addresses
+      .map((address) => ({ address, family: address.includes(":") ? 6 : 4 }))
+      .filter((a) => want === 0 || a.family === want);
+    if (list.length === 0) {
+      const err: NodeJS.ErrnoException = new Error(
+        "no approved address for this family",
+      );
+      err.code = "ENOTFOUND";
+      callback(err, "", 0);
+      return;
+    }
+    if (options.all) callback(null, list);
+    else callback(null, list[0].address, list[0].family);
+  };
+}
+
+/** Status, headers and a body stream, or a thrown network error. */
+function openRequest(
+  url: URL,
+  o: {
+    userAgent: string;
+    signal: AbortSignal;
+    lookup?: LookupFunction;
+  },
+): Promise<http.IncomingMessage> {
+  const mod = url.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = mod.get(url, {
+      // A fresh connection per hop: a pooled socket would skip the lookup.
+      agent: false,
+      lookup: o.lookup,
+      signal: o.signal,
+      headers: {
+        "user-agent": o.userAgent,
+        accept: "text/html,text/plain,*/*",
+        "accept-encoding": "gzip, deflate",
+      },
+    }, resolve);
+    req.on("error", reject);
+  });
+}
+
+/**
+ * The decoded body stream, honouring Content-Encoding.
+ *
+ * node:http does not decompress, unlike fetch. The byte cap is applied after
+ * decoding, so a small compressed body cannot inflate past it.
+ */
+function decodedBody(res: http.IncomingMessage): AsyncIterable<Uint8Array> {
+  const enc = String(res.headers["content-encoding"] ?? "identity")
+    .trim().toLowerCase();
+  // An empty body labelled gzip is not a gzip stream, and zlib rejects it as
+  // truncated. fetch treated it as empty; so does this.
+  if (res.statusCode === 204 || res.headers["content-length"] === "0") {
+    return res;
+  }
+  if (enc === "gzip" || enc === "x-gzip") return res.pipe(zlib.createGunzip());
+  if (enc === "deflate") return res.pipe(zlib.createInflate());
+  if (enc === "br") return res.pipe(zlib.createBrotliDecompress());
+  if (enc === "identity" || enc === "") return res;
+  throw new Error(`unsupported content-encoding ${enc}`);
+}
+
+/**
  * Fetch one URL, checking egress at every redirect hop.
  *
  * Redirects are followed manually. Letting fetch follow them would check the
@@ -275,8 +393,14 @@ export async function fetchOne(
       };
     }
 
+    // The connection is pinned to what the check approved. With private
+    // networks allowed there is nothing to enforce, so the system resolver
+    // is used as-is.
+    let lookup: LookupFunction | undefined;
     if (!o.allowPrivateNetworks) {
-      const check = await hostResolvesPublicly(current.hostname);
+      const check = await (o.resolve ?? hostResolvesPublicly)(
+        current.hostname,
+      );
       if (!check.ok) {
         return {
           ...base,
@@ -284,6 +408,7 @@ export async function fetchOne(
           error: `refused: ${check.reason}`,
         };
       }
+      lookup = pinnedLookup(check.addresses);
     }
 
     // One deadline covering headers *and* body. Clearing it once the headers
@@ -303,16 +428,13 @@ export async function fetchOne(
       o.signal?.removeEventListener("abort", onOuterAbort);
     };
 
-    let res: Response;
+    // node:http never follows redirects, so every hop comes back here.
+    let res: http.IncomingMessage;
     try {
-      res = await fetch(current.href, {
-        method: "GET",
-        redirect: "manual",
+      res = await openRequest(current, {
+        userAgent: o.userAgent,
         signal: timer.signal,
-        headers: {
-          "user-agent": o.userAgent,
-          accept: "text/html,text/plain,*/*",
-        },
+        lookup,
       });
     } catch (e) {
       release();
@@ -321,21 +443,24 @@ export async function fetchOne(
       return {
         ...base,
         finalUrl: current.href,
-        error: timedOut
+        error: o.signal?.aborted
+          ? "cancelled"
+          : timedOut
           ? `timed out after ${o.timeoutMs}ms`
           : `fetch failed: ${reason}`,
       };
     }
 
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location");
-      await res.body?.cancel().catch(() => {});
+    const status = res.statusCode ?? 0;
+    if (status >= 300 && status < 400) {
+      const location = res.headers.location;
+      res.destroy();
       release();
       if (!location) {
         return {
           ...base,
           finalUrl: current.href,
-          status: res.status,
+          status,
           error: "redirect without a location",
         };
       }
@@ -345,14 +470,15 @@ export async function fetchOne(
         return {
           ...base,
           finalUrl: current.href,
-          status: res.status,
+          status,
           error: "redirect to an invalid URL",
         };
       }
       continue;
     }
 
-    const contentType = res.headers.get("content-type") ?? "";
+    const contentType = String(res.headers["content-type"] ?? "");
+    const ok = status >= 200 && status < 300;
     // Read with a byte cap rather than res.text(), so a multi-gigabyte body
     // cannot be pulled into memory before anyone notices.
     //
@@ -366,26 +492,21 @@ export async function fetchOne(
     let bytes = 0;
     let truncated = false;
     try {
-      const reader = res.body?.getReader();
       const chunks: Uint8Array[] = [];
       let total = 0;
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!value) continue;
-          total += value.length;
-          if (total > o.maxBytes) {
-            chunks.push(
-              value.slice(0, Math.max(0, value.length - (total - o.maxBytes))),
-            );
-            truncated = true;
-            await reader.cancel().catch(() => {});
-            break;
-          }
-          chunks.push(value);
+      for await (const value of decodedBody(res)) {
+        total += value.length;
+        if (total > o.maxBytes) {
+          chunks.push(
+            value.slice(0, Math.max(0, value.length - (total - o.maxBytes))),
+          );
+          truncated = true;
+          break;
         }
+        chunks.push(value);
       }
+      // Leaving the loop early does not close the socket by itself.
+      res.destroy();
       const buf = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
       let at = 0;
       for (const c of chunks) {
@@ -395,15 +516,20 @@ export async function fetchOne(
       bytes = buf.length;
       body = new TextDecoder("utf-8", { fatal: false }).decode(buf);
     } catch (e) {
+      // A decode error leaves the socket open, and the deadline that would
+      // have closed it is about to be cleared, so close it here.
+      res.destroy();
       const reason = e instanceof Error ? e.message : String(e);
       const timedOut = timer.signal.aborted;
       release();
       return {
         ...base,
         finalUrl: current.href,
-        status: res.status,
+        status,
         contentType,
-        error: timedOut
+        error: o.signal?.aborted
+          ? "cancelled while reading the body"
+          : timedOut
           ? `timed out after ${o.timeoutMs}ms while reading the body`
           : `body read failed: ${reason}`,
       };
@@ -413,12 +539,12 @@ export async function fetchOne(
     return {
       url: rawUrl,
       finalUrl: current.href,
-      ok: res.ok,
-      status: res.status,
+      ok,
+      status,
       contentType,
       bytes,
       body,
-      error: res.ok ? "" : `HTTP ${res.status}`,
+      error: ok ? "" : `HTTP ${status}`,
       renderRequired: looksLikeAppShell(body),
       truncated,
     };

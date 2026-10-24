@@ -114,15 +114,23 @@ http://192.168.1.1/      → refused: 192.168.1.1 is not a public address
 ```
 
 Note the second one. It was refused because of what it _resolved to_, not what
-it looked like — which is also what stops a DNS-rebinding host that answers with
-a public address once and a private one next.
+it looked like.
+
+Checking the answer is only half of it. The connection is then **pinned** to
+the addresses the check approved: the request never resolves the name a second
+time, so a DNS-rebinding host that answers with a public address for the check
+and a private one for the connection gets the public one both times. TLS still
+verifies the certificate against the hostname. The fetcher also ignores
+`HTTP(S)_PROXY` and `/etc/hosts`, since either would be a second resolver the
+check never saw.
 
 Blocked: RFC1918, loopback, link-local (including the cloud metadata address),
-CGNAT, multicast, benchmarking, 6to4 relay anycast, and anything that fails to
-resolve or parse. IPv6 is checked **numerically**, so the embedded-IPv4 forms —
-IPv4-mapped, IPv4-compatible, NAT64, 6to4 — are unwrapped and judged as the
-address they carry. `allowPrivateNetworks: true` turns this off; think hard
-before using it.
+CGNAT, multicast, benchmarking, 6to4 relay anycast, IPv6 site-local, Teredo,
+local-use NAT64, and anything that fails to resolve or parse. IPv6 is checked
+**numerically**, so the embedded-IPv4 forms — IPv4-mapped, IPv4-compatible,
+well-known NAT64, 6to4 — are unwrapped and judged as the address they carry.
+`allowPrivateNetworks: true` turns all of this off, pinning included; think
+hard before using it.
 
 > An earlier version checked IPv6 by text prefix and was bypassable. The URL
 > parser canonicalizes `http://[::ffff:127.0.0.1]/` to `[::ffff:7f00:1]` before
@@ -131,6 +139,23 @@ before using it.
 > covered it passed only because it called the checker directly with the dotted
 > string, never through the parser production always uses. Every egress test now
 > goes through `new URL()` first, which is the only way the test means anything.
+
+## No tools means none at all
+
+`summarize` spawns `claude -p`, and "no tools" has to cover more than the
+built-in set. `--tools ""` alone leaves MCP servers and claude.ai connectors
+loaded, so an earlier version handed hostile page text to a session that could
+still call them. The session now starts with:
+
+```
+--tools "" --strict-mcp-config --setting-sources "" --safe-mode
+--disable-slash-commands --no-session-persistence
+```
+
+That removes built-in tools, MCP servers and connectors, settings files and
+their hooks, CLAUDE.md, skills, plugins, memory and slash commands, and the
+session runs in an empty temp directory. `--bare` would go further, but it
+refuses the Claude Code login the summarizer runs on.
 
 ## JavaScript: pick a fetcher
 

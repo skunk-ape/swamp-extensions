@@ -102,6 +102,11 @@ And the summarizer session must hold **no tools, no history, and no credentials
 beyond its own model key**. Fresh per call. That is what makes stage three a
 capability boundary rather than just another prompt.
 
+"No tools" has to include MCP servers and claude.ai connectors, which
+`--tools ""` does not remove. The adversarial review for 2026.10.24.1 found
+the summarizer loading both; it now also passes `--strict-mcp-config`,
+`--setting-sources ""` and `--safe-mode`, and runs in an empty directory.
+
 ## How an agent calls this without holding credentials
 
 This is the part that decides whether the design is sound or merely moves the
@@ -160,6 +165,13 @@ string check.
 Unresolved: whether that is enforced by container network policy, by an explicit
 resolve-then-check in the fetcher, or both. Both is the honest answer; one of
 them is the minimum. See open questions.
+
+The fetcher half is built. Resolve-then-check alone is not enough, because a
+second resolution at connect time can return a different answer (DNS
+rebinding). So the connection is pinned: `fetchOne` uses node:http with a
+`lookup` that only returns the addresses the check approved, and TLS still
+verifies against the hostname. Container network policy remains the second
+layer.
 
 ## Where the container runs
 

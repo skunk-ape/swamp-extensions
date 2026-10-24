@@ -10,15 +10,20 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
 import {
   fetchOne,
+  type HostCheck,
   hostResolvesPublicly,
   looksLikeAppShell,
   parseIPv6,
+  pinnedLookup,
 } from "./_lib/fetch.ts";
-import { firecrawlOne, titleFrom } from "./_lib/firecrawl.ts";
+import { firecrawlOne, responseCap, titleFrom } from "./_lib/firecrawl.ts";
 import {
   briefShape,
   detectNonceWrapping,
   extractBriefJson,
+  model,
+  redactUrl,
+  summarizerArgs,
 } from "./web_brief.ts";
 
 // --- egress policy -------------------------------------------------------
@@ -584,4 +589,254 @@ Deno.test("the brief schema strips fields the model invents", () => {
   });
   assert(!("systemPrompt" in parsed));
   assert(!("__proto__polluted" in parsed));
+});
+
+// --- connection pinning --------------------------------------------------
+
+/** Serve `handler` on 127.0.0.1 and pass the port to `run`. */
+async function withLocalServer(
+  handler: (req: Request) => Response | Promise<Response>,
+  run: (port: number) => Promise<void>,
+): Promise<void> {
+  const ac = new AbortController();
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", signal: ac.signal, onListen: () => {} },
+    handler,
+  );
+  try {
+    await run((server.addr as { port: number }).port);
+  } finally {
+    ac.abort();
+    await server.finished;
+  }
+}
+
+const PIN_OPTS = {
+  timeoutMs: 5000,
+  maxBytes: 100_000,
+  maxRedirects: 3,
+  userAgent: "test",
+  allowPrivateNetworks: false,
+};
+
+/**
+ * A resolver that approves `pinned.test` as 127.0.0.1 and defers to the real
+ * check for everything else. `pinned.test` does not exist in DNS, so reaching
+ * the local server through it proves the connection used the approved
+ * address rather than resolving the name a second time — the gap a
+ * DNS-rebinding host exploits.
+ */
+async function pinnedResolver(host: string): Promise<HostCheck> {
+  if (host === "pinned.test") {
+    return { ok: true, addresses: ["127.0.0.1"], reason: "" };
+  }
+  return await hostResolvesPublicly(host);
+}
+
+Deno.test("the connection goes to the approved address, not a second lookup", async () => {
+  await withLocalServer(() => new Response("pinned body"), async (port) => {
+    const r = await fetchOne(`http://pinned.test:${port}/`, {
+      ...PIN_OPTS,
+      resolve: pinnedResolver,
+    });
+    assertEquals(r.error, "");
+    assertEquals(r.body, "pinned body");
+  });
+});
+
+Deno.test("a redirect to the metadata address is refused on the second hop", async () => {
+  await withLocalServer(
+    () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data/" },
+      }),
+    async (port) => {
+      const r = await fetchOne(`http://pinned.test:${port}/`, {
+        ...PIN_OPTS,
+        resolve: pinnedResolver,
+      });
+      assert(!r.ok);
+      assertStringIncludes(r.error, "refused");
+      assertStringIncludes(r.error, "169.254.169.254");
+      assertEquals(r.finalUrl, "http://169.254.169.254/latest/meta-data/");
+    },
+  );
+});
+
+Deno.test("a gzip body is decoded, and the cap applies after decoding", async () => {
+  const text = "word ".repeat(10_000);
+  const gz = new Uint8Array(
+    await new Response(
+      new Blob([text]).stream().pipeThrough(new CompressionStream("gzip")),
+    ).arrayBuffer(),
+  );
+  await withLocalServer(
+    () =>
+      new Response(gz, {
+        headers: { "content-encoding": "gzip", "content-type": "text/plain" },
+      }),
+    async (port) => {
+      const full = await fetchOne(`http://pinned.test:${port}/`, {
+        ...PIN_OPTS,
+        resolve: pinnedResolver,
+      });
+      assertEquals(full.body, text);
+      assertEquals(full.truncated, false);
+
+      const capped = await fetchOne(`http://pinned.test:${port}/`, {
+        ...PIN_OPTS,
+        maxBytes: 1000,
+        resolve: pinnedResolver,
+      });
+      assertEquals(capped.bytes, 1000);
+      assertEquals(capped.truncated, true);
+    },
+  );
+});
+
+Deno.test("pinnedLookup answers only with approved addresses, by family", () => {
+  const lookup = pinnedLookup(["192.0.2.10", "2001:db8::10"]);
+  const got: unknown[] = [];
+  lookup("anything", { all: true }, (_e, list) => got.push(list));
+  lookup("anything", { family: 6 }, (_e, addr, fam) => got.push([addr, fam]));
+  lookup("anything", { family: 4 }, (_e, addr, fam) => got.push([addr, fam]));
+  assertEquals(got, [
+    [
+      { address: "192.0.2.10", family: 4 },
+      { address: "2001:db8::10", family: 6 },
+    ],
+    ["2001:db8::10", 6],
+    ["192.0.2.10", 4],
+  ]);
+  let err: Error | null = null;
+  pinnedLookup(["192.0.2.10"])("x", { family: 6 }, (e) => err = e);
+  assert(err !== null, "a family with no approved address must fail");
+});
+
+Deno.test("site-local, Teredo and local-use NAT64 are refused", async () => {
+  for (const host of ["fec0::1", "2001:0:4136:e378::1", "64:ff9b:1::a00:1"]) {
+    const r = await hostResolvesPublicly(host);
+    assert(!r.ok, `${host} should be refused`);
+  }
+  // Well-known NAT64 of a public address stays allowed.
+  assert((await hostResolvesPublicly("64:ff9b::808:808")).ok);
+});
+
+// --- summarizer isolation ------------------------------------------------
+
+Deno.test("the summarizer session holds no tools or MCP servers", () => {
+  const args = summarizerArgs("m", "sys");
+  const at = (flag: string) => args[args.indexOf(flag) + 1];
+  assertEquals(at("--tools"), "");
+  assertEquals(at("--setting-sources"), "");
+  for (
+    const flag of [
+      "--strict-mcp-config",
+      "--safe-mode",
+      "--disable-slash-commands",
+      "--no-session-persistence",
+    ]
+  ) {
+    assert(args.includes(flag), flag);
+  }
+  // --mcp-config would re-admit servers; --strict-mcp-config alone admits none.
+  assert(!args.includes("--mcp-config"));
+});
+
+// --- logging and credentials ---------------------------------------------
+
+Deno.test("redactUrl drops userinfo and leaves other URLs alone", () => {
+  assertEquals(
+    redactUrl("https://user:secret@example.com/a?b=1"),
+    "https://example.com/a?b=1",
+  );
+  assertEquals(redactUrl("https://example.com/a"), "https://example.com/a");
+  assertEquals(redactUrl("not a url //u:p@x"), "not a url //x");
+});
+
+Deno.test("an API key is never sent over plain http to a remote host", async () => {
+  const ctx = {
+    globalArgs: model.globalArguments.parse({
+      fetcher: "firecrawl",
+      firecrawlApiKey: "k",
+      firecrawlApiUrl: "http://firecrawl.example.com",
+    }),
+    logger: { info: () => {}, warning: () => {} },
+    writeResource: () => Promise.resolve({}),
+  };
+  let message = "";
+  try {
+    await model.methods.fetch.execute({ urls: ["https://example.com/"] }, ctx);
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  assertStringIncludes(message, "cleartext");
+});
+
+Deno.test("the firecrawl response read is capped", async () => {
+  const cap = responseCap(10);
+  await withMockFirecrawl(
+    () => new Response("x".repeat(cap + 1)),
+    async (baseUrl) => {
+      const r = await firecrawlOne("https://example.com/", {
+        ...FIRECRAWL_OPTS,
+        apiUrl: baseUrl,
+        maxBytes: 10,
+      });
+      assert(!r.ok);
+      assertStringIncludes(r.error, `exceeded ${cap} bytes`);
+    },
+  );
+});
+
+Deno.test("an empty body labelled gzip is empty, not an error", async () => {
+  await withLocalServer(
+    () =>
+      new Response(null, {
+        headers: { "content-encoding": "gzip", "content-length": "0" },
+      }),
+    async (port) => {
+      const r = await fetchOne(`http://pinned.test:${port}/`, {
+        ...PIN_OPTS,
+        resolve: pinnedResolver,
+      });
+      assertEquals(r.error, "");
+      assertEquals(r.body, "");
+    },
+  );
+});
+
+Deno.test("a corrupt gzip body closes the connection, not just the read", async () => {
+  // A raw server, so it can send bad gzip and then hold the socket open.
+  let closed = false;
+  const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
+  const port = (listener.addr as Deno.NetAddr).port;
+  const served = (async () => {
+    const conn = await listener.accept();
+    await conn.read(new Uint8Array(4096));
+    await conn.write(
+      new TextEncoder().encode(
+        "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\n" +
+          "transfer-encoding: chunked\r\n\r\n5\r\nnope!\r\n",
+      ),
+    );
+    // Resolves once the client hangs up; never sends the terminating chunk.
+    while ((await conn.read(new Uint8Array(64)).catch(() => null)) !== null) {
+      // drain
+    }
+    closed = true;
+    conn.close();
+  })();
+  try {
+    const r = await fetchOne(`http://pinned.test:${port}/`, {
+      ...PIN_OPTS,
+      resolve: pinnedResolver,
+    });
+    assertStringIncludes(r.error, "body read failed");
+    await Promise.race([served, new Promise((ok) => setTimeout(ok, 2000))]);
+    assert(closed, "the client must close the socket after a decode error");
+  } finally {
+    listener.close();
+  }
 });
