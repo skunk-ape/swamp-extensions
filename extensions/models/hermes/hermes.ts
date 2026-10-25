@@ -91,6 +91,7 @@ import {
 } from "./_lib/verify.ts";
 import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
+  approveWrapperHooks,
   decideFile,
   directories,
   FETCH_PASSTHROUGH,
@@ -121,6 +122,7 @@ import {
   uvEnv,
   uvSteps,
   workdirFiles,
+  wrapperHookCommands,
 } from "./_lib/provision.ts";
 import type { WorkdirFile } from "./_lib/provision.ts";
 import {
@@ -1566,6 +1568,9 @@ export const model = {
                 integration,
                 (bin, a) => run(bin, a, ctx.signal),
               );
+              // A new integration is a reason to re-run the install below;
+              // the first fetch of a hook-era funes, which brings none, is not.
+              integrationRefreshed = true;
               await writeFileSafe(
                 runtime,
                 "funes-integrations/hermes.json",
@@ -1604,7 +1609,6 @@ export const model = {
               `${stagedDigest}\n`,
               0o644,
             );
-            integrationRefreshed = true;
           } finally {
             await Deno.remove(scratch, { recursive: true }).catch(() => {});
           }
@@ -1626,16 +1630,21 @@ export const model = {
         //
         // Its exit code is not the test: funes exits 0 after declining to
         // install. The marker it leaves is.
+        //
+        // A plugin install is re-run when a new integration arrived. A hook
+        // install never is while its script exists: a hook-era funes run on an
+        // existing config.yaml appends its own post_llm_call entry beside this
+        // model's wrapper, and the bot then indexes every turn twice, once
+        // without the wrapper's environment.
         const marker = funesPlugin
           ? funesPluginManifest(workdir)
           : funesHookScript(workdir);
         const wired = funesPlugin ? "plugin" : "shell hook";
         const profile =
           `${ctx.repoDir}/profiles/${b.slug}.${h.platform}.nono.json`;
-        if (
-          await exists(marker) && !integrationRefreshed && !funesRestaged &&
-          !restagePending
-        ) {
+        const reinstall = funesPlugin &&
+          (integrationRefreshed || funesRestaged || restagePending);
+        if (await exists(marker) && !reinstall) {
           say("funes in hermes", "present", wired);
         } else if (!dotHermesOk && !args.check) {
           say("funes in hermes", "skipped", ".hermes is not in place");
@@ -1806,6 +1815,44 @@ export const model = {
               "migrated",
               `${m.count} tools/ path(s) now point at the runtime`,
             );
+          }
+        }
+
+        // -- the wrapper hook, approved --------------------------------------
+        // Hermes skips a shell hook that is not on its allowlist, matched on
+        // the exact command string, and a gateway has no terminal to approve
+        // it at. A migrated config.yaml names the wrapper at its runtime path,
+        // which the old approval does not cover. Provision approves its own
+        // wrapper, as config.yaml declares it, and nothing else.
+        if (!funesPlugin) {
+          const allowRel = "hermes/shell-hooks-allowlist.json";
+          const cfg = await readRegularFile(workdir, configRel);
+          const commands = cfg === null ? [] : wrapperHookCommands(cfg);
+          const wrapper = `${runtime}/tools/funes-index-hook.sh`;
+          const allow = await readRegularFile(workdir, allowRel);
+          const mtime = (await Deno.stat(wrapper).catch(() => null))?.mtime;
+          const approved = approveWrapperHooks(
+            allow,
+            commands,
+            new Date().toISOString(),
+            (mtime ?? new Date()).toISOString(),
+          );
+          if (commands.length === 0) {
+            say(
+              "hook approval",
+              "skipped",
+              "config.yaml declares no wrapper hook",
+            );
+          } else if (approved.added === 0) {
+            say("hook approval", "present");
+          } else if (
+            !wouldChange(
+              "hook approval",
+              `approve the wrapper hook (${approved.added})`,
+            )
+          ) {
+            await writeFileSafe(workdir, allowRel, approved.text, 0o644);
+            say("hook approval", "created", `${approved.added} approved`);
           }
         }
 

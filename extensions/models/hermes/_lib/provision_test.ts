@@ -26,6 +26,8 @@ import {
   sandboxedFunesAdd,
   sandboxedIntegrationSetup,
   sandboxedPluginEnable,
+  approveWrapperHooks,
+  wrapperHookCommands,
   soulMd,
   uvEnv,
   uvSteps,
@@ -662,4 +664,47 @@ Deno.test("the hook wrapper steps aside once the plugin is installed", () => {
   assert(guard !== -1);
   // Before it does anything else.
   assert(guard < h.indexOf('export HOME="$W"'));
+});
+
+// Hermes skips a shell hook not on its allowlist, matched on the exact
+// command string as config.yaml declares it once parsed.
+Deno.test("the wrapper hook command is read as Hermes parses config.yaml", () => {
+  const ours = configYaml(bot(), WD, RT);
+  assertEquals(wrapperHookCommands(ours), [
+    `bash '${RT}/tools/funes-index-hook.sh' 'hermes'`,
+  ]);
+  // Re-serialized by Hermes or funes: double quotes, still a plain scalar.
+  assertEquals(
+    wrapperHookCommands(
+      `hooks:\n  post_llm_call:\n  - command: bash "${RT}/tools/funes-index-hook.sh" "hermes"\n`,
+    ),
+    [`bash "${RT}/tools/funes-index-hook.sh" "hermes"`],
+  );
+  // funes's own hook is not ours to approve.
+  assertEquals(
+    wrapperHookCommands(`  - command: bash "${WD}/.hermes/hooks/funes-index.sh"\n`),
+    [],
+  );
+});
+
+Deno.test("only the wrapper is approved, once, in Hermes's format", () => {
+  const cmd = `bash "${RT}/tools/funes-index-hook.sh" "hermes"`;
+  const old = JSON.stringify({
+    approvals: [{ event: "post_llm_call", command: "bash old", approved_at: "x" }],
+  });
+  const first = approveWrapperHooks(old, [cmd], "2026-10-25T00:00:00Z", "m");
+  assertEquals(first.added, 1);
+  const parsed = JSON.parse(first.text);
+  assertEquals(parsed.approvals.length, 2);
+  assertEquals(parsed.approvals[1], {
+    approved_at: "2026-10-25T00:00:00Z",
+    command: cmd,
+    event: "post_llm_call",
+    script_mtime_at_approval: "m",
+  });
+  // Already approved: nothing added.
+  assertEquals(approveWrapperHooks(first.text, [cmd], "later", "m").added, 0);
+  // Absent or unreadable: starts empty.
+  assertEquals(approveWrapperHooks(null, [cmd], "t", "m").added, 1);
+  assertEquals(approveWrapperHooks("not json", [cmd], "t", "m").added, 1);
 });

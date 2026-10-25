@@ -918,3 +918,68 @@ function pluginLists(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Hermes shell-hook consent
+// ---------------------------------------------------------------------------
+//
+// Hermes runs a config.yaml shell hook only once it is on its allowlist
+// (`hermes/shell-hooks-allowlist.json`), matched on the exact event and
+// command string; otherwise it logs "not allowlisted — skipped" and the bot
+// indexes nothing. Approval normally happens at a terminal prompt, which a
+// gateway does not have, or by accepting every hook (`hooks_auto_accept`),
+// which is far wider than needed. So provision approves its OWN wrapper and
+// nothing else: the script lives in the runtime, which the bot cannot write,
+// so what was approved is what runs.
+
+/** The `post_llm_call` commands in config.yaml that run this model's wrapper,
+ * as Hermes reads them: a quoted YAML scalar unquoted, a plain one as is. */
+export function wrapperHookCommands(config: string): string[] {
+  const out: string[] = [];
+  for (const line of config.split("\n")) {
+    const m = line.match(/^\s*(?:-\s*)?command:\s*(.+?)\s*$/);
+    if (!m || !m[1].includes("funes-index-hook.sh")) continue;
+    const v = m[1];
+    if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) {
+      out.push(v.slice(1, -1).replace(/''/g, "'"));
+    } else if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+      out.push(JSON.parse(v));
+    } else {
+      out.push(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * The allowlist with `commands` approved for post_llm_call, in Hermes's own
+ * format, and how many were added. An allowlist that is absent or not the
+ * shape Hermes writes starts empty rather than being guessed at.
+ */
+export function approveWrapperHooks(
+  allowlist: string | null,
+  commands: string[],
+  nowIso: string,
+  scriptMtimeIso: string,
+): { text: string; added: number } {
+  let data: { approvals: Array<Record<string, unknown>> } = { approvals: [] };
+  try {
+    const parsed = allowlist ? JSON.parse(allowlist) : null;
+    if (parsed && Array.isArray(parsed.approvals)) data = parsed;
+  } catch { /* unreadable: start empty */ }
+  let added = 0;
+  for (const command of commands) {
+    const known = data.approvals.some((a) =>
+      a.event === "post_llm_call" && a.command === command
+    );
+    if (known) continue;
+    data.approvals.push({
+      approved_at: nowIso,
+      command,
+      event: "post_llm_call",
+      script_mtime_at_approval: scriptMtimeIso,
+    });
+    added++;
+  }
+  return { text: JSON.stringify(data, null, 2) + "\n", added };
+}
