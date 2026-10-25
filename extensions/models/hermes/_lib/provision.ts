@@ -22,6 +22,13 @@
 //   - config.yaml and SOUL.md written only when absent, because Hermes writes
 //     to config.yaml itself (onboarding.seen) and SOUL.md is the bot's
 //     character. Provisioning is not allowed to overwrite either.
+//   - the code in a runtime directory OUTSIDE the workdir (runtimeOf), granted
+//     to the sandbox read-only. Provision runs the venv's python, git, uv and
+//     funes on the host as the operator; while they lived in the workdir the
+//     bot could plant code in any of them — a .pth file, a .git/config
+//     fsmonitor, a swapped binary — and it ran unsandboxed on the next
+//     provision. State stays in the workdir; code the bot runs, it can no
+//     longer write.
 //
 // What this deliberately does NOT do is run the upstream `setup-hermes.sh`.
 // That script appends a PATH line to the user's shell rc, symlinks
@@ -32,7 +39,7 @@
 // prompt, and re-running is a no-op instead of a rebuild.
 
 import type { Bot } from "./decl.ts";
-import { workdirOf } from "./decl.ts";
+import { runtimeOf, workdirOf } from "./decl.ts";
 
 /**
  * A file provisioning puts in the workdir.
@@ -57,6 +64,11 @@ export function resolvedWorkdir(b: Bot, home: string): string {
   return workdirOf(b).replace("$HOME", home);
 }
 
+/** Absolute runtime directory with $HOME already resolved. */
+export function resolvedRuntime(b: Bot, home: string): string {
+  return runtimeOf(b).replace("$HOME", home);
+}
+
 /**
  * Every directory the runtime expects to exist.
  *
@@ -67,7 +79,6 @@ export function resolvedWorkdir(b: Bot, home: string): string {
 export function directories(_b: Bot): string[] {
   return [
     "logs",
-    "tools",
     "funes/hf",
     "funes/memory",
     "workspace/inbox",
@@ -78,7 +89,6 @@ export function directories(_b: Bot): string[] {
     // TMPDIR inside the sandbox. Without it SQLite's temp files land in
     // /var/tmp, which the sandbox refuses.
     "hermes/cache/scratch",
-    "hermes/python",
     "hermes/hooks",
     "hermes/memories",
     "hermes/sessions",
@@ -91,6 +101,75 @@ export function directories(_b: Bot): string[] {
     "hermes/xdg/data",
     "hermes/xdg/state",
   ];
+}
+
+/**
+ * Directories under the runtime (runtimeOf). The checkout is not listed: git
+ * clone creates it, and refuses to clone into one that already exists.
+ */
+export function runtimeDirectories(): string[] {
+  return ["tools", "python", "cache/uv"];
+}
+
+/**
+ * Where earlier versions kept code inside the workdir.
+ *
+ * Nothing runs these any more. They are reported rather than deleted: the bot
+ * could have written to them, so they are untrusted and never moved into the
+ * runtime, but they are the operator's to remove once the new runtime is
+ * confirmed working.
+ */
+export function legacyRuntimePaths(): string[] {
+  return ["tools", "hermes/hermes-agent", "hermes/python"];
+}
+
+/**
+ * Point a config.yaml written by an earlier provision at the runtime's tools.
+ *
+ * config.yaml is the runtime's and provision never rewrites it, with this one
+ * exception: the funes MCP command and the index hook were written as
+ * `<workdir>/tools/...`, a directory the bot can write. Left alone, an existing
+ * bot would keep running tools it can modify. Only that exact prefix changes.
+ */
+export function migrateConfigTools(
+  content: string,
+  workdir: string,
+  runtime: string,
+): { content: string; count: number } {
+  const from = `${workdir}/tools/`;
+  const parts = content.split(from);
+  return {
+    content: parts.join(`${runtime}/tools/`),
+    count: parts.length - 1,
+  };
+}
+
+/**
+ * git options for every call provision makes.
+ *
+ * The checkout is no longer bot-writable, so these are the second layer, not
+ * the first: they stop a `.git/config` from running anything — an fsmonitor
+ * command on `git status`, a hook on checkout, an `ext::` transport — should
+ * that ever change.
+ */
+export const GIT_HARDEN = [
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "-c",
+  "protocol.ext.allow=never",
+];
+
+/**
+ * Arguments for "can the venv import this module".
+ *
+ * `-I` is isolated mode: no current directory on sys.path, no PYTHON*
+ * variables, no user site-packages. Without it `python -c "import telegram"`
+ * looks in the working directory first, and a `telegram.py` there wins.
+ */
+export function importCheckArgs(mod: string): string[] {
+  return ["-I", "-c", `import ${mod}`];
 }
 
 /** YAML-quote a scalar that might contain something YAML would reinterpret. */
@@ -112,16 +191,16 @@ function q(s: string): string {
  * and the exception that proves it: it holds no credential and reads a memory
  * inside this workdir, so running it inside the sandbox is what we want.
  */
-export function configYaml(b: Bot, workdir: string): string {
+export function configYaml(b: Bot, workdir: string, runtime: string): string {
   const L: string[] = [];
   L.push(`# ${b.displayName} — starter configuration, written by provision.`);
   L.push(`#`);
   L.push(`# Hermes owns this file from here on and writes to it at runtime.`);
   L.push(`# Provision will not overwrite it: re-running is safe, and a change`);
   L.push(
-    `# you make here survives. config.yaml.example in hermes-agent/ lists`,
+    `# you make here survives. config.yaml.example in the hermes-agent checkout`,
   );
-  L.push(`# every key this one leaves at its default.`);
+  L.push(`# lists every key this one leaves at its default.`);
   L.push(``);
   L.push(`model:`);
   L.push(`  provider: ${b.runtime.provider}`);
@@ -141,7 +220,7 @@ export function configYaml(b: Bot, workdir: string): string {
     L.push(`    connect_timeout: 15`);
   }
   L.push(`  funes:`);
-  L.push(`    command: ${workdir}/tools/funes`);
+  L.push(`    command: ${runtime}/tools/funes`);
   L.push(`    args:`);
   L.push(`      - mcp`);
   L.push(`    env:`);
@@ -167,7 +246,7 @@ export function configYaml(b: Bot, workdir: string): string {
   L.push(`hooks:`);
   L.push(`  post_llm_call:`);
   L.push(
-    `    - command: bash ${q(`${workdir}/tools/funes-index-hook.sh`)} 'hermes'`,
+    `    - command: bash ${q(`${runtime}/tools/funes-index-hook.sh`)} 'hermes'`,
   );
   L.push(`      timeout: 30`);
   if (b.runtime.fallback.length > 0) {
@@ -236,9 +315,10 @@ already done, which is usually faster than re-deriving it.
 }
 
 /**
- * `tools/funes-index-hook.sh`.
+ * `tools/funes-index-hook.sh`, in the runtime.
  *
- * Derived, and rewritten every run. Three things it exists to fix, all of them
+ * Derived, and rewritten every run. It lives in the runtime with the binary it
+ * runs, so the bot can execute it but not edit it. Three things it exists to fix, all of them
  * silent failures that look like success:
  *
  *   - Hermes runs post_llm_call hooks with the REAL home, so the hook's
@@ -255,7 +335,7 @@ already done, which is usually faster than re-deriving it.
  * sibling's memory would make personal context retrievable from a work agent,
  * which is the entire reason these runtimes are separate.
  */
-export function indexHook(b: Bot, workdir: string): string {
+export function indexHook(b: Bot, workdir: string, runtime: string): string {
   return `#!/bin/sh
 # Wrapper around funes's own funes-index.sh, supplying the environment the hook
 # does not otherwise get. Generated by @skunk-ape/hermes/bot provision for
@@ -279,25 +359,40 @@ export FUNES_HOME="\$W/funes"
 export HF_HOME="\$W/funes/hf"
 # find_bin in funes-index.sh tries \`command -v\` then \$HOME/.local/bin. With
 # HOME rewritten above, that fallback points somewhere empty — so put the
-# staged binary on PATH explicitly rather than relying on either.
-export PATH="\$W/tools:\$PATH"
+# staged binary on PATH explicitly rather than relying on either. It is the
+# runtime's copy, which the bot can run but not replace.
+export PATH="${runtime}/tools:\$PATH"
 exec bash "\$W/.hermes/hooks/funes-index.sh" "\$@"
 `;
 }
 
-/** Every file provisioning writes into the workdir, derived and stateful alike. */
-export function workdirFiles(b: Bot, workdir: string): WorkdirFile[] {
+/** Every file provisioning writes into the runtime. All derived. */
+export function runtimeFiles(
+  b: Bot,
+  workdir: string,
+  runtime: string,
+): WorkdirFile[] {
   return [
     {
       path: "tools/funes-index-hook.sh",
-      content: indexHook(b, workdir),
+      content: indexHook(b, workdir, runtime),
       mode: 0o755,
       clobber: true,
       because: "derived from the declaration",
     },
+  ];
+}
+
+/** Every file provisioning writes into the workdir. Both are stateful. */
+export function workdirFiles(
+  b: Bot,
+  workdir: string,
+  runtime: string,
+): WorkdirFile[] {
+  return [
     {
       path: "hermes/config.yaml",
-      content: configYaml(b, workdir),
+      content: configYaml(b, workdir, runtime),
       mode: 0o644,
       clobber: false,
       because: "Hermes writes to it at runtime; provision never overwrites it",
@@ -421,21 +516,62 @@ export function providerExtras(b: Bot): string[] {
 }
 
 /**
+ * Local refs that name the declared ref, tag first.
+ *
+ * `agent.ref` is a branch or a tag. A tag is what pins a fleet; a branch is
+ * the default (`main`) and what the clone's `--branch` accepts either way. The
+ * shallow clone records a tag under refs/tags and a branch under
+ * refs/remotes/origin, so both are tried, locally, without touching the
+ * network — check mode must not fetch.
+ */
+export function localRefCandidates(ref: string): string[] {
+  return [`refs/tags/${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`];
+}
+
+/**
  * The git invocations that move an existing checkout to the declared ref.
  *
  * Without these a ref edit in the declaration reached no existing workdir:
  * provision saw a checkout, called it present, and `--check` reported the
  * workdir complete while it ran the old commit. Shallow like the clone, and a
- * detached checkout of exactly the named ref, because a tag is what pins a
- * fleet and a branch tip would move under it.
+ * detached checkout of exactly the named ref.
+ *
+ * An earlier version fetched `origin tag <ref>` only, so the default ref
+ * `main` failed every run after the first clone. The tag is tried first, then
+ * the branch; whichever fetch succeeds decides which checkout runs.
  */
 export function refSteps(ref: string): {
-  fetch: string[];
-  checkout: string[];
+  tag: { fetch: string[]; checkout: string[] };
+  branch: { fetch: string[]; checkout: string[] };
 } {
   return {
-    fetch: ["fetch", "--depth", "1", "--no-tags", "origin", "tag", ref],
-    checkout: ["checkout", "--quiet", "--detach", `refs/tags/${ref}`],
+    tag: {
+      fetch: [
+        "fetch",
+        "--depth",
+        "1",
+        "--no-tags",
+        "origin",
+        `+refs/tags/${ref}:refs/tags/${ref}`,
+      ],
+      checkout: ["checkout", "--quiet", "--detach", `refs/tags/${ref}`],
+    },
+    branch: {
+      fetch: [
+        "fetch",
+        "--depth",
+        "1",
+        "--no-tags",
+        "origin",
+        `+refs/heads/${ref}:refs/remotes/origin/${ref}`,
+      ],
+      checkout: [
+        "checkout",
+        "--quiet",
+        "--detach",
+        `refs/remotes/origin/${ref}`,
+      ],
+    },
   };
 }
 
@@ -460,19 +596,60 @@ export function requiredImports(b: Bot): string[] {
 }
 
 /** The environment every uv step runs with. Each variable keeps a write inside
- * the workdir that would otherwise land in a shared cache on the host. */
-export function uvEnv(workdir: string): Record<string, string> {
+ * this bot's runtime that would otherwise land in a shared cache on the host.
+ *
+ * The cache is the runtime's, not the workdir's: a uv cache the bot could
+ * write is a place to plant a wheel the next `uv sync` installs. The workdir's
+ * own uv cache stays for whatever the bot runs inside its sandbox. */
+export function uvEnv(
+  workdir: string,
+  runtime: string,
+): Record<string, string> {
   return {
-    UV_CACHE_DIR: `${workdir}/hermes/cache/uv`,
+    UV_CACHE_DIR: `${runtime}/cache/uv`,
     // The one that bites on a fresh install. Without it the venv points at the
-    // shared interpreter under ~/.local/share/uv/, outside the workdir, and
+    // shared interpreter under ~/.local/share/uv/, outside the runtime, and
     // the gateway cannot exec its own python.
-    UV_PYTHON_INSTALL_DIR: `${workdir}/hermes/python`,
+    UV_PYTHON_INSTALL_DIR: `${runtime}/python`,
     NPM_CONFIG_CACHE: `${workdir}/hermes/cache/npm`,
     // Where uv would otherwise drop a python3.x symlink on the host's PATH.
-    // Pointed inside the workdir so nothing lands outside it even if the
+    // Pointed inside the runtime so nothing lands outside it even if the
     // `--no-bin` flag on the install step is ever dropped or renamed.
-    UV_PYTHON_BIN_DIR: `${workdir}/hermes/python/bin`,
+    UV_PYTHON_BIN_DIR: `${runtime}/python/bin`,
     HERMES_HOME: `${workdir}/hermes`,
   };
+}
+
+/**
+ * argv for `funes add hermes`, run inside the bot's own sandbox.
+ *
+ * Never on the host: funes runs integration scripts it keeps under
+ * $HOME/.funes, and HOME here is the workdir, which the bot can write. Inside
+ * nono a planted script gets the bot's own access and nothing more.
+ *
+ * HOME goes to funes through `env` inside the sandbox, not to nono: nono keeps
+ * its state under $HOME/.nono and refuses a grant that overlaps it, so a
+ * workdir HOME handed to nono fails before funes starts (nono 0.78.0).
+ */
+export function sandboxedFunesAdd(
+  profile: string,
+  workdir: string,
+  funes: string,
+): string[] {
+  return [
+    "run",
+    "-s",
+    "--profile",
+    profile,
+    "--workdir",
+    workdir,
+    "--",
+    "/usr/bin/env",
+    `HOME=${workdir}`,
+    `FUNES_HOME=${workdir}/funes`,
+    `HF_HOME=${workdir}/funes/hf`,
+    funes,
+    "add",
+    "hermes",
+  ];
 }

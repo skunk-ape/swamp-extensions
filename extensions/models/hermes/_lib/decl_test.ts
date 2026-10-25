@@ -213,3 +213,21 @@ Deno.test("no swamp block is the default, and is clean", () => {
   assertEquals(b.swamp, null);
   assertEquals(crossCheck(b), []);
 });
+
+// Landlock grants add up: a grant over the runtimes makes the bot's own code,
+// and every sibling's, writable again.
+Deno.test("a filesystemAllow grant covering the runtimes is refused", () => {
+  for (const p of ["$HOME", "$HOME/agents", "$HOME/agents/.runtime", "$HOME/agents/.runtime/other/"]) {
+    const problems = crossCheck(BotSchema.parse(minimal({
+      sandbox: { filesystemAllow: [p] },
+    })));
+    assert(problems.some((x) => x.includes(".runtime")), p);
+  }
+  // A sibling directory that merely shares a prefix is fine.
+  assertEquals(
+    crossCheck(BotSchema.parse(minimal({
+      sandbox: { filesystemAllow: ["$HOME/agents-notes"] },
+    }))),
+    [],
+  );
+});

@@ -242,3 +242,79 @@ Deno.test("every method a bot needs is declared, with a schema", () => {
     assert(typeof methods[m].execute === "function");
   }
 });
+
+// ---------------------------------------------------------------------------
+// provision on a workdir the bot has had its hands on
+// ---------------------------------------------------------------------------
+
+const PROVISION_CHECK = (dir: string) => ({
+  check: true,
+  hermesRepo: "https://example.invalid/hermes-agent.git",
+  hermesRef: "main",
+  pythonVersion: "3.11",
+  seedHfFrom: "",
+  funesBin: `${dir}/nonexistent-funes`,
+  skipDeps: false,
+});
+
+Deno.test("provision --check reports the runtime and code left by the old layout", async () => {
+  await inTempRepo(async (dir) => {
+    const b = bot({ workdirRoot: `${dir}/agents` });
+    const wd = `${dir}/agents/${b.slug}`;
+    // An old-layout workdir: code inside it.
+    await Deno.mkdir(`${wd}/hermes/hermes-agent`, { recursive: true });
+    await Deno.mkdir(`${wd}/tools`, { recursive: true });
+    const a = ctx(dir, b);
+    await methods.provision.execute(PROVISION_CHECK(dir), a.ctx);
+
+    const steps = (a.written[0].data as Record<string, unknown>).steps as {
+      name: string;
+      status: string;
+      detail: string;
+    }[];
+    const step = (n: string) => steps.find((s) => s.name === n);
+    assertEquals(step("runtime")?.status, "missing");
+    assertStringIncludes(step("runtime")!.detail, `${dir}/agents/.runtime/`);
+    assertEquals(step("legacy runtime")?.status, "unused");
+    assertStringIncludes(step("legacy runtime")!.detail, "hermes/hermes-agent");
+    // Check mode creates nothing, the runtime included.
+    await Deno.stat(`${dir}/agents/.runtime`).then(
+      () => assert(false, "check mode created the runtime"),
+      () => {},
+    );
+  });
+});
+
+Deno.test("provision refuses a workdir directory the bot replaced with a symlink", async () => {
+  await inTempRepo(async (dir) => {
+    const b = bot({ workdirRoot: `${dir}/agents` });
+    const wd = `${dir}/agents/${b.slug}`;
+    await Deno.mkdir(wd, { recursive: true });
+    await Deno.mkdir(`${dir}/operator-home`);
+    await Deno.symlink(`${dir}/operator-home`, `${wd}/hermes`);
+    let message = "";
+    try {
+      await methods.provision.execute(PROVISION_CHECK(dir), ctx(dir, b).ctx);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    assertStringIncludes(message, "is a symlink");
+  });
+});
+
+Deno.test("provision refuses a .hermes link that points anywhere but the bot's own home", async () => {
+  await inTempRepo(async (dir) => {
+    const b = bot({ workdirRoot: `${dir}/agents` });
+    const wd = `${dir}/agents/${b.slug}`;
+    await Deno.mkdir(`${wd}/hermes`, { recursive: true });
+    // funes add hermes writes through this link on the host.
+    await Deno.symlink(`${dir}/operator-hermes`, `${wd}/.hermes`);
+    let message = "";
+    try {
+      await methods.provision.execute(PROVISION_CHECK(dir), ctx(dir, b).ctx);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    assertStringIncludes(message, `points at ${dir}/operator-hermes`);
+  });
+});

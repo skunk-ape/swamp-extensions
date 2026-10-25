@@ -18,7 +18,6 @@
 // The second is why the caller binds a real listener before running the probe.
 
 import type { Bot } from "./decl.ts";
-import { workdirOf } from "./decl.ts";
 
 /**
  * PASS  — the claim held.
@@ -79,6 +78,8 @@ export type ProbeSpec = {
   bot: Bot;
   /** Absolute workdir, with $HOME already resolved. */
   workdir: string;
+  /** The runtime (runtimeOf), resolved, and whether it exists on the host. */
+  runtime: PathCheck;
   granted: PathCheck[];
   denied: PathCheck[];
   foreignPorts: ForeignPort[];
@@ -128,6 +129,8 @@ export function buildProbe(spec: ProbeSpec): string {
 import os, socket, sys, time, urllib.request, urllib.error
 
 WORKDIR = ${py(spec.workdir)}
+RUNTIME = ${py(spec.runtime.path)}
+RUNTIME_ON_HOST = ${py(spec.runtime.existsOnHost)}
 PROBE_PORT = ${spec.probePort}
 MCP_PORTS = ${py(b.mcps.map((m) => [m.name, m.port]))}
 FOREIGN_PORTS = ${py(spec.foreignPorts.map((f) => [f.label, f.port]))}
@@ -153,6 +156,26 @@ try:
     ok("workdir is writable", True)
 except Exception as e:
     ok("workdir is writable", False, str(e))
+
+# --- filesystem: the runtime is readable and NOT writable -----------------
+# The code this bot runs lives here, and provision runs it on the host. A
+# writable runtime would let the bot plant code that runs outside the sandbox.
+if not RUNTIME_ON_HOST:
+    emit("VACUOUS", "runtime is readable", "no runtime on this host yet")
+    emit("VACUOUS", "runtime is not writable", "no runtime on this host yet")
+else:
+    try:
+        os.listdir(RUNTIME)
+        ok("runtime is readable", True)
+    except Exception as e:
+        ok("runtime is readable", False, str(e))
+    planted = os.path.join(RUNTIME, ".verify-planted")
+    try:
+        open(planted, "w").close()
+        os.remove(planted)
+        ok("runtime is not writable", False, "WRITE SUCCEEDED at " + planted)
+    except OSError as e:
+        ok("runtime is not writable", True, type(e).__name__)
 
 # --- filesystem: declared grants are actually readable --------------------
 for path, exists_on_host in GRANTED:
@@ -350,8 +373,15 @@ export function summarize(checks: Check[]): Summary {
   };
 }
 
-/** Where the probe is written. Inside the workdir because that is the one place
- * the sandbox can read it from. */
-export function probePath(b: Bot, home: string): string {
-  return `${workdirOf(b).replace("$HOME", home)}/.verify-probe.py`;
+/**
+ * argv for running the probe: the program itself, passed with `-c`.
+ *
+ * It used to be written to `<workdir>/.verify-probe.py` first. The workdir is
+ * the bot's, and that host-side write followed a symlink the bot could plant
+ * there — so `verify`, the method meant to be run routinely, was a way to
+ * overwrite any file the operator can write. With `-c` there is no file.
+ * The probe is not secret, so argv being visible to other processes is fine.
+ */
+export function probeArgv(python: string, probe: string): string[] {
+  return [python, "-I", "-c", probe];
 }

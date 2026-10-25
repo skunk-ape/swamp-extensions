@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-25T00:59:59Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "issue",
+      "note": "Runtime split verified: on Linux with nono 0.78.0 and a rendered profile, the bot was denied write, append, truncate, create, mkdir, rename, delete, rmdir, symlink, mkfifo and unix-socket bind in the runtime, could not hardlink into the workdir, and could not create anything in workdirRoot or .runtime. git calls carry GIT_HARDEN; import checks run `python -I` from an empty cwd; verify passes the probe with `-c`; workdir writes use writeFileSafe. The re-review BLOCKER is CLOSED: `funes add hermes` (which runs integration scripts funes keeps under the bot-writable $HOME/.funes) now runs inside `nono run` with the bot's own profile (sandboxedFunesAdd), HOME set inside the sandbox via /usr/bin/env because nono refuses a grant overlapping its own $HOME/.nono. Verified with funes 1.3.2: hooks were installed into the workdir and the host ~/.hermes was untouched. Provision skips the step until render has written the profile. CLOSED: crossCheck refuses a filesystemAllow entry covering <workdirRoot>/.runtime; seedHfFrom is validated as a slug and its source path is checked for symlinks. FOLLOW-UP, no blocker: (a) Landlock does not cover chmod, so the bot can chmod runtime files; that cannot grant it write access, but provision neither resets nor checks modes. (b) snapshot still writes auth.json into the repo with umask permissions."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "New steps (runtime, legacy runtime, config migration, symlink refusals, checkpoint skips) log with structured placeholders, and refusals name the offending path and the remedy. One misleading line: 'funes hooks created' is logged when funes 1.6 exits 0 after skipping its prompt with nothing installed (see idempotency-resilience)."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "FOLLOW-UP, carried over: verify still ignores the `nono run` exit code and has no completion sentinel, so a probe that dies partway can summarize as clean. The new runtime checks have the same weakness. Symlink refusals throw SymlinkRefused with actionable messages. restore aborts on any tar error. A malicious archive just fails, but files already placed stay placed (no rollback)."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "149 tests pass and fmt --check passes. Added since the re-review: sandboxedFunesAdd argv (HOME after `--`), crossCheck refusing grants over the runtime, plus earlier safefs unit tests, provision tamper tests through the real method, a real-git test that a `main` checkout moves to the branch's new tip, the probe parsed by a real python3, and runtime render tests. FOLLOW-UP: snapshot, restore, verify and the non-check provision path are still largely untested end to end; nothing asserts that funes add changed anything (its exit code is trusted)."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "CLOSED: branch refs (tag-then-branch lookup and fetch, tested against a real git remote). CLOSED: log paths derive from workdirOf. CLOSED: provision and restore refuse while the gateway runs. FOLLOW-UP: the funes hook step looks for hermes/hooks/funes-index.sh, which funes 1.3.2 creates (verified) but funes 1.6 does not (it installs under hermes/plugins/funes and prompts), so with 1.6 the step re-runs every time and provision never reports complete. A bot can keep writing <workdir>/tools/ strings into config.yaml to make every run report migrated; that is noise, not a hazard, since config.yaml is only read inside the sandbox."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "na",
+      "note": "There is no HTTP client. Subprocess exit codes are checked. The verify nono exit code is the exception, covered under error-handling."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "issue",
+      "note": "FOLLOW-UP, minor, carried over: the uv sync temp XDG_CONFIG dir is removed non-recursively. snapshot hashes the whole archive in memory. restore reads destination files as text with readIfPresent, which follows a bot-planted symlink. A symlink to a FIFO or a huge file can hang restore or exhaust its memory. Only a same/different bit comes back, so there is no content leak. The import-check temp dir is cleaned up recursively in a finally block."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Placeholders only in the README and tests. The new code and docs add no host-specific paths or identifiers."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "issue",
+      "note": "CLOSED: crossCheck refuses filesystemAllow entries equal to, above, or inside <workdirRoot>/.runtime (tested, including a prefix-sharing sibling that is allowed). Compared as written, so another spelling of the same directory is not caught; verify proves the runtime unwritable from inside regardless. CLOSED: seedHfFrom must match the slug pattern. FOLLOW-UP, carried over: free-form strings are interpolated unescaped into generated shell and YAML; only the operator writes them."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Unchanged. All specs declare lifetime and garbageCollection."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "FOLLOW-UP: uninstall does not remove the runtime directory, and nothing does. Legacy in-workdir code is reported but deliberately not deleted. That is reasonable, but there is no method to clean either up."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "pass",
+      "note": "provision (outside check mode) and restore now refuse while the gateway is running (refuseWhileRunning), as snapshot already did, so the safefs check-then-write window — including the chmod-by-path between create and rename in writeFileSafe — needs a running bot and cannot occur. Symlink and .hermes checks run before any write, including in check mode."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: one instance per spec per bot, named <spec>-<slug>."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Methods measure the host directly. The report uses the dataRepository API."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "Never published. Old-layout bots are migrated in place: config.yaml tools paths are rewritten and the legacy code is reported but never run."
+    }
+  ]
+}

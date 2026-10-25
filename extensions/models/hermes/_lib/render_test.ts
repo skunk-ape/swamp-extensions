@@ -72,8 +72,11 @@ Deno.test("the inner shell binds the workdir before it is used", () => {
     chat: { workIn: "$HOME/notes", workInEnvVar: "DEMO_CHAT_DIR" },
   });
   for (const f of [renderGateway(b), renderChat(b)]) {
-    const bind = f.content.indexOf('W="$1"; shift');
-    const firstUse = f.content.indexOf('"$W/hermes');
+    const bind = f.content.indexOf('W="$1"; RT="$2"; shift 2');
+    const firstUse = Math.min(
+      f.content.indexOf('"$W/hermes'),
+      f.content.indexOf('"$RT/hermes-agent'),
+    );
     assert(bind !== -1, `${f.path}: no workdir binding in the inner shell`);
     assert(
       bind < firstUse,
@@ -431,4 +434,59 @@ Deno.test("swamp secrets are read before the client environment is exported", ()
   for (const v of ["SWAMP_CONFIG_DIR=", "SWAMP_HOME=", "SWAMP_SERVER_URL="]) {
     assert(env.indexOf(v) > lastRead, `${v} is exported before a secret read`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The runtime: code the bot runs but cannot write
+// ---------------------------------------------------------------------------
+
+Deno.test("the profile grants the runtime read-only, on both platforms", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    const p = JSON.parse(renderProfileFor(bot(), platform).content);
+    assertEquals(p.filesystem.read, ["$HOME/agents/.runtime/demo"], platform);
+    // Read-write stays exactly the workdir (plus declared grants), never the
+    // runtime: Landlock cannot take write back from a writable parent.
+    for (const path of p.filesystem.allow) {
+      assert(!String(path).includes(".runtime"), `${platform}: ${path}`);
+    }
+  }
+});
+
+Deno.test("every entrypoint runs the runtime's python, not one in the workdir", () => {
+  const b = bot({
+    entrypoints: ["gateway", "chat"],
+    chat: { workIn: "$HOME/notes", workInEnvVar: "DEMO_CHAT_DIR" },
+  });
+  for (const f of [renderGateway(b), renderChat(b)]) {
+    assertStringIncludes(
+      f.content,
+      'exec "$RT/hermes-agent/venv/bin/python" -m hermes_cli.main',
+    );
+    assertStringIncludes(f.content, '_ "$WORKDIR" "$RUNTIME"');
+    assert(!f.content.includes("hermes/hermes-agent"), f.path);
+  }
+});
+
+Deno.test("the env lib takes tools and the interpreter from the runtime", () => {
+  const env = renderEnvLib(bot()).content;
+  assertStringIncludes(env, 'RUNTIME="$HOME/agents/.runtime/demo"');
+  assertStringIncludes(env, 'export PATH="$RUNTIME/tools:$PATH"');
+  assertStringIncludes(env, 'export UV_PYTHON_INSTALL_DIR="$RUNTIME/python"');
+  assert(!env.includes('"$WORKDIR/tools'));
+});
+
+// The log paths were hard-coded as __HOME__/agents/<slug>, so a bot with any
+// other workdirRoot had its supervisor write into a directory that never
+// existed, and the gateway failed at exec.
+Deno.test("supervisor log paths follow workdirRoot", () => {
+  const b = bot({ workdirRoot: "/srv/bots" });
+  assertStringIncludes(
+    renderUnit(b).content,
+    "StandardOutput=append:/srv/bots/demo/logs/",
+  );
+  assertStringIncludes(
+    renderPlist(b).content,
+    "<string>/srv/bots/demo/logs/sh.demo.gateway.out.log</string>",
+  );
+  assert(!renderUnit(b).content.includes("__HOME__/agents"));
 });

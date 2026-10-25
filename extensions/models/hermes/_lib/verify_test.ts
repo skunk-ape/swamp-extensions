@@ -5,6 +5,7 @@ import {
   buildProbe,
   deniedPaths,
   parseProbeOutput,
+  probeArgv,
   pyLiteral,
   summarize,
 } from "./verify.ts";
@@ -34,6 +35,7 @@ const spec = (
 ) => ({
   bot: b,
   workdir: "/Users/x/agents/demo",
+  runtime: { path: "/Users/x/agents/.runtime/demo", existsOnHost: true },
   granted: b.sandbox.filesystemAllow.map((path) => ({
     path,
     existsOnHost: true,
@@ -229,4 +231,41 @@ Deno.test("the probe waits before testing egress, so it cannot blame the sandbox
   // The wait has to come between the two phases, or it buys nothing.
   assert(p.indexOf("if DENIED[0] > 0:") < p.indexOf("--- egress"));
   assert(p.indexOf("--- loopback") < p.indexOf("if DENIED[0] > 0:"));
+});
+
+// Provision runs the runtime's code on the host, so a writable runtime is a
+// way out of the sandbox. verify proves it is read-only from inside.
+Deno.test("the probe proves the runtime is readable and not writable", () => {
+  const p = buildProbe(spec(bot()));
+  assertStringIncludes(p, 'RUNTIME = "/Users/x/agents/.runtime/demo"');
+  assertStringIncludes(p, '"runtime is readable"');
+  assertStringIncludes(p, '"runtime is not writable"');
+  assertStringIncludes(p, "WRITE SUCCEEDED");
+});
+
+Deno.test("a missing runtime makes both runtime checks vacuous, not passes", () => {
+  const p = buildProbe(spec(bot(), 9099, {
+    runtime: { path: "/nowhere", existsOnHost: false },
+  }));
+  assertStringIncludes(p, "RUNTIME_ON_HOST = False");
+});
+
+// The probe used to be written into the workdir first, through any symlink
+// the bot had planted there.
+Deno.test("the probe runs from argv, isolated, with no file on disk", () => {
+  assertEquals(probeArgv("/usr/bin/python3", "print(1)"), [
+    "/usr/bin/python3",
+    "-I",
+    "-c",
+    "print(1)",
+  ]);
+});
+
+// The probe is generated Python. A syntax error in it produces no checks at all
+// and a verify that proves nothing, so parse it with a real interpreter.
+Deno.test("the generated probe is valid Python", async () => {
+  const out = await new Deno.Command("python3", {
+    args: ["-I", "-c", "import ast, sys; ast.parse(sys.argv[1])", buildProbe(spec(bot()))],
+  }).output();
+  assert(out.success, new TextDecoder().decode(out.stderr));
 });

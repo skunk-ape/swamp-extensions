@@ -61,6 +61,7 @@ import {
   crossCheck,
   gatewayLabel,
   homeEnvVar,
+  runtimeOf,
   workdirOf,
 } from "./_lib/decl.ts";
 import type { Bot } from "./_lib/decl.ts";
@@ -85,22 +86,38 @@ import {
   buildProbe,
   deniedPaths,
   parseProbeOutput,
-  probePath,
+  probeArgv,
   summarize,
 } from "./_lib/verify.ts";
 import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
   decideFile,
   directories,
+  GIT_HARDEN,
+  importCheckArgs,
+  legacyRuntimePaths,
+  localRefCandidates,
+  migrateConfigTools,
   providerExtras,
   refSteps,
   requiredImports,
+  resolvedRuntime,
   resolvedWorkdir,
+  runtimeDirectories,
+  runtimeFiles,
+  sandboxedFunesAdd,
   uvEnv,
   uvSteps,
   workdirFiles,
 } from "./_lib/provision.ts";
+import type { WorkdirFile } from "./_lib/provision.ts";
 import { scaffoldYaml } from "./_lib/scaffold.ts";
+import {
+  assertNoSymlinks,
+  ensureDirSafe,
+  isSymlink,
+  writeFileSafe,
+} from "./_lib/safefs.ts";
 import {
   carriedPaths,
   checkpointables,
@@ -188,6 +205,29 @@ async function* walkFiles(root: string, prefix = ""): AsyncGenerator<string> {
     } else if (e.isFile) {
       yield rel;
     }
+  }
+}
+
+/**
+ * Refuse a host-side write into the workdir while the bot is running in it.
+ *
+ * Every such write refuses to pass through a symlink (safefs.ts), but a check
+ * and the write after it are two steps, and a running bot watching its own
+ * directory could swap a path between them. A stopped bot cannot.
+ */
+async function refuseWhileRunning(
+  b: Bot,
+  h: HostFacts,
+  what: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const gw = await h.supervisor.state(gatewayLabel(b), signal);
+  if (gw.loaded && gw.state === "running") {
+    throw new Error(
+      `${
+        gatewayLabel(b)
+      } is running. ${what} writes into the workdir as you, outside the sandbox, and a running bot could swap a path under it. Stop it first (\`uninstall\`, or stop the service).`,
+    );
   }
 }
 
@@ -281,7 +321,7 @@ const ProvisionArgs = z.object({
     "Slug of a sibling bot whose Hugging Face embedding cache to copy. A bot with a named egress allowlist cannot download it, and widening the allowlist for a one-time fetch is the wrong trade. Empty means do not seed.",
   ),
   funesBin: z.string().default("$HOME/.local/bin/funes").describe(
-    "Host funes binary to stage into tools/. Staged rather than shared so a bot's memory tooling cannot change under it when the host's copy updates.",
+    "Host funes binary to stage into the runtime's tools/. Staged rather than shared so a bot's memory tooling cannot change under it when the host's copy updates.",
   ),
   skipDeps: z.boolean().default(false).describe(
     "Create the venv but do not sync dependencies. For a fast structural test of everything around the slowest step.",
@@ -623,12 +663,15 @@ async function writeStatus(
 
   const workdir = workdirOf(b).replace("$HOME", h.home);
   const workdirPresent = await exists(workdir);
+  const runtime = runtimeOf(b).replace("$HOME", h.home);
   const hermesPresent = await exists(
-    `${workdir}/hermes/hermes-agent/venv/bin/python`,
+    `${runtime}/hermes-agent/venv/bin/python`,
   );
   if (!workdirPresent) problems.push(`workdir ${workdir} does not exist`);
   else if (!hermesPresent) {
-    problems.push(`no Hermes venv python under ${workdir}/hermes`);
+    problems.push(
+      `no Hermes venv python under ${runtime}. Run provision to build the runtime.`,
+    );
   }
 
   return await ctx.writeResource("status", `status-${b.slug}`, {
@@ -926,6 +969,10 @@ export const model = {
 
         const h = hostFacts();
         const workdir = resolvedWorkdir(b, h.home);
+        // Check mode writes nothing, so it is safe beside a running bot.
+        if (!args.check) {
+          await refuseWhileRunning(b, h, "provision", ctx.signal);
+        }
 
         // The declaration says which Hermes this bot runs; the arguments only
         // override it for a one-off. That direction matters: as a flag, the
@@ -934,9 +981,19 @@ export const model = {
         // different repositories with nothing recording that they had.
         const hermesRepo = args.hermesRepo || b.agent.repo;
         const hermesRef = args.hermesRef || b.agent.ref;
-        const agentDir = `${workdir}/hermes/hermes-agent`;
+        // The code lives in the runtime, outside the workdir, read-only to the
+        // bot. Everything below that EXECUTES on the host — git, uv, the
+        // venv's python, funes — runs from here and never from the workdir,
+        // which the bot can write.
+        const runtime = resolvedRuntime(b, h.home);
+        const agentDir = `${runtime}/hermes-agent`;
         const venvPy = `${agentDir}/venv/bin/python`;
-        const env = { ...Deno.env.toObject(), ...uvEnv(workdir) };
+        const env = { ...Deno.env.toObject(), ...uvEnv(workdir, runtime) };
+        const runtimeRoot = b.workdirRoot.replace("$HOME", h.home);
+        // The runtime sits under workdirRoot, which the bot cannot write; a
+        // symlink on the way there would still send every write below
+        // somewhere else.
+        await assertNoSymlinks(runtimeRoot, `.runtime/${b.slug}`);
 
         // What was here BEFORE this run touched anything.
         //
@@ -951,7 +1008,7 @@ export const model = {
         // So the rule is narrower than "never overwrite": provision never
         // overwrites what it FOUND, and does own what its own steps produced.
         const preexisting = new Set<string>();
-        for (const f of workdirFiles(b, workdir)) {
+        for (const f of workdirFiles(b, workdir, runtime)) {
           if (await exists(`${workdir}/${f.path}`)) preexisting.add(f.path);
         }
 
@@ -978,8 +1035,12 @@ export const model = {
         };
 
         // -- the tree ------------------------------------------------------
+        // Every expected directory is checked for symlinks, present or not: a
+        // planted `hermes -> ~` already exists, so it would never be created,
+        // and every write below into hermes/ would go through it.
         const absent: string[] = [];
         for (const d of directories(b)) {
+          await assertNoSymlinks(workdir, d);
           if (!await exists(`${workdir}/${d}`)) absent.push(d);
         }
         if (absent.length === 0) {
@@ -990,20 +1051,53 @@ export const model = {
             `${absent.length} to create: ${absent.join(", ")}`,
           )
         ) {
-          for (const d of absent) await ensureDir(`${workdir}/${d}`);
+          for (const d of absent) await ensureDirSafe(workdir, d);
           say("directories", "created", absent.join(", "));
+        }
+
+        // -- the runtime ---------------------------------------------------
+        const rtAbsent: string[] = [];
+        for (const d of runtimeDirectories()) {
+          if (!await exists(`${runtime}/${d}`)) rtAbsent.push(d);
+        }
+        if (rtAbsent.length === 0) {
+          say("runtime", "present", runtime);
+        } else if (
+          !wouldChange("runtime", `${runtime}: create ${rtAbsent.join(", ")}`)
+        ) {
+          for (const d of rtAbsent) await ensureDirSafe(runtime, d);
+          say("runtime", "created", `${runtime}: ${rtAbsent.join(", ")}`);
         }
 
         // -- .hermes -------------------------------------------------------
         // Hermes runs post_llm_call hooks with the REAL home, and funes
         // resolves its session db from $HOME/.hermes. The hook rewrites HOME to
         // the workdir; this symlink is what makes that point somewhere real.
+        //
+        // Its target is checked, not just its existence. `funes add hermes`
+        // runs on the host with HOME set to the workdir and writes through
+        // this link, so a bot that repointed it at the host's own ~/.hermes
+        // would have the operator's next provision write there.
         const dotHermes = `${workdir}/.hermes`;
-        if (await exists(dotHermes)) {
+        const wantHermes = `${workdir}/hermes`;
+        let dotHermesOk = false;
+        if (await isSymlink(dotHermes)) {
+          const target = await Deno.readLink(dotHermes);
+          if (target !== wantHermes) {
+            throw new Error(
+              `${dotHermes} points at ${target}, not ${wantHermes}. Provision writes through it on the host; remove it and re-run.`,
+            );
+          }
+          dotHermesOk = true;
           say(".hermes symlink", "present");
-        } else if (!wouldChange(".hermes symlink", `-> ${workdir}/hermes`)) {
-          await Deno.symlink(`${workdir}/hermes`, dotHermes);
-          say(".hermes symlink", "created", `-> ${workdir}/hermes`);
+        } else if (await exists(dotHermes)) {
+          throw new Error(
+            `${dotHermes} exists and is not a symlink to ${wantHermes}. Remove it and re-run.`,
+          );
+        } else if (!wouldChange(".hermes symlink", `-> ${wantHermes}`)) {
+          await Deno.symlink(wantHermes, dotHermes);
+          dotHermesOk = true;
+          say(".hermes symlink", "created", `-> ${wantHermes}`);
         }
 
         // -- the checkout --------------------------------------------------
@@ -1013,8 +1107,14 @@ export const model = {
         // hermes_cli after a move, so the import test below cannot be what
         // decides whether dependencies need a sync.
         let refMoved = false;
+        // GIT_HARDEN on every call: no fsmonitor, no hooks, no ext:: transport,
+        // whatever the checkout's .git/config says.
         const git = async (argv: string[]) =>
-          await run("git", ["-C", agentDir, ...argv], ctx.signal);
+          await run(
+            "git",
+            [...GIT_HARDEN, "-C", agentDir, ...argv],
+            ctx.signal,
+          );
         const gitFail = (what: string, r: { stdout: string; stderr: string }) =>
           new Error(
             `${what} failed: ${
@@ -1024,16 +1124,19 @@ export const model = {
         if (await exists(`${agentDir}/.git`)) {
           const r = await git(["rev-parse", "HEAD"]);
           head = r.code === 0 ? r.stdout.trim() : null;
-          // Resolved locally: a tag the checkout has never fetched is by
-          // definition not what it is running.
-          const want = await git([
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            `refs/tags/${hermesRef}^{commit}`,
-          ]);
-          const onRef = want.code === 0 && head !== null &&
-            want.stdout.trim() === head;
+          // Resolved locally, tag first and then branch: a ref the checkout
+          // has never fetched is by definition not what it is running, and
+          // check mode must not touch the network.
+          let wantCommit: string | null = null;
+          for (const cand of localRefCandidates(hermesRef)) {
+            const w = await git(["rev-parse", "--verify", "--quiet", cand]);
+            if (w.code === 0) {
+              wantCommit = w.stdout.trim();
+              break;
+            }
+          }
+          const onRef = wantCommit !== null && head !== null &&
+            wantCommit === head;
           refMoved = !onRef;
           if (onRef) {
             say(
@@ -1062,10 +1165,16 @@ export const model = {
                 `hermes-agent's origin is ${origin}, not the declared ${hermesRepo}; not moving it.`,
               );
             }
+            // A tag if the remote has one by this name, otherwise a branch.
             const steps = refSteps(hermesRef);
-            const f = await git(steps.fetch);
+            let chosen = steps.tag;
+            let f = await git(steps.tag.fetch);
+            if (f.code !== 0) {
+              chosen = steps.branch;
+              f = await git(steps.branch.fetch);
+            }
             if (f.code !== 0) throw gitFail(`fetch ${hermesRef}`, f);
-            const c = await git(steps.checkout);
+            const c = await git(chosen.checkout);
             if (c.code !== 0) throw gitFail(`checkout ${hermesRef}`, c);
             const from = head?.slice(0, 12) ?? "unknown";
             head = (await git(["rev-parse", "HEAD"])).stdout.trim();
@@ -1084,6 +1193,7 @@ export const model = {
           // Shallow: this is a runtime, not a place to do git archaeology, and
           // a full history is several hundred megabytes per bot.
           const r = await run("git", [
+            ...GIT_HARDEN,
             "clone",
             "--depth",
             "1",
@@ -1099,11 +1209,7 @@ export const model = {
               }`,
             );
           }
-          const rev = await run(
-            "git",
-            ["-C", agentDir, "rev-parse", "HEAD"],
-            ctx.signal,
-          );
+          const rev = await git(["rev-parse", "HEAD"]);
           head = rev.code === 0 ? rev.stdout.trim() : null;
           say(
             "hermes-agent",
@@ -1114,11 +1220,11 @@ export const model = {
 
         const uv = uvSteps(agentDir, args.pythonVersion, providerExtras(b));
 
-        // -- the interpreter, INSIDE the workdir ---------------------------
+        // -- the interpreter, in the runtime ---------------------------------
         // The one that bites on a fresh install. Copying a uv interpreter in
         // does not work: uv's pythons resolve sys.prefix back to their original
         // install path, so it has to be installed here in the first place.
-        const pythonDir = `${workdir}/hermes/python`;
+        const pythonDir = `${runtime}/python`;
         let havePython = false;
         try {
           for await (const e of Deno.readDir(pythonDir)) {
@@ -1129,17 +1235,17 @@ export const model = {
           say(
             "interpreter",
             "present",
-            `cpython ${args.pythonVersion} under hermes/python`,
+            `cpython ${args.pythonVersion} under the runtime's python/`,
           );
         } else if (
           !wouldChange(
             "interpreter",
-            `uv python install ${args.pythonVersion} into hermes/python`,
+            `uv python install ${args.pythonVersion} into the runtime`,
           )
         ) {
           const r = await run("uv", uv.install, ctx.signal, {
             env,
-            cwd: workdir,
+            cwd: runtime,
           });
           if (r.code !== 0) {
             throw new Error(
@@ -1151,7 +1257,7 @@ export const model = {
           say(
             "interpreter",
             "created",
-            `cpython ${args.pythonVersion} in hermes/python`,
+            `cpython ${args.pythonVersion} in the runtime`,
           );
         }
 
@@ -1186,17 +1292,27 @@ export const model = {
         // creating an empty venv. From outside, only an installed project
         // answers.
         //
+        // Nor is it the workdir, which it used to be: python puts the current
+        // directory first on sys.path for `-c`, so a `telegram.py` the bot
+        // left there would have been what "import telegram" ran — on the
+        // host. The check runs isolated (-I) from an empty directory.
+        //
         // Each module is probed on its own so the report names what is
         // missing, not merely that something is.
         const unimportable: string[] = [];
         const mustImport = requiredImports(b);
-        for (const mod of mustImport) {
-          const ok = await exists(venvPy) &&
-            (await run(venvPy, ["-c", `import ${mod}`], ctx.signal, {
-                env,
-                cwd: workdir,
-              })).code === 0;
-          if (!ok) unimportable.push(mod);
+        const emptyCwd = await Deno.makeTempDir({ prefix: "hermes-import-" });
+        try {
+          for (const mod of mustImport) {
+            const ok = await exists(venvPy) &&
+              (await run(venvPy, importCheckArgs(mod), ctx.signal, {
+                  env,
+                  cwd: emptyCwd,
+                })).code === 0;
+            if (!ok) unimportable.push(mod);
+          }
+        } finally {
+          await Deno.remove(emptyCwd, { recursive: true }).catch(() => {});
         }
         const syncCmd = `uv ${uv.sync.join(" ")}`;
         const why = unimportable.length > 0
@@ -1256,7 +1372,7 @@ export const model = {
         // under it because the host updated. The two digests are recorded side
         // by side so the drift is visible instead of assumed.
         const hostFunes = args.funesBin.replace("$HOME", h.home);
-        const stagedFunes = `${workdir}/tools/funes`;
+        const stagedFunes = `${runtime}/tools/funes`;
         const digestOf = async (path: string): Promise<string | null> => {
           try {
             return await sha256Bytes(await Deno.readFile(path));
@@ -1279,7 +1395,7 @@ export const model = {
         } else if (hostDigest === null) {
           say("funes binary", "skipped", `no host binary at ${hostFunes}`);
         } else if (
-          !wouldChange("funes binary", `stage ${hostFunes} into tools/`)
+          !wouldChange("funes binary", `stage ${hostFunes} into the runtime`)
         ) {
           await Deno.copyFile(hostFunes, stagedFunes);
           await Deno.chmod(stagedFunes, 0o755);
@@ -1290,22 +1406,39 @@ export const model = {
         // -- funes hooks ---------------------------------------------------
         // `funes add hermes` writes its own scripts into $HOME/.hermes/hooks.
         // HOME is the workdir, so they land in this bot's Hermes home through
-        // the symlink above and nothing touches the host's.
+        // the symlink above and nothing touches the host's. That is only true
+        // once the link has been checked, so an unchecked one (check mode, or
+        // a run that did not get that far) skips this.
+        //
+        // It runs INSIDE the bot's own sandbox, never on the host. The binary
+        // is the runtime's, but funes also runs integration scripts it keeps
+        // under $HOME/.funes — the workdir, which the bot can write — so on
+        // the host a bot could edit one and have the operator's next provision
+        // run it. Everything funes should change is in the workdir, so the
+        // bot's profile is all it needs, and a planted script gets no more
+        // than the bot already has.
         const hookScript = `${workdir}/hermes/hooks/funes-index.sh`;
+        const profile =
+          `${ctx.repoDir}/profiles/${b.slug}.${h.platform}.nono.json`;
         if (await exists(hookScript)) {
           say("funes hooks", "present");
+        } else if (!dotHermesOk && !args.check) {
+          say("funes hooks", "skipped", ".hermes is not in place");
         } else if (stagedDigest === null) {
           say("funes hooks", "skipped", "no staged funes to install them with");
-        } else if (!wouldChange("funes hooks", "funes add hermes")) {
-          const r = await run(stagedFunes, ["add", "hermes"], ctx.signal, {
-            cwd: workdir,
-            env: {
-              ...env,
-              HOME: workdir,
-              FUNES_HOME: `${workdir}/funes`,
-              HF_HOME: `${workdir}/funes/hf`,
-            },
-          });
+        } else if (!await exists(profile)) {
+          say(
+            "funes hooks",
+            "skipped",
+            `no profile at ${profile}; run render first, since funes add runs inside the sandbox`,
+          );
+        } else if (!wouldChange("funes hooks", "funes add hermes, sandboxed")) {
+          const r = await run(
+            "nono",
+            sandboxedFunesAdd(profile, workdir, stagedFunes),
+            ctx.signal,
+            { cwd: workdir, env },
+          );
           if (r.code !== 0) {
             ctx.logger.warning("funes add hermes failed: {err}", {
               err: (r.stderr || r.stdout).trim().split("\n").slice(-2).join(
@@ -1338,14 +1471,27 @@ export const model = {
               : "no seedHfFrom given; funes will download it on first use",
           );
         } else {
-          const src = `${
-            b.workdirRoot.replace("$HOME", h.home)
-          }/${args.seedHfFrom}/funes/hf/hub`;
+          // A slug, not a path: anything else could name a directory outside
+          // the workdirs entirely.
+          if (!/^[a-z][a-z0-9-]{0,31}$/.test(args.seedHfFrom)) {
+            throw new Error(
+              `seedHfFrom must be a bot slug, got ${args.seedHfFrom}`,
+            );
+          }
+          const siblings = b.workdirRoot.replace("$HOME", h.home);
+          const src = `${siblings}/${args.seedHfFrom}/funes/hf/hub`;
+          // The source is another bot's workdir, which that bot can write. A
+          // symlink on the way — `funes/hf -> ~/.cache/huggingface` — would
+          // copy a host directory into this bot.
+          await assertNoSymlinks(siblings, `${args.seedHfFrom}/funes/hf/hub`);
           if (!await exists(src)) {
             say("embedding cache", "skipped", `nothing to copy at ${src}`);
           } else if (
             !wouldChange("embedding cache", `copy from ${args.seedHfFrom}`)
           ) {
+            // cp writes into this bot's workdir; a symlinked funes/ or hf/
+            // there would send the copy somewhere else.
+            await assertNoSymlinks(workdir, "funes/hf/hub");
             const r = await run("cp", ["-R", src, hubDir], ctx.signal);
             if (r.code !== 0) {
               throw new Error(
@@ -1357,28 +1503,91 @@ export const model = {
         }
 
         // -- the files -----------------------------------------------------
-        for (const f of workdirFiles(b, workdir)) {
-          const abs = `${workdir}/${f.path}`;
-          const current = await readIfPresent(abs);
-          const what = decideFile(f, current, preexisting.has(f.path));
+        // Runtime files first: derived, rewritten every run, read-only to the
+        // bot. Then the workdir's, written without following a symlink — the
+        // bot could have planted one at any of these paths.
+        const writes: Array<{ root: string; label: string; f: WorkdirFile }> = [
+          ...runtimeFiles(b, workdir, runtime).map((f) => ({
+            root: runtime,
+            label: `runtime/${f.path}`,
+            f,
+          })),
+          ...workdirFiles(b, workdir, runtime).map((f) => ({
+            root: workdir,
+            label: f.path,
+            f,
+          })),
+        ];
+        for (const { root, label, f } of writes) {
+          await assertNoSymlinks(root, f.path);
+          const current = await readIfPresent(`${root}/${f.path}`);
+          const what = decideFile(
+            f,
+            current,
+            root === workdir && preexisting.has(f.path),
+          );
           if (what === "kept") {
-            say(f.path, "present", current === f.content ? "" : f.because);
+            say(label, "present", current === f.content ? "" : f.because);
             continue;
           }
-          if (wouldChange(f.path, `would be ${what} — ${f.because}`)) continue;
-          await ensureDir(dirOf(abs));
-          const tmp = `${abs}.provisioning`;
-          await Deno.writeTextFile(tmp, f.content);
-          await Deno.chmod(tmp, f.mode);
-          await Deno.rename(tmp, abs);
-          say(f.path, what, f.because);
+          if (wouldChange(label, `would be ${what} — ${f.because}`)) continue;
+          await writeFileSafe(root, f.path, f.content, f.mode);
+          say(label, what, f.because);
+        }
+
+        // -- config.yaml from an earlier layout ------------------------------
+        // The one exception to never rewriting config.yaml: an earlier
+        // provision pointed the funes MCP and the index hook at the workdir's
+        // tools/, which the bot can write. Only that prefix changes.
+        const configRel = "hermes/config.yaml";
+        const config = await readIfPresent(`${workdir}/${configRel}`);
+        if (config !== null) {
+          const m = migrateConfigTools(config, workdir, runtime);
+          if (m.count === 0) {
+            // Nothing to say: the common case, and already reported above.
+          } else if (
+            !wouldChange(
+              configRel,
+              `${m.count} path(s) still point at the workdir's tools/`,
+            )
+          ) {
+            await writeFileSafe(workdir, configRel, m.content, 0o644);
+            say(
+              configRel,
+              "migrated",
+              `${m.count} tools/ path(s) now point at the runtime`,
+            );
+          }
+        }
+
+        // -- code left in the workdir by an earlier layout -------------------
+        // Reported, never run, never moved, never deleted. The bot could have
+        // written to any of it, which is exactly why the runtime was rebuilt
+        // from scratch rather than copied from here.
+        const legacy: string[] = [];
+        for (const p of legacyRuntimePaths()) {
+          if (
+            await exists(`${workdir}/${p}`) ||
+            await isSymlink(`${workdir}/${p}`)
+          ) {
+            legacy.push(p);
+          }
+        }
+        if (legacy.length > 0) {
+          say(
+            "legacy runtime",
+            "unused",
+            `${
+              legacy.join(", ")
+            } in the workdir are from an earlier layout. Nothing runs them now; delete them once the bot works from ${runtime}.`,
+          );
         }
 
         const missing = steps.filter((s) => s.status === "missing").length;
         const acted =
           steps.filter((s) =>
             s.status === "created" || s.status === "updated" ||
-            s.status === "replaced"
+            s.status === "replaced" || s.status === "migrated"
           ).length;
         const complete = missing === 0 && acted === 0;
 
@@ -1521,22 +1730,19 @@ export const model = {
           );
         }
 
-        const script = probePath(b, h.home);
+        const runtime = runtimeOf(b).replace("$HOME", h.home);
+        const probe = buildProbe({
+          bot: b,
+          workdir,
+          runtime: { path: runtime, existsOnHost: await exists(runtime) },
+          granted,
+          denied,
+          foreignPorts,
+          probePort,
+          deniedHost: args.deniedHost,
+        });
         let checks: Check[] = [];
         try {
-          await Deno.writeTextFile(
-            script,
-            buildProbe({
-              bot: b,
-              workdir,
-              granted,
-              denied,
-              foreignPorts,
-              probePort,
-              deniedHost: args.deniedHost,
-            }),
-          );
-
           // `nono run`, not `wrap`: wrap applies filesystem confinement only
           // and leaves the whole network block inert, so verifying under wrap
           // would test a policy the runtime does not enforce. The entrypoints
@@ -1549,15 +1755,11 @@ export const model = {
             "--workdir",
             workdir,
             "--",
-            python,
-            script,
+            ...probeArgv(python, probe),
           ], ctx.signal);
           checks = parseProbeOutput(r.stdout + "\n" + r.stderr);
         } finally {
           listener?.close();
-          try {
-            await Deno.remove(script);
-          } catch { /* the probe may never have been written */ }
         }
 
         const sum = summarize(checks);
@@ -1645,6 +1847,17 @@ export const model = {
         for (const rel of checkpointables()) {
           const db = `${workdir}/${rel}`;
           if (python === null || !await exists(db)) continue;
+          // A checkpoint writes. Through a symlink the bot planted it would
+          // truncate the WAL of whatever database the link points at.
+          try {
+            await assertNoSymlinks(workdir, rel);
+          } catch {
+            ctx.logger.warning(
+              "not checkpointing {db}: it passes through a symlink",
+              { db: rel },
+            );
+            continue;
+          }
           const r = await run(python, [
             "-c",
             "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close()",
@@ -1765,6 +1978,7 @@ export const model = {
         const b = ctx.globalArgs;
         const h = hostFacts();
         const toWorkdir = workdirOf(b).replace("$HOME", h.home);
+        await refuseWhileRunning(b, h, "restore", ctx.signal);
 
         if (!await exists(args.archive)) {
           throw new Error(`no archive at ${args.archive}`);
@@ -1780,6 +1994,12 @@ export const model = {
         const fromWorkdir = args.fromHome
           ? `${b.workdirRoot.replace("$HOME", args.fromHome)}/${b.slug}`
           : toWorkdir;
+        // config.yaml also names the runtime's tools, under a different prefix
+        // from the workdir's, so it is rewritten separately.
+        const toRuntime = runtimeOf(b).replace("$HOME", h.home);
+        const fromRuntime = args.fromHome
+          ? runtimeOf(b).replace("$HOME", args.fromHome)
+          : toRuntime;
         if (fromWorkdir === toWorkdir) {
           ctx.logger.warning(
             "no fromHome given, so no paths will be rewritten. This is correct ONLY if both machines use the same home directory; otherwise the restored config.yaml will point the funes MCP at a path that does not exist and the gateway will come up with no memory tool.",
@@ -1820,9 +2040,18 @@ export const model = {
             if (rewritable(rel)) {
               const raw = await readIfPresent(src);
               if (raw !== null) {
-                const done = rewritePrefix(raw, fromWorkdir, toWorkdir);
-                body = done.content;
-                rewrites = done.count;
+                // Runtime first: on the default layout it does not start with
+                // the workdir prefix, but nothing guarantees that for every
+                // workdirRoot, and rewriting it twice would be wrong.
+                const rt = rewritePrefix(raw, fromRuntime, toRuntime);
+                const done = rewritePrefix(rt.content, fromWorkdir, toWorkdir);
+                // A snapshot from the old layout names the workdir's tools/;
+                // point those at the runtime, as provision would.
+                const moved = rel === "hermes/config.yaml"
+                  ? migrateConfigTools(done.content, toWorkdir, toRuntime)
+                  : { content: done.content, count: 0 };
+                body = moved.content;
+                rewrites = rt.count + done.count + moved.count;
               }
             }
 
@@ -1842,12 +2071,14 @@ export const model = {
               continue;
             }
 
-            await ensureDir(dirOf(dest));
-            if (incoming !== null) {
-              await Deno.writeTextFile(dest, incoming);
-            } else {
-              await Deno.copyFile(src, dest);
-            }
+            // Into the workdir, which the bot may already have run in: never
+            // through a symlink it left there.
+            await writeFileSafe(
+              toWorkdir,
+              rel,
+              incoming ?? await Deno.readFile(src),
+              (await Deno.stat(src)).mode & 0o777,
+            );
             placed.push({
               path: rel,
               action: existing === null ? "created" : "replaced",

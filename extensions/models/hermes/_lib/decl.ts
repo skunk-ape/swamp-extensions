@@ -89,9 +89,14 @@ const SwampSchema = z.object({
   serverPort: z.number().int().min(1).max(65535).describe(
     "Loopback port of the swamp serve. Must also be in sandbox.openPorts.",
   ),
+  // Each field is the NAME of a key in the bot's vault, not the secret: the
+  // launcher reads the value from the vault at start. Nothing here is sensitive.
   secretKeys: z.object({
+    // swamp-quality-ignore credentials-sensitive-field
     serverToken: z.string().default("swamp-server-token"),
+    // swamp-quality-ignore credentials-sensitive-field
     apiKey: z.string().default("swamp-api-key"),
+    // swamp-quality-ignore credentials-sensitive-field
     signinToken: z.string().default("swamp-signin-token"),
   }).default({
     serverToken: "swamp-server-token",
@@ -253,6 +258,24 @@ export type Bot = z.infer<typeof BotSchema>;
 export function crossCheck(b: Bot): string[] {
   const problems: string[] = [];
 
+  // Landlock grants add up. An allowed path that contains the runtimes — the
+  // home directory, workdirRoot — or sits inside them makes this bot's code
+  // writable again, and another bot's with it. Compared as written, so a
+  // different spelling of the same directory is not caught here; `verify`
+  // proves the runtime unwritable from inside regardless.
+  const runtimes = `${b.workdirRoot}/.runtime`;
+  for (const p of b.sandbox.filesystemAllow) {
+    const path = p.replace(/\/+$/, "");
+    if (
+      runtimes === path || runtimes.startsWith(`${path}/`) ||
+      path.startsWith(`${runtimes}/`)
+    ) {
+      problems.push(
+        `sandbox.filesystemAllow grants ${p}, which covers ${runtimes}. That makes the code this bot runs writable, and provision runs it on the host. Grant a narrower path.`,
+      );
+    }
+  }
+
   // A gateway whose MCP port the profile never opened starts with no tools at
   // all: the entrypoint waits, warns into a log nobody reads, and starts
   // anyway. The port and the MCP have to be declared together.
@@ -327,6 +350,20 @@ export function crossCheck(b: Bot): string[] {
 /** The workdir this bot is confined to. */
 export function workdirOf(b: Bot): string {
   return `${b.workdirRoot}/${b.slug}`;
+}
+
+/**
+ * Where this bot's code lives: the Hermes checkout and venv, its interpreter,
+ * and the staged tools. A sibling of the workdirs rather than a directory in
+ * one, because the sandbox grants the workdir read-write and Landlock can only
+ * add access, never carve a read-only directory out of a writable one.
+ *
+ * The bot gets this read-only. Provision runs what is here on the host, as the
+ * operator, so a bot able to write it could plant code that runs outside its
+ * sandbox the next time anyone provisions.
+ */
+export function runtimeOf(b: Bot): string {
+  return `${b.workdirRoot}/.runtime/${b.slug}`;
 }
 
 /** The environment variable that overrides the workdir, e.g. STUART_HOME. */

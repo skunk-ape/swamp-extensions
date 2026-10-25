@@ -44,8 +44,8 @@ swamp model method run mybot scaffold --input slug=mybot
 
 $EDITOR models/@skunk-ape/hermes/bot/mybot.yaml   # egress is left empty on purpose
 
-swamp model method run mybot render               # write the runtime
-swamp model method run mybot provision            # build the workdir
+swamp model method run mybot render               # write the profile, launchers and units
+swamp model method run mybot provision            # build the runtime and the workdir
 swamp vault put mybot-secrets anthropic-key        # prompts for the value
 swamp vault put mybot-secrets telegram-bot-token   # prompts for the value
 swamp model method run mybot verify               # prove the boundary
@@ -96,7 +96,7 @@ nothing is rendered at boot.
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scaffold`  | Write a starter declaration for a new bot, with every field present and commented.                                                                                                             |
 | `render`    | Write the sandbox profile, environment library, entrypoints and both platforms' service definitions.                                                                                           |
-| `provision` | Build the workdir: directory tree, Hermes checkout, an interpreter and venv inside the workdir, the `funes` binary and its index hook, a starter `config.yaml` and `SOUL.md`.                  |
+| `provision` | Build the runtime (Hermes checkout, interpreter and venv, the `funes` binary and its index hook) and the workdir (directory tree, starter `config.yaml` and `SOUL.md`).                        |
 | `verify`    | Probe the sandbox from inside and report what it enforces.                                                                                                                                     |
 | `install`   | Substitute the unit placeholders into this platform's unit directory and load every service the bot owns, MCPs before gateway. Refuses first if the host cannot enforce the declared boundary. |
 | `uninstall` | Unload the services and remove their unit files. The workdir is left alone.                                                                                                                    |
@@ -120,6 +120,21 @@ Three fields describe the boundary, and each one widens it:
   vault lives in.
 - **`openPorts`** — loopback ports the bot may connect to. A bot declaring `[]`
   cannot reach a local service, including another bot's MCP servers.
+
+Two directories are always granted, and they are deliberately different:
+
+| Directory                          | Holds                                                  | Bot access    |
+| ---------------------------------- | ------------------------------------------------------ | ------------- |
+| `<workdirRoot>/<slug>`             | State: memory, sessions, config.yaml, logs, workspace  | read + write  |
+| `<workdirRoot>/.runtime/<slug>`    | Code: the Hermes checkout and venv, the interpreter, the staged `funes` | read + execute |
+
+The split matters because `provision` runs the code on the host, as you,
+outside the sandbox: the venv's python, git on the checkout, `uv sync`, and
+`funes`. While that code lived in the workdir, a prompt-injected bot could plant
+something in it — a `.pth` file, a `.git/config` fsmonitor, a swapped binary —
+and wait for the next `provision` to run it unsandboxed. The runtime is a
+sibling of the workdirs rather than a directory inside one because Landlock can
+only add access: a read-only directory cannot be carved out of a writable one.
 
 Declared MCPs are **reached, never spawned**: nono's confinement is inherited by
 child processes, so a gateway-spawned server would run inside the sandbox and
@@ -150,20 +165,63 @@ nothing — so `verify` resolves path existence on the host and binds a real
 listener before probing. Pass `foreignPorts` to name loopback services that
 belong to something else; ports the bot declares are skipped.
 
+Among the checks: the runtime is readable and **not** writable from inside the
+sandbox. The probe is passed to Python as an argument rather than written into
+the workdir first, so `verify` writes nothing where the bot could have planted a
+symlink.
+
 ## Provisioning
 
-`provision` owns the inside of the workdir and nothing outside it. Host
-packaging — nono, swamp, uv, node, python3 — is out of scope and must already be
-present.
+`provision` owns the inside of the workdir and the runtime, and nothing outside
+them. Host packaging — nono, swamp, uv, node, python3 — is out of scope and must
+already be present.
 
 It is idempotent: every step skips what it finds, and re-running reports
 `complete` when there was nothing to do. It never overwrites a file it did not
 create, so `config.yaml` (which Hermes writes at runtime) and `SOUL.md` (which
 you write) survive.
 
+Re-running it is safe even after the bot has run, which is what upgrades and
+`check: true` drift checks need:
+
+- It runs nothing from the workdir on the host. git, uv and the venv's python
+  come from the runtime, which the bot cannot write. `funes add hermes`, which
+  runs scripts funes keeps under the workdir, runs inside the bot's own sandbox
+  — so `render` has to have written the profile first.
+- Every git call disables `core.fsmonitor`, hooks and `ext::` transports.
+- The import checks run as `python -I` from an empty directory, so a module the
+  bot left in the workdir cannot shadow a real one.
+- Every write into the workdir refuses to pass through a symlink, and
+  `.hermes` must point exactly at `<workdir>/hermes`.
+
+`provision` (outside check mode) and `restore` refuse to run while the gateway
+is running. The symlink checks close the planted-and-waiting case; a bot racing
+the write as it happens is not something a check-then-write can rule out, so
+the bot must not be running at all.
+
+`sandbox.filesystemAllow` may not grant a path that covers the runtimes —
+`$HOME`, `workdirRoot` — because sandbox grants add up and that would make the
+runtime writable again.
+
+`agent.ref` can be a tag or a branch. A tag pins the fleet; on a branch,
+`provision` moves the checkout only when the declared ref changes.
+
 `--input seedHfFrom=<slug>` copies the embedding cache from another bot's
 workdir instead of downloading it, which is the only route available to a bot
 whose `egress` is a named allowlist.
+
+### Upgrading a bot from the old layout
+
+Earlier versions kept the checkout, venv, interpreter and `funes` inside the
+workdir. For each existing bot:
+
+1. Stop it: `swamp model method run <slug> uninstall`.
+2. `render` — the launchers and profile now point at the runtime.
+3. `provision` — builds a fresh runtime. It never copies the old code (the bot
+   could have modified it), updates the two `tools/` paths in `config.yaml`, and
+   reports the old `tools/`, `hermes/hermes-agent` and `hermes/python` as unused.
+4. `verify`, then `install`.
+5. Once the bot works, delete the three unused paths from the workdir.
 
 ## Fleet reporting
 

@@ -17,7 +17,7 @@
 // conditional on the host.
 
 import type { Bot } from "./decl.ts";
-import { homeEnvVar, workdirOf } from "./decl.ts";
+import { homeEnvVar, runtimeOf, workdirOf } from "./decl.ts";
 
 /**
  * What a rendered file is for.
@@ -171,6 +171,10 @@ export function renderProfileFor(
     groups: { include: ["git_config"] },
     filesystem: {
       allow: ["$WORKDIR", ...b.sandbox.filesystemAllow],
+      // The code this bot runs — checkout, venv, interpreter, staged tools —
+      // readable and executable, never writable. Provision runs it on the
+      // host, so write access here would be a way out of the sandbox.
+      read: [runtimeOf(b)],
       unix_socket_subtree_bind: ["$WORKDIR"],
     },
     workdir: { access: "readwrite" },
@@ -286,6 +290,9 @@ ${comment(GENERATED(b.slug))}
 ${b.slug.replace(/-/g, "_")}_env() {
   REPO="$(cd "$(dirname "$0")/.." && pwd)"
   WORKDIR="\${${homeEnvVar(b)}:-${wd}}"
+  # The code, read-only inside the sandbox. Not overridable: the profile grants
+  # exactly this path, and a runtime anywhere else would be unreadable in there.
+  RUNTIME="${runtimeOf(b)}"
 ${note(b.notes.vault)}  VAULT="\${VAULT:-${b.vault}}"
   # shellcheck source=lib-vault.sh
   . "$REPO/bin/lib-vault.sh"
@@ -314,12 +321,14 @@ ${
   # Everything the toolchain writes must land inside the workdir or the sandbox
   # denies it. UV_PYTHON_INSTALL_DIR is the one that bites on a fresh install:
   # without it uv points the venv at the shared interpreter under
-  # ~/.local/share/uv, outside the workdir, and the gateway cannot exec its own
-  # python. Copying the interpreter in does not fix it — uv's pythons resolve
-  # sys.prefix back to their original install path.
+  # ~/.local/share/uv, outside the sandbox, and the gateway cannot exec its own
+  # python. Copying the interpreter does not fix it — uv's pythons resolve
+  # sys.prefix back to their original install path, which is the runtime.
   export HERMES_HOME="$WORKDIR/hermes"
   export UV_CACHE_DIR="$WORKDIR/hermes/cache/uv"
-  export UV_PYTHON_INSTALL_DIR="$WORKDIR/hermes/python"
+  # The interpreter is the runtime's: provision installed it there, and uv
+  # finds it through this. Read-only in here, which is the point.
+  export UV_PYTHON_INSTALL_DIR="$RUNTIME/python"
   export NPM_CONFIG_CACHE="$WORKDIR/hermes/cache/npm"
 
   # Pin the terminal's working directory inside the sandbox. Hermes resolves it
@@ -355,11 +364,11 @@ ${
         : ""
     }  mkdir -p "$WORKDIR/funes/hf"
 
-  # funes is staged inside the workdir rather than used from ~/.local/bin. That
+  # funes is staged in the runtime rather than used from ~/.local/bin. That
   # host path happens to be readable from inside the sandbox, but that is a
   # property of nono's default groups, not something the profile asks for — and
   # a \`funes update\` out there would silently change the binary in here.
-  export PATH="$WORKDIR/tools:$PATH"
+  export PATH="$RUNTIME/tools:$PATH"
 ${b.swamp ? renderSwampEnv(b.swamp) : ""}
   # The Telegram adapter writes to the XDG state dir, which defaults to
   # ~/.local/state — outside the sandbox. These are redirected into the workdir,
@@ -386,8 +395,8 @@ ${b.swamp ? renderSwampEnv(b.swamp) : ""}
 // ---------------------------------------------------------------------------
 
 /**
- * One shape for every entrypoint. `$1` is the workdir; anything after it is the
- * hermes_cli argv.
+ * One shape for every entrypoint. `$1` is the workdir and `$2` the runtime the
+ * venv lives in; anything after them is the hermes_cli argv.
  *
  * The XDG exports happen INSIDE here rather than in the launcher because nono
  * keeps its own state root under $XDG_STATE_HOME/nono: setting them before nono
@@ -405,13 +414,13 @@ ${b.swamp ? renderSwampEnv(b.swamp) : ""}
  */
 function inner(argv: string): string {
   return `/bin/sh -c '
-      W="$1"; shift
+      W="$1"; RT="$2"; shift 2
       export XDG_STATE_HOME="$W/hermes/xdg/state"
       export XDG_DATA_HOME="$W/hermes/xdg/data"
       export XDG_CACHE_HOME="$W/hermes/xdg/cache"
       export XDG_CONFIG_HOME="$W/hermes/xdg/config"
       export TMPDIR="$W/hermes/cache/scratch"
-      exec "$W/hermes/hermes-agent/venv/bin/python" -m hermes_cli.main ${argv}
+      exec "$RT/hermes-agent/venv/bin/python" -m hermes_cli.main ${argv}
     '`;
 }
 
@@ -476,7 +485,7 @@ PROFILE="$REPO/profiles/${b.slug}.$PLATFORM.nono.json"
 exec nono run -s \\
   --profile "$PROFILE" \\
   --workdir "$WORKDIR" \\
-  -- ${inner("gateway run")} _ "$WORKDIR"
+  -- ${inner("gateway run")} _ "$WORKDIR" "$RUNTIME"
 `;
   return {
     path: `bin/run-${b.slug}.sh`,
@@ -548,7 +557,7 @@ PROFILE="$REPO/profiles/${b.slug}.$PLATFORM.nono.json"
 exec nono run -s \\
   --profile "$PROFILE" \\
   --workdir "$WORKDIR" \\
-  -- ${inner('"$@"')} _ "$WORKDIR" "\${SUB[@]}"
+  -- ${inner('"$@"')} _ "$WORKDIR" "$RUNTIME" "\${SUB[@]}"
 `;
   return {
     path: `bin/${b.slug}-chat.sh`,
@@ -570,6 +579,18 @@ exec nono run -s \\
  * KeepAlive/SuccessfulExit=false means what it says here only because the
  * launcher uses `nono run`, which propagates the child's exit code.
  */
+/**
+ * The workdir's logs directory, with $HOME as the unit-file placeholder.
+ *
+ * Derived from workdirRoot rather than written as `__HOME__/agents/<slug>`:
+ * the hard-coded form ignored a non-default workdirRoot, so the supervisor
+ * wrote stdio into a directory that never existed and the gateway failed at
+ * exec.
+ */
+function logDir(b: Bot): string {
+  return `${workdirOf(b).replace("$HOME", "__HOME__")}/logs`;
+}
+
 export function renderPlist(b: Bot): RenderedFile {
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -588,8 +609,12 @@ ${comment(GENERATED(b.slug), "  ")}
     <key>PATH</key> <string>__HOME__/.local/bin:/etc/profiles/per-user/__USER__/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key> <string>__HOME__</string>
   </dict>
-  <key>StandardOutPath</key>  <string>__HOME__/agents/${b.slug}/logs/sh.${b.slug}.gateway.out.log</string>
-  <key>StandardErrorPath</key><string>__HOME__/agents/${b.slug}/logs/sh.${b.slug}.gateway.err.log</string>
+  <key>StandardOutPath</key>  <string>${
+    logDir(b)
+  }/sh.${b.slug}.gateway.out.log</string>
+  <key>StandardErrorPath</key><string>${
+    logDir(b)
+  }/sh.${b.slug}.gateway.err.log</string>
 </dict>
 </plist>
 `;
@@ -656,8 +681,8 @@ RestartSec=10
 Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=__HOME__
 # systemd will not create these; the directory comes from provision.
-StandardOutput=append:__HOME__/agents/${b.slug}/logs/${label}.out.log
-StandardError=append:__HOME__/agents/${b.slug}/logs/${label}.err.log
+StandardOutput=append:${logDir(b)}/${label}.out.log
+StandardError=append:${logDir(b)}/${label}.err.log
 
 [Install]
 WantedBy=default.target
