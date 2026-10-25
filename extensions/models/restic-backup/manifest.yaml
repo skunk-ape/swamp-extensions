@@ -1,0 +1,60 @@
+manifestVersion: 1
+name: "@skunk-ape/restic-backup"
+version: 2026.10.24.1
+license: MIT
+description: |
+  Nightly restic backups of a whole machine that restore whole, on a
+  repository several machines can share without pruning each other.
+
+  ## Live databases restore whole
+
+  restic reads a SQLite database and its `-wal` at different moments, so an
+  agent, a mail client or a dev server writing during the backup can leave a
+  copy that will not open. List them as globs under `sqlite`: each match is
+  copied with SQLite's online backup, which reads one consistent transaction
+  while writers carry on, and the copy is backed up in place of the original.
+
+  ## Rebuild, not just restore
+
+  `captures` saves command output as files in the snapshot, such as the
+  explicitly installed package list, so a machine can be rebuilt from its
+  package manager and its config rather than restored over a fresh install.
+
+  ## One repository, many machines
+
+  Every snapshot is tagged with the machine's `machineTag`. `forget` selects
+  by host and tag together, refuses to run if either is missing, and checks
+  the selection before deleting anything, so one machine's retention can never
+  remove another's snapshots. Pruning is opt-in, since it repacks the whole
+  repository.
+
+  ## Incomplete is not failed
+
+  A snapshot restic saved while some files were unreadable is recorded with
+  `complete: false` and the first fifty paths, rather than failing the run.
+  `dryRun` shows what a backup would add before anything is uploaded.
+
+  Any restic backend works. S3 buckets can also get a lifecycle policy that
+  moves pack data to Standard-IA after 30 days and Glacier IR after 90.
+  Requires `restic` (and `sqlite3` when `sqlite` is used) on the host.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+models:
+  - restic_backup.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - restic
+  - backup
+  - sqlite
+dependencies: []
