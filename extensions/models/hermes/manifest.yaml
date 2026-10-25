@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@skunk-ape/hermes"
-version: 2026.10.24.1
+version: 2026.10.25.1
 license: MIT
 description: |
   Run Hermes agents on macOS or Linux, each one confined to its own directory by

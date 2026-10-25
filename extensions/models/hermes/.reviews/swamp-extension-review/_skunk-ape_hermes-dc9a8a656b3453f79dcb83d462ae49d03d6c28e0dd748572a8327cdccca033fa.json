@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.10.25.1",
+  "reviewedAt": "2026-10-25T18:34:55Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "issue",
+      "note": "B3 CLOSED (snapshot tar list in /tmp): snapshot now passes the path list to tar on stdin (-T -), so there is no list file to swap; verified with a real snapshot of a throwaway bot (the archive held exactly the carried paths). restore also places only paths a snapshot carries (isCarried): a real restore of an archive carrying home/x/.aws/credentials refused it with a warning and nothing landed. B1 CLOSED. Re-ran the attack against the new code path, using the model's own privateTempDir, sandboxedFetch, toolPath, verifyIntegration and installIntegration, with the same nonoEnv, clearEnv, cwd and input as hermes.ts. The attacker ran in nono 0.78.0 with a profile from renderProfileFor, in the same workdirRoot (under $HOME), with funes 1.9.1. The scratch was <workdirRoot>/.runtime/.tmp/funes-fetch-*, mode 0700. From inside the bot sandbox, ls, touch, mkdir and inotify_add_watch on .runtime/.tmp and on .runtime all returned EACCES ('Couldn't watch ...: Permission denied'). The /tmp watch saw only nono's own entries (.nono-<id>.json, nono-url-sock-*, nono-browser-*) and nothing from provision. No plant reached the scratch, the fetch exited 0, and verifyIntegration returned no problems. grep finds no other Deno.makeTempDir: the import-check cwd, uv's empty XDG config and restore's staging dir now use privateTempDir. The fetch sandbox (nono with no profile, so the default, plus --allow <scratch> and --read <runtime>/tools) also gets write-only /tmp, read on ~/.local/bin and system paths, and unrestricted outbound network. That does not matter for B1: provision harvests only the scratch, TMPDIR and HOME point at the scratch, and the bot was denied write on ~/.nono, ~/.config/nono, ~/.local/bin and ~/.cache, so it cannot change nono's config or the tools the fetch reads. B2 CLOSED. Planted sqlite3.py beside convert.py, with state.db present, and FAKE_OPERATOR_SECRET and AWS_SECRET_ACCESS_KEY exported in the operator environment. Ran the model's sandboxedIntegrationSetup with hermes.ts's nonoEnv and clearEnv. The planted module ran (it dumped os.environ) and saw only FUNES_AGENT_ID, FUNES_BIN, FUNES_HOME, HF_HOME, HOME, LANG, PATH, PWD, SHLVL, TMPDIR and _. No secret. With the operator's whole environment handed to nono (the old call), `env -i` inside still kept the secrets out, so there are two layers. NEW BLOCKER B3, same class as B1 and missed by the fix: snapshot writes its tar file list with Deno.makeTempFile(), in /tmp (or the per-user $TMPDIR on macOS), and runs `tar -czf <out> -C <workdir> -T <list>` on the host. Reproduced with nono 0.78.0, a rendered bot profile and GNU tar 1.35. A running bot watched /tmp with inotify and atomically replaced each new file with 'hermes/state.db\\n<absolute path the bot cannot read>\\n' (write+rename in /tmp). It first checked that it could not read the target. tar exited 0 ('Removing leading /'), so the snapshot would succeed, and the archive contained the stand-in credential. The emulated restore (extract to a stage, then place every file) would write it to <workdir>/home/.../.aws/credentials, where the restored bot can read it. It won 1 to 4 of 5 snapshots per run. snapshot refuses only while THIS bot runs, so any other running bot can do this. GNU tar 1.35 rejects exec-type options in -T files ('unrecognized option'), so this is credential exfiltration into the snapshot (which lands in the repo's snapshots/), not code execution. Fix: privateTempDir for the list file, or pass it on stdin (`-T -` with run's input) with --verbatim-files-from. Also have restore place only carriedPaths, or refuse members outside them. Reproduction: scripts snap_attack.ts and attacker_snap.sh (outside the extension). FOLLOW-UP F10 (defense in depth): verifyIntegration checks the scratch against a record that the same sandboxed process wrote, so it proves the files are consistent with that record, not that they are authentic. The README's 'checked against the sha256 funes recorded' overstates this. Code inside the fetch sandbox (catalog setup) can also make .funes/agents/hermes itself a symlink. Reproduced: verifyIntegration follows the root through Deno.readDir and reports no problems, and `cp -RP` copies the link, so <runtime>/funes-integrations/hermes becomes a symlink to any directory, a bot's workdir included, and later installs run setup from there. readIfPresent(`${got}.json`) also follows a symlink, and the record is then written 0644 into the runtime. lstat the root and the record and refuse non-regular ones. Refuse an empty files map. FOLLOW-UP F11: the fetch sandbox has unrestricted network, loopback included (host MCPs, the loopback swamp serve). Catalog code used to run on the host with more, but --allow-domain for the catalog host would narrow it. Carried over: (a) Landlock does not cover chmod on runtime files. (b) snapshot writes auth.json with umask permissions. (c) verify still hands nono the operator's whole environment. The probe is the model's own, run with `python -I`, so no bot code sees it. Use clearEnv there too for consistency, and so HTTPS_PROXY cannot reroute the egress checks. Not this extension's problem: nono leaves its per-run .nono-<id>.json and url-sock directories in /tmp, where any bot can replace them."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "The new steps log with structured placeholders: the fetch logs a warning on a non-zero exit with a verified integration, a verification failure throws with the first five problems, the downgrade refusal names the remedy, and 'funes in hermes' and 'funes plugin enabled' log a warning with the exit code and stderr tail when the marker is missing. Restage logs old -> new digests. Check mode now reports a pending restage as a change (F6 closed). Minor: the fetch's success line takes the version from a regex over the record, which the fetch sandbox wrote."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "CLOSED F2: the fetched files are verified before install, non-regular files are refused, and a non-zero exit with a verified integration is warned about rather than dropped (but see F10: the record is not independent). CLOSED F3: installIntegration copies to <dest>.new-<uuid> and renames it in, so a failed copy leaves the old integration (unit tested). FOLLOW-UP: the swap is two renames (dest -> .old, staging -> dest). If the second fails, dest is gone and the old copy is stranded under .old-<uuid> instead of being renamed back. A crash between them has the same result. Neither .new- nor .old- leftovers are ever swept. Restore on failure; sweep leftovers on the next run. CLOSED F7: a plugin-to-hook downgrade now throws with a remedy instead of silently stopping indexing. Carried over: verify ignores the `nono run` exit code and has no completion sentinel. A restore that hits a tar error aborts and leaves already-placed files in place. snapshot throws on a tar error, but leaves the partial archive in snapshots/."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "170 tests pass and fmt --check passes. Added since: isCarried, verifyIntegration refusing a symlinked root and empty or array maps, toolPath dropping relative entries, wrapperHookCommands and approveWrapperHooks. LIVE VALIDATION: all three production bots (stuart with a named egress allowlist, apalone, secunit with five MCPs and a swamp serve) were migrated with this code: uninstall, snapshot, render, provision, verify, install. Each verify is clean with the runtime readable and not writable from inside the sandbox; each status is healthy (secunit holds live sessions to all five MCPs); each gateway registered the wrapper hook at its runtime path. The migration found and fixed two bugs: a hook-era funes re-run on an existing config.yaml appended a duplicate hook (a hook install now re-runs only when its script is missing), and the migrated wrapper command was not on the Hermes shell-hook allowlist, so Hermes would skip it (provision now approves its own wrapper, by exact command string, and nothing else). 166 tests pass (`deno test -A extensions/models/hermes`), and `swamp extension fmt --check` passes. New tests: run() with input and clearEnv; verifyIntegration for a match and for changed, extra, missing and linked files; installIntegration keeping the old copy on a failed copy; toolPath dropping a hermes directory; privateTempDir being owner-only under .runtime/.tmp; readRegularFile refusing a FIFO; the sandboxedFetch argv; every sandboxed step clearing the environment; the funesPluginEnabled shapes; the contract gate; the plugin-era config without a hook. FOLLOW-UP: there is no test for a symlinked integration root or record (F10), an empty files map, or a failing second rename. No method-level test drives provision's fetch, record, settle and downgrade branches. Nothing tests that snapshot's list file is private (B3). Carried over: snapshot, restore, verify and the non-check provision path have no end-to-end tests."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "CLOSED F6: check mode with restageFunes reports the integration and 'funes in hermes' steps as pending (restagePending). CLOSED F5: funesPluginEnabled honours plugins.disabled, reads only direct children of a top-level plugins:, and reads flow lists. CLOSED F7, see error-handling. FOLLOW-UP: a provision killed mid-run leaves its directory under .runtime/.tmp. It is private and harmless, but nothing sweeps it. The plugin-era wiring step still re-runs only when the marker is missing or a refresh happened, which is right. A bot can delete the marker to force a re-run, but that runs only inside its own sandbox with a cleared environment."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "CLOSED F4, partly: the inner PATH is now the operator's (toolPath) rather than /usr/bin:/bin, and proxy and CA variables pass to the fetch (FETCH_PASSTHROUGH). FOLLOW-UP: (1) toolPath drops a whole directory when it contains `hermes`. If hermes is in /usr/bin or /opt/homebrew/bin (a system package or Homebrew), that also drops sh, tar, cp, python3 and the rest; only /usr/bin/env and /bin/sh stay, through their absolute paths. Shadow hermes instead of dropping the directory, e.g. a scratch bin dir of symlinks to the needed tools. toolPath also keeps relative PATH entries, which resolve against the sandbox cwd (the bot-writable workdir). That gives no escalation, since the bot already runs code in its own sandbox, but drop non-absolute entries. (2) The fetch sandbox reads only nono's default system paths plus ~/.local/bin. On NixOS, tar and friends in /run/current-system/sw/bin or /nix/store may not be readable, so a NixOS fetch may still fail; and an SSL_CERT_FILE outside /etc/ssl or /etc/ca-certificates is passed but unreadable. Unverified here (no NixOS host); add --read for the resolved tool and CA paths. ALL_PROXY/all_proxy are not passed. (3) The `env -i` lists are enough on Linux: setup ran and installed plugin.yaml with only HOME, PATH, LANG, TMPDIR and the FUNES_* vars, and nono started with only HOME and PATH. Nothing inside needs USER, LOGNAME, TERM or XDG_*: Python's getpass falls back to pwd, and XDG defaults derive from HOME. `hermes plugins enable` under env -i, and anything on macOS (LANG defaulting to C.UTF-8, nono's Seatbelt path), were not exercised here."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "issue",
+      "note": "The snapshot tar list file is gone (stdin), closing the last /tmp use. CLOSED: the import-check cwd, uv's XDG config dir, the fetch scratch and restore's staging dir live under <workdirRoot>/.runtime/.tmp (0700), and the scratch and import dir are removed recursively in finally blocks. CLOSED F9: the config.yaml reads use readRegularFile (no symlink, no FIFO). STILL OPEN: snapshot's list file uses Deno.makeTempFile() in /tmp (B3, under credentials-secrets). The uv config dir is still removed non-recursively in a swallowing catch, so it leaks into .runtime/.tmp whenever uv writes into it. installIntegration's .old-/.new- leftovers are not swept. CLOSED: run() now collects output while writing stdin, so large input cannot deadlock. Carried over: snapshot reads the whole archive into memory to hash it."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "F10 README wording corrected: it now says the per-file check proves the copy is complete and intact against the record funes wrote, and that trust in what the catalog serves is the trust given to funes. The new code, tests and README section use placeholders only, with no host paths or identifiers. The README overstates the sha256 check (see F10) but leaks nothing."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "issue",
+      "note": "restageFunes is a strict boolean with default false. Carried over: crossCheck refuses only a filesystemAllow covering this bot's own <workdirRoot>/.runtime, as written. A grant on another bot's workdirRoot, or one spelled differently ($HOME vs the literal path), is not caught, and that is now also the grant that would expose .runtime/.tmp. Free-form strings still go unescaped into generated shell and YAML; only the operator writes them."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Unchanged. All six specs declare lifetime and garbageCollection."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "Carried over: uninstall does not remove the runtime directory, and nothing does. That includes funes-integrations/ and now .runtime/.tmp leftovers. Downgrade is refused rather than handled. Nothing removes or switches off the funes plugin."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "issue",
+      "note": "B3 CLOSED: snapshot no longer writes anything another bot can reach (tar list on stdin). provision, restore and snapshot refuse while THIS bot's gateway runs. B1 and B3 show that the threat is any other running bot on the same uid, which this preflight does not cover. The fix moves provision's and restore's temp paths out of reach instead, which is the right approach, but snapshot's list file was missed. Contract check, profile and venv gates, and the symlink checks on runtime writes all still hold."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: one instance per spec per bot, named <spec>-<slug>."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Methods measure the host directly. The fleet report uses the dataRepository API."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "issue",
+      "note": "Never published, so the registry has no predecessor. Moving from the funes hook to the plugin works as before. The reverse direction is now refused with a remedy (F7 closed) rather than silently breaking indexing. The README's restage steps match the code."
+    }
+  ]
+}

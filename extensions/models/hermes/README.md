@@ -225,8 +225,11 @@ For a plugin-era funes, `provision` fetches the integration by running
 `funes add hermes` inside nono with a throwaway grant: it can write only a
 private scratch directory under `.runtime/.tmp` (never `/tmp`, which every bot's
 sandbox can write and watch) and sees none of your environment beyond PATH, a
-locale and proxy/CA settings. Each file it fetched is checked against the
-sha256 funes recorded before it is swapped into the runtime. The install itself runs that integration's
+locale and proxy/CA settings. funes checks the integration against its
+catalog's sha256; provision then checks every fetched file against the record
+funes wrote — nothing missing, nothing extra, no symlinks — before swapping it
+into the runtime. That proves the copy is complete and intact, not who
+published it: the trust in what the catalog serves is funes's own. The install itself runs that integration's
 own `setup add` inside the bot's sandbox, so it needs no network: a bot whose
 `egress` is a named allowlist installs the same way. The runtime's Hermes then
 enables the plugin, also inside the sandbox. An integration with a
