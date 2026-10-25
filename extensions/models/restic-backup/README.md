@@ -48,6 +48,30 @@ globalArguments:
 
 `excludeCaches` (on by default) skips any directory holding a `CACHEDIR.TAG`.
 
+## Other backends
+
+`repository` takes any restic URL. Credentials:
+
+- **S3:** `awsAccessKeyId` and `awsSecretAccessKey` (or `bucket` instead of
+  `repository`, which also enables the lifecycle policy on `init`).
+- **GCS** (`gs:<bucket>:/<path>`): `gcsCredentials` is a service-account key's
+  JSON _contents_, from a vault. Each method run writes it to a 0600 file in a
+  fresh private temporary directory for restic and removes it afterwards, even
+  on failure. Leave it empty to use the host's application-default credentials.
+  `gcsProjectId` lets `init` create the bucket. For tiering, turn on Autoclass
+  on the bucket rather than lifecycle rules: restic reads pack data on `check`
+  and `restore`, and Nearline/Coldline charge per read.
+- **Anything else** (B2, Azure, rest-server, …): `env`, a map of extra
+  environment variables whose values come from a vault.
+
+```yaml
+globalArguments:
+  repository: gs:my-backups:/laptop
+  gcsProjectId: my-project
+  gcsCredentials: ${{ vault.get(backups, GCS_KEY_JSON) }}
+  resticPassword: ${{ vault.get(backups, RESTIC_PASSWORD) }}
+```
+
 ## Live SQLite databases
 
 Every file matching a `sqlite` glob that starts with the SQLite header is copied

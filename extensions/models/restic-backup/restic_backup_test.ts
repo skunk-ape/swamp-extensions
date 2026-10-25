@@ -13,7 +13,14 @@ import {
   assertThrows,
 } from "jsr:@std/assert@1";
 import { model } from "./restic_backup.ts";
-import { errorOf, repoUrl, snapshotsOf, summaryOf } from "./_lib/restic.ts";
+import {
+  buildEnv,
+  errorOf,
+  prepareEnv,
+  repoUrl,
+  snapshotsOf,
+  summaryOf,
+} from "./_lib/restic.ts";
 import { foreignSnapshots, resolveScope } from "./_lib/scope.ts";
 import {
   excludesFor,
@@ -538,4 +545,60 @@ Deno.test("isExcluded follows restic: anchored, name-anywhere, ** and dotfiles",
   assert(isExcluded("/home/u/src/a/node_modules/x/y.db", ex));
   assert(isExcluded("/home/u/.x.tmp", ex));
   assert(!isExcluded("/home/u/src/a/.swamp/data/_catalog.db", ex));
+});
+
+Deno.test("buildEnv: GCS project and extra env, which wins over defaults", () => {
+  const e = buildEnv({
+    repository: "gs:bkt:/cypress",
+    region: "",
+    resticPassword: "p",
+    gcsProjectId: "proj",
+    env: { B2_ACCOUNT_KEY: "k", RESTIC_PASSWORD: "override" },
+  });
+  assertEquals(e.RESTIC_REPOSITORY, "gs:bkt:/cypress");
+  assertEquals(e.GOOGLE_PROJECT_ID, "proj");
+  assertEquals(e.B2_ACCOUNT_KEY, "k");
+  assertEquals(e.RESTIC_PASSWORD, "override");
+  assertEquals(e.AWS_ACCESS_KEY_ID, undefined);
+});
+
+Deno.test("prepareEnv: GCS key lives in a private file only until cleanup", async () => {
+  const key = JSON.stringify({ type: "service_account", project_id: "proj" });
+  const base = { repository: "gs:bkt:/", region: "", resticPassword: "p" };
+  const { env, cleanup } = await prepareEnv({ ...base, gcsCredentials: key });
+  const file = env.GOOGLE_APPLICATION_CREDENTIALS;
+  assertEquals(await Deno.readTextFile(file), key);
+  assertEquals((await Deno.stat(file)).mode! & 0o777, 0o600);
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  assertEquals((await Deno.stat(dir)).mode! & 0o777, 0o700);
+  await cleanup();
+  await assertRejects(() => Deno.stat(dir));
+
+  await assertRejects(
+    () => prepareEnv({ ...base, gcsCredentials: "/path/to/key.json" }),
+    Error,
+    "contents, not a path",
+  );
+  const none = await prepareEnv(base);
+  assertEquals(
+    none.env.GOOGLE_APPLICATION_CREDENTIALS,
+    Deno.env.get("GOOGLE_APPLICATION_CREDENTIALS"),
+  );
+});
+
+Deno.test("methods remove the GCS key file even when restic fails", async () => {
+  const key = JSON.stringify({ type: "service_account" });
+  const { ctx } = fakeCtx({
+    repository: "/nonexistent/repo",
+    resticPassword: "p",
+    gcsCredentials: key,
+  });
+  const before = new Set(
+    [...Deno.readDirSync(Deno.env.get("TMPDIR") ?? "/tmp")].map((e) => e.name),
+  );
+  await assertRejects(() => model.methods.snapshots.execute({}, ctx));
+  const leaked = [...Deno.readDirSync(Deno.env.get("TMPDIR") ?? "/tmp")]
+    .map((e) => e.name)
+    .filter((n) => n.startsWith("restic-backup-") && !before.has(n));
+  assertEquals(leaked, []);
 });

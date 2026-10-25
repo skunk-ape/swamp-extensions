@@ -1,6 +1,6 @@
 manifestVersion: 1
 name: "@skunk-ape/restic-backup"
-version: 2026.10.24.1
+version: 2026.10.24.2
 license: MIT
 description: |
   Nightly restic backups of a whole machine that restore whole, on a
@@ -34,7 +34,9 @@ description: |
   `complete: false` and the first fifty paths, rather than failing the run.
   `dryRun` shows what a backup would add before anything is uploaded.
 
-  Any restic backend works. S3 buckets can also get a lifecycle policy that
+  Any restic backend works: S3 and GCS credentials are first-class (a GCS
+  key lives on disk only for the length of one run), and `env` carries any
+  other backend's. S3 buckets can also get a lifecycle policy that
   moves pack data to Standard-IA after 30 days and Glacier IR after 90.
   Requires `restic` (and `sqlite3` when `sqlite` is used) on the host.
 repository: "https://github.com/skunk-ape/swamp-extensions"

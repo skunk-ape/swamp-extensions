@@ -11,9 +11,9 @@
 import { z } from "npm:zod@4";
 import {
   type BackupSummary,
-  buildEnv,
   errorOf,
   EXIT_INCOMPLETE,
+  prepareEnv,
   repoUrl,
   runRestic,
   type Snapshot,
@@ -37,7 +37,7 @@ type Ctx = any;
 
 const GlobalArgsSchema = z.object({
   repository: z.string().default("").describe(
-    "restic repository URL (any backend: s3:, b2:, sftp:, rest:, a local path). Empty uses `bucket`.",
+    "restic repository URL (any backend: s3:, gs:, b2:, sftp:, rest:, a local path). Empty uses `bucket`.",
   ),
   bucket: z.string().default("").describe(
     "S3 bucket for the repository, when `repository` is empty. Enables the S3 lifecycle policy on init.",
@@ -51,6 +51,16 @@ const GlobalArgsSchema = z.object({
   awsSecretAccessKey: z.string().default("").meta({ sensitive: true }).describe(
     "AWS secret access key, for S3 repositories",
   ),
+  gcsProjectId: z.string().default("").describe(
+    "Google Cloud project, for gs: repositories (restic needs it to create the bucket on init).",
+  ),
+  gcsCredentials: z.string().default("").meta({ sensitive: true }).describe(
+    "Service-account key JSON (the contents, from a vault), for gs: repositories. Empty uses the host's application-default credentials.",
+  ),
+  env: z.record(z.string(), z.string()).default({}).meta({ sensitive: true })
+    .describe(
+      "Extra environment for restic, for other backends' credentials (B2_ACCOUNT_KEY, AZURE_ACCOUNT_KEY, RESTIC_REST_PASSWORD, …). Values come from a vault.",
+    ),
   resticPassword: z.string().meta({ sensitive: true }).describe(
     "Repository encryption password — required to decrypt backups. Keep a copy offline.",
   ),
@@ -149,8 +159,30 @@ const SnapshotsSchema = z.object({
 
 const MAX_UNREADABLE = 50;
 
-function env(g: GlobalArgs): Record<string, string> {
-  return { ...Deno.env.toObject(), ...buildEnv(g) };
+// The environment prepared for the method run in progress, keyed by its
+// context. Every method runs inside withEnv (applied at the bottom of this
+// file), which prepares it first and cleans up after, whatever happens.
+const ENVS = new WeakMap<object, Record<string, string>>();
+
+function env(ctx: Ctx): Record<string, string> {
+  const e = ENVS.get(ctx);
+  if (!e) throw new Error("restic environment not prepared for this run");
+  return e;
+}
+
+// deno-lint-ignore no-explicit-any
+function withEnv(execute: (args: any, ctx: Ctx) => Promise<unknown>) {
+  // deno-lint-ignore no-explicit-any
+  return async (args: any, ctx: Ctx) => {
+    const prepared = await prepareEnv(ctx.globalArgs as GlobalArgs);
+    ENVS.set(ctx, prepared.env);
+    try {
+      return await execute(args, ctx);
+    } finally {
+      ENVS.delete(ctx);
+      await prepared.cleanup();
+    }
+  };
 }
 
 function stagingDirOf(g: GlobalArgs): string {
@@ -188,7 +220,7 @@ const mb = (n: number) => Math.round(n / 1024 / 1024);
 /** The `@skunk-ape/restic-backup` behavior type. */
 export const model = {
   type: "@skunk-ape/restic-backup",
-  version: "2026.10.24.1",
+  version: "2026.10.24.2",
   globalArguments: GlobalArgsSchema,
 
   resources: {
@@ -237,7 +269,7 @@ export const model = {
       execute: async (args: { s3Lifecycle: boolean }, ctx: Ctx) => {
         const g = ctx.globalArgs as GlobalArgs;
         const repo = repoUrl(g);
-        const r = await runRestic(["init"], env(g), ctx.signal);
+        const r = await runRestic(["init"], env(ctx), ctx.signal);
         const exists = /already (been )?initialized|config file already exists/
           .test(
             r.stderr + r.stdout,
@@ -279,7 +311,7 @@ export const model = {
               "--region",
               g.region,
             ],
-            env: env(g),
+            env: env(ctx),
             stdout: "piped",
             stderr: "piped",
           }).output();
@@ -419,7 +451,7 @@ export const model = {
 
         let code: number;
         try {
-          code = await streamRestic(argv, env(g), onLine, onLine, ctx.signal);
+          code = await streamRestic(argv, env(ctx), onLine, onLine, ctx.signal);
         } finally {
           if (staged) await clearStaging(staging);
         }
@@ -483,14 +515,13 @@ export const model = {
         tag: z.string().optional(),
       }),
       execute: async (args: { host?: string; tag?: string }, ctx: Ctx) => {
-        const g = ctx.globalArgs as GlobalArgs;
         const filter = [
           ...(args.host ? ["--host", args.host] : []),
           ...(args.tag ? ["--tag", args.tag] : []),
         ];
         const r = await runRestic(
           ["snapshots", "--json", ...filter],
-          env(g),
+          env(ctx),
           ctx.signal,
         );
         if (!r.success) {
@@ -527,7 +558,7 @@ export const model = {
             ? ["--read-data-subset", args.readDataSubset]
             : []),
         ];
-        const r = await runRestic(argv, env(g), ctx.signal);
+        const r = await runRestic(argv, env(ctx), ctx.signal);
         if (r.success) ctx.logger.info("Integrity check passed");
         else {ctx.logger.warning("Integrity check FAILED: {detail}", {
             detail: r.stderr.trim(),
@@ -554,10 +585,9 @@ export const model = {
         args: { snapshot: string; path?: string; limit: number },
         ctx: Ctx,
       ) => {
-        const g = ctx.globalArgs as GlobalArgs;
         const r = await runRestic(
           ["ls", "--json", args.snapshot, ...(args.path ? [args.path] : [])],
-          env(g),
+          env(ctx),
           ctx.signal,
         );
         if (!r.success) {
@@ -614,7 +644,6 @@ export const model = {
         args: { target: string; snapshot: string; include?: string[] },
         ctx: Ctx,
       ) => {
-        const g = ctx.globalArgs as GlobalArgs;
         const target = expandHome(args.target);
         const r = await runRestic(
           [
@@ -624,7 +653,7 @@ export const model = {
             target,
             ...(args.include ?? []).flatMap((p) => ["--include", p]),
           ],
-          env(g),
+          env(ctx),
           ctx.signal,
         );
         if (!r.success) {
@@ -647,7 +676,6 @@ export const model = {
         newPasswordFile: z.string().describe("File holding the new password"),
       }),
       execute: async (args: { newPasswordFile: string }, ctx: Ctx) => {
-        const g = ctx.globalArgs as GlobalArgs;
         const r = await runRestic(
           [
             "key",
@@ -655,7 +683,7 @@ export const model = {
             "--new-password-file",
             expandHome(args.newPasswordFile),
           ],
-          env(g),
+          env(ctx),
           ctx.signal,
         );
         if (!r.success) {
@@ -700,7 +728,7 @@ export const model = {
         ctx: Ctx,
       ) => {
         const g = ctx.globalArgs as GlobalArgs;
-        const e = env(g);
+        const e = env(ctx);
         const keep = {
           last: args.keepLast ?? g.keepLast,
           daily: args.keepDaily ?? g.keepDaily,
@@ -787,3 +815,8 @@ export const model = {
     },
   },
 };
+
+for (const m of Object.values(model.methods)) {
+  // deno-lint-ignore no-explicit-any
+  (m as any).execute = withEnv(m.execute);
+}

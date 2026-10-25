@@ -2,7 +2,10 @@
 // JSON output turned into records.
 //
 // Secrets reach restic only through the environment, never argv, so they do
-// not show in `ps` or in an error message that quotes the command.
+// not show in `ps` or in an error message that quotes the command. The one
+// exception restic forces is a GCS service-account key, which it reads from
+// a file: that file lives in a private temporary directory for one method
+// run and is removed after.
 
 export interface RepoArgs {
   repository?: string;
@@ -10,6 +13,9 @@ export interface RepoArgs {
   region: string;
   awsAccessKeyId?: string;
   awsSecretAccessKey?: string;
+  gcsProjectId?: string;
+  gcsCredentials?: string;
+  env?: Record<string, string>;
   resticPassword: string;
 }
 
@@ -30,7 +36,40 @@ export function buildEnv(g: RepoArgs): Record<string, string> {
   if (g.awsAccessKeyId) env.AWS_ACCESS_KEY_ID = g.awsAccessKeyId;
   if (g.awsSecretAccessKey) env.AWS_SECRET_ACCESS_KEY = g.awsSecretAccessKey;
   if (g.region) env.AWS_DEFAULT_REGION = g.region;
-  return env;
+  if (g.gcsProjectId) env.GOOGLE_PROJECT_ID = g.gcsProjectId;
+  return { ...env, ...(g.env ?? {}) };
+}
+
+export interface PreparedEnv {
+  env: Record<string, string>;
+  cleanup: () => Promise<void>;
+}
+
+/**
+ * The full environment for restic, on top of the process's own. With
+ * `gcsCredentials`, the key is written to a 0600 file in a fresh temporary
+ * directory and GOOGLE_APPLICATION_CREDENTIALS points at it until `cleanup`.
+ * Without it, GCS falls back to the host's application-default credentials.
+ */
+export async function prepareEnv(g: RepoArgs): Promise<PreparedEnv> {
+  const env = { ...Deno.env.toObject(), ...buildEnv(g) };
+  if (!g.gcsCredentials) return { env, cleanup: () => Promise.resolve() };
+  try {
+    JSON.parse(g.gcsCredentials);
+  } catch {
+    throw new Error(
+      "gcsCredentials must be a service-account key's JSON contents, not a path.",
+    );
+  }
+  const dir = await Deno.makeTempDir({ prefix: "restic-backup-" });
+  await Deno.chmod(dir, 0o700);
+  const file = `${dir}/gcs-key.json`;
+  await Deno.writeTextFile(file, g.gcsCredentials, { mode: 0o600 });
+  env.GOOGLE_APPLICATION_CREDENTIALS = file;
+  return {
+    env,
+    cleanup: () => Deno.remove(dir, { recursive: true }).catch(() => {}),
+  };
 }
 
 export interface RunResult {
