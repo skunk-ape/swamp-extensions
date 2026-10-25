@@ -93,8 +93,17 @@ import type { Check, ForeignPort, PathCheck } from "./_lib/verify.ts";
 import {
   decideFile,
   directories,
+  FETCH_PASSTHROUGH,
+  fetchedIntegration,
+  FUNES_ADD_ANSWER,
+  FUNES_INTEGRATION_CONTRACT,
+  funesHookScript,
+  funesIntegrationDir,
+  funesPluginEnabled,
+  funesPluginManifest,
   GIT_HARDEN,
   importCheckArgs,
+  integrationContract,
   legacyRuntimePaths,
   localRefCandidates,
   migrateConfigTools,
@@ -105,23 +114,34 @@ import {
   resolvedWorkdir,
   runtimeDirectories,
   runtimeFiles,
+  sandboxedFetch,
   sandboxedFunesAdd,
+  sandboxedIntegrationSetup,
+  sandboxedPluginEnable,
   uvEnv,
   uvSteps,
   workdirFiles,
 } from "./_lib/provision.ts";
 import type { WorkdirFile } from "./_lib/provision.ts";
+import {
+  installIntegration,
+  toolPath,
+  verifyIntegration,
+} from "./_lib/funes.ts";
 import { scaffoldYaml } from "./_lib/scaffold.ts";
 import {
   assertNoSymlinks,
   ensureDirSafe,
   isSymlink,
+  privateTempDir,
+  readRegularFile,
   writeFileSafe,
 } from "./_lib/safefs.ts";
 import {
   carriedPaths,
   checkpointables,
   EXCLUDES,
+  isCarried,
   rebuiltPaths,
   residualMentions,
   rewritable,
@@ -322,6 +342,9 @@ const ProvisionArgs = z.object({
   ),
   funesBin: z.string().default("$HOME/.local/bin/funes").describe(
     "Host funes binary to stage into the runtime's tools/. Staged rather than shared so a bot's memory tooling cannot change under it when the host's copy updates.",
+  ),
+  restageFunes: z.boolean().default(false).describe(
+    "Replace the staged funes with the host's when they differ — how a bot moves to a newer funes after `funes update` on the host. Also re-fetches the funes integration and re-runs `funes add hermes`, which is what moves a bot from funes's shell hook to its Hermes plugin.",
   ),
   skipDeps: z.boolean().default(false).describe(
     "Create the venv but do not sync dependencies. For a fast structural test of everything around the slowest step.",
@@ -990,6 +1013,27 @@ export const model = {
         const venvPy = `${agentDir}/venv/bin/python`;
         const env = { ...Deno.env.toObject(), ...uvEnv(workdir, runtime) };
         const runtimeRoot = b.workdirRoot.replace("$HOME", h.home);
+        // What sandboxed steps get. nono itself only needs to start — HOME for
+        // its state root, PATH — and runs with nothing else of the operator's
+        // environment; the command inside gets an explicit `env -i` list
+        // (inSandbox), with a PATH that holds no hermes (toolPath).
+        const operatorPath = Deno.env.get("PATH") ?? "/usr/bin:/bin";
+        const nonoEnv = { HOME: h.home, PATH: operatorPath };
+        const inner = {
+          path: await toolPath(operatorPath),
+          lang: Deno.env.get("LANG") ?? "C.UTF-8",
+        };
+        // The fetch alone goes to the network, so it alone keeps the proxy
+        // and CA settings the host needs to get there.
+        const fetchInner = {
+          ...inner,
+          extra: Object.fromEntries(
+            FETCH_PASSTHROUGH.flatMap((k) => {
+              const v = Deno.env.get(k);
+              return v === undefined ? [] : [[k, v]];
+            }),
+          ),
+        };
         // The runtime sits under workdirRoot, which the bot cannot write; a
         // symlink on the way there would still send every write below
         // somewhere else.
@@ -1301,18 +1345,24 @@ export const model = {
         // missing, not merely that something is.
         const unimportable: string[] = [];
         const mustImport = requiredImports(b);
-        const emptyCwd = await Deno.makeTempDir({ prefix: "hermes-import-" });
-        try {
-          for (const mod of mustImport) {
-            const ok = await exists(venvPy) &&
-              (await run(venvPy, importCheckArgs(mod), ctx.signal, {
-                  env,
-                  cwd: emptyCwd,
-                })).code === 0;
-            if (!ok) unimportable.push(mod);
+        // Private, not /tmp: another bot could plant telegram.py in a /tmp dir.
+        // With no venv nothing imports, and no directory is made for it: check
+        // mode writes nothing.
+        if (!await exists(venvPy)) {
+          unimportable.push(...mustImport);
+        } else {
+          const emptyCwd = await privateTempDir(runtimeRoot, "import-");
+          try {
+            for (const mod of mustImport) {
+              const ok = (await run(venvPy, importCheckArgs(mod), ctx.signal, {
+                env,
+                cwd: emptyCwd,
+              })).code === 0;
+              if (!ok) unimportable.push(mod);
+            }
+          } finally {
+            await Deno.remove(emptyCwd, { recursive: true }).catch(() => {});
           }
-        } finally {
-          await Deno.remove(emptyCwd, { recursive: true }).catch(() => {});
         }
         const syncCmd = `uv ${uv.sync.join(" ")}`;
         const why = unimportable.length > 0
@@ -1335,7 +1385,8 @@ export const model = {
           // so the ambient user config is redirected at an empty directory
           // rather than hidden with UV_NO_CONFIG — which would make uv 0.12+
           // reject a perfectly valid lock.
-          const emptyConf = await Deno.makeTempDir();
+          // Private, not /tmp: another bot could plant a uv.toml in a /tmp dir.
+          const emptyConf = await privateTempDir(runtimeRoot, "uv-conf-");
           const r = await run("uv", uv.sync, ctx.signal, {
             cwd: agentDir,
             env: {
@@ -1370,7 +1421,8 @@ export const model = {
         // -- funes, staged -------------------------------------------------
         // Staged rather than shared: a bot's memory tooling must not change
         // under it because the host updated. The two digests are recorded side
-        // by side so the drift is visible instead of assumed.
+        // by side so the drift is visible instead of assumed, and restageFunes
+        // is the deliberate way to take the host's newer copy.
         const hostFunes = args.funesBin.replace("$HOME", h.home);
         const stagedFunes = `${runtime}/tools/funes`;
         const digestOf = async (path: string): Promise<string | null> => {
@@ -1380,78 +1432,275 @@ export const model = {
             return null;
           }
         };
+        const stageFrom = async () => {
+          // Through a temp name in the runtime and a rename, so a gateway
+          // starting mid-copy never execs half a binary.
+          const tmp = `${stagedFunes}.staging-${crypto.randomUUID()}`;
+          await Deno.copyFile(hostFunes, tmp);
+          await Deno.chmod(tmp, 0o755);
+          await Deno.rename(tmp, stagedFunes);
+        };
         const hostDigest = await digestOf(hostFunes);
         let stagedDigest = await digestOf(stagedFunes);
-        if (stagedDigest !== null) {
+        let funesRestaged = false;
+        if (stagedDigest !== null && stagedDigest === hostDigest) {
+          say("funes binary", "present", "matches the host's");
+        } else if (stagedDigest !== null && !args.restageFunes) {
           say(
             "funes binary",
             "present",
-            stagedDigest === hostDigest
-              ? "matches the host's"
-              : `DIFFERS from ${hostFunes} (staged ${
-                stagedDigest.slice(0, 12)
-              }, host ${hostDigest?.slice(0, 12) ?? "absent"})`,
+            `DIFFERS from ${hostFunes} (staged ${
+              stagedDigest.slice(0, 12)
+            }, host ${
+              hostDigest?.slice(0, 12) ?? "absent"
+            }); restageFunes takes the host's`,
           );
         } else if (hostDigest === null) {
-          say("funes binary", "skipped", `no host binary at ${hostFunes}`);
+          say(
+            "funes binary",
+            stagedDigest === null ? "skipped" : "present",
+            `no host binary at ${hostFunes}`,
+          );
         } else if (
-          !wouldChange("funes binary", `stage ${hostFunes} into the runtime`)
+          !wouldChange(
+            "funes binary",
+            stagedDigest === null
+              ? `stage ${hostFunes} into the runtime`
+              : `restage ${hostFunes} (host ${hostDigest.slice(0, 12)})`,
+          )
         ) {
-          await Deno.copyFile(hostFunes, stagedFunes);
-          await Deno.chmod(stagedFunes, 0o755);
+          const was = stagedDigest;
+          await stageFrom();
           stagedDigest = hostDigest;
-          say("funes binary", "created", `staged from ${hostFunes}`);
+          funesRestaged = was !== null;
+          say(
+            "funes binary",
+            was === null ? "created" : "updated",
+            was === null
+              ? `staged from ${hostFunes}`
+              : `${was.slice(0, 12)} -> ${hostDigest.slice(0, 12)}`,
+          );
         }
 
-        // -- funes hooks ---------------------------------------------------
-        // `funes add hermes` writes its own scripts into $HOME/.hermes/hooks.
-        // HOME is the workdir, so they land in this bot's Hermes home through
-        // the symlink above and nothing touches the host's. That is only true
-        // once the link has been checked, so an unchecked one (check mode, or
-        // a run that did not get that far) skips this.
+        // -- funes integration, fetched on the host ---------------------------
+        // A plugin-era funes installs a versioned integration from its catalog.
+        // It is fetched here, into the runtime, so the sandboxed install below
+        // needs no route to the catalog — a bot with a named egress allowlist
+        // has none — and so the setup script that install runs is one the bot
+        // cannot edit.
         //
-        // It runs INSIDE the bot's own sandbox, never on the host. The binary
-        // is the runtime's, but funes also runs integration scripts it keeps
-        // under $HOME/.funes — the workdir, which the bot can write — so on
-        // the host a bot could edit one and have the operator's next provision
-        // run it. Everything funes should change is in the workdir, so the
-        // bot's profile is all it needs, and a planted script gets no more
-        // than the bot already has.
-        const hookScript = `${workdir}/hermes/hooks/funes-index.sh`;
+        // The fetch IS `funes add hermes`: funes has no fetch-only command, so
+        // it also runs the integration's setup. It runs inside nono with a
+        // throwaway grant (sandboxedFetch), in a scratch directory under
+        // .runtime/.tmp — never /tmp, which every bot's sandbox can write and
+        // watch. What it leaves is verified file by file against the sha256
+        // funes recorded, then swapped into place.
+        //
+        // A hook-era funes has no catalog and leaves no integration; that is
+        // recorded too, against the staged binary's digest, so this runs once
+        // per staged funes rather than on every provision.
+        const integration = funesIntegrationDir(runtime);
+        const fetchedBy = `${runtime}/funes-integrations/.fetched-by`;
+        const lastFetch = (await readIfPresent(fetchedBy))?.trim() ?? null;
+        // In check mode a pending restage has not happened, but a real run
+        // would refetch and reinstall; say so rather than report "present".
+        const restagePending = args.check && args.restageFunes &&
+          hostDigest !== null && stagedDigest !== hostDigest;
+        let integrationRefreshed = false;
+        if (stagedDigest === null) {
+          say("funes integration", "skipped", "no staged funes");
+        } else if (lastFetch === stagedDigest && !restagePending) {
+          say(
+            "funes integration",
+            "present",
+            await exists(integration)
+              ? "plugin-era funes; integration in the runtime"
+              : "hook-era funes; it has no integration to fetch",
+          );
+        } else if (
+          !wouldChange("funes integration", "fetch it with the staged funes")
+        ) {
+          const scratch = await privateTempDir(runtimeRoot, "funes-fetch-");
+          try {
+            const r = await run(
+              "nono",
+              sandboxedFetch(scratch, runtime, fetchInner),
+              ctx.signal,
+              {
+                cwd: scratch,
+                env: nonoEnv,
+                clearEnv: true,
+                input: FUNES_ADD_ANSWER,
+              },
+            );
+            const got = fetchedIntegration(scratch);
+            await ensureDirSafe(runtime, "funes-integrations");
+            if (await exists(got)) {
+              // Not following a symlink: the record is written into the
+              // runtime, and a link could point it at anything.
+              const record = (await isSymlink(`${got}.json`))
+                ? ""
+                : (await readIfPresent(`${got}.json`)) ?? "";
+              const problems = await verifyIntegration(got, record);
+              if (problems.length > 0) {
+                throw new Error(
+                  `the fetched funes integration does not match what funes recorded for it: ${
+                    problems.slice(0, 5).join("; ")
+                  }`,
+                );
+              }
+              if (r.code !== 0) {
+                // The files are verified; funes failed afterwards, in a setup
+                // run that only touched the scratch directory.
+                ctx.logger.warning(
+                  "the funes fetch exited {code} after fetching a verified integration: {err}",
+                  {
+                    code: r.code,
+                    err: (r.stderr || r.stdout).trim().split("\n").slice(-2)
+                      .join(" "),
+                  },
+                );
+              }
+              await installIntegration(
+                got,
+                integration,
+                (bin, a) => run(bin, a, ctx.signal),
+              );
+              await writeFileSafe(
+                runtime,
+                "funes-integrations/hermes.json",
+                record,
+                0o644,
+              );
+              const version = record.match(/"version":\s*"([^"]+)"/)?.[1];
+              say(
+                "funes integration",
+                "created",
+                `hermes integration ${version ?? "(unknown version)"}`,
+              );
+            } else if (r.code !== 0) {
+              throw new Error(
+                `fetching the funes integration failed: ${
+                  (r.stderr || r.stdout).trim().split("\n").slice(-3).join(" ")
+                }`,
+              );
+            } else if (await exists(integration)) {
+              // Back from the plugin to the hook: config.yaml, which provision
+              // does not rewrite, keeps the plugin enabled and has no hook, so
+              // the bot would silently stop indexing. Refused, not guessed.
+              throw new Error(
+                `the staged funes wires itself in with a shell hook, but this bot uses the funes plugin. Moving a bot back is not supported: restage a funes that installs the plugin.`,
+              );
+            } else {
+              say(
+                "funes integration",
+                "created",
+                "hook-era funes; it has no integration to fetch",
+              );
+            }
+            await writeFileSafe(
+              runtime,
+              "funes-integrations/.fetched-by",
+              `${stagedDigest}\n`,
+              0o644,
+            );
+            integrationRefreshed = true;
+          } finally {
+            await Deno.remove(scratch, { recursive: true }).catch(() => {});
+          }
+        }
+        const funesPlugin = await exists(integration);
+
+        // -- funes, wired into Hermes --------------------------------------
+        // `funes add hermes`, against this bot's Hermes home: the shell hook
+        // for a hook-era funes, the plugin for a plugin-era one. HOME is the
+        // workdir, so it lands in this bot's Hermes home through the symlink
+        // above and nothing touches the host's. That is only true once the
+        // link has been checked, so an unchecked one skips this.
+        //
+        // It runs INSIDE the bot's own sandbox, never on the host. funes runs
+        // integration scripts it keeps under $HOME/.funes — the workdir, which
+        // the bot can write — so on the host a bot could edit one and have the
+        // operator's next provision run it. Everything funes should change is
+        // in the workdir, so the bot's profile is all it needs.
+        //
+        // Its exit code is not the test: funes exits 0 after declining to
+        // install. The marker it leaves is.
+        const marker = funesPlugin
+          ? funesPluginManifest(workdir)
+          : funesHookScript(workdir);
+        const wired = funesPlugin ? "plugin" : "shell hook";
         const profile =
           `${ctx.repoDir}/profiles/${b.slug}.${h.platform}.nono.json`;
-        if (await exists(hookScript)) {
-          say("funes hooks", "present");
+        if (
+          await exists(marker) && !integrationRefreshed && !funesRestaged &&
+          !restagePending
+        ) {
+          say("funes in hermes", "present", wired);
         } else if (!dotHermesOk && !args.check) {
-          say("funes hooks", "skipped", ".hermes is not in place");
+          say("funes in hermes", "skipped", ".hermes is not in place");
         } else if (stagedDigest === null) {
-          say("funes hooks", "skipped", "no staged funes to install them with");
+          say("funes in hermes", "skipped", "no staged funes");
         } else if (!await exists(profile)) {
           say(
-            "funes hooks",
+            "funes in hermes",
             "skipped",
-            `no profile at ${profile}; run render first, since funes add runs inside the sandbox`,
+            `no profile at ${profile}; run render first, since funes is wired in inside the sandbox`,
           );
-        } else if (!wouldChange("funes hooks", "funes add hermes, sandboxed")) {
+        } else if (
+          funesPlugin &&
+          integrationContract(
+              (await readIfPresent(`${integration}/manifest.json`)) ?? "",
+            ) !== FUNES_INTEGRATION_CONTRACT
+        ) {
+          // A newer funes may change how its integration is run. Refusing is
+          // better than running an entry point under assumptions it broke.
+          say(
+            "funes in hermes",
+            "missing",
+            `the funes integration in ${integration} is not contract_version ${FUNES_INTEGRATION_CONTRACT}, which is all this model knows how to run`,
+          );
+        } else if (
+          !wouldChange(
+            "funes in hermes",
+            funesPlugin
+              ? "the integration's setup (plugin), sandboxed"
+              : "funes add hermes (shell hook), sandboxed",
+          )
+        ) {
           const r = await run(
             "nono",
-            sandboxedFunesAdd(profile, workdir, stagedFunes),
+            funesPlugin
+              ? sandboxedIntegrationSetup(profile, workdir, runtime, inner)
+              : sandboxedFunesAdd(profile, workdir, stagedFunes, inner, {
+                hfOffline: b.funes.hfOffline,
+              }),
             ctx.signal,
-            { cwd: workdir, env },
+            {
+              cwd: workdir,
+              env: nonoEnv,
+              clearEnv: true,
+              input: FUNES_ADD_ANSWER,
+            },
           );
-          if (r.code !== 0) {
-            ctx.logger.warning("funes add hermes failed: {err}", {
-              err: (r.stderr || r.stdout).trim().split("\n").slice(-2).join(
-                " ",
-              ),
-            });
-            say(
-              "funes hooks",
-              "skipped",
-              "funes add hermes failed; see the warning",
-            );
+          if (await exists(marker)) {
+            say("funes in hermes", "created", wired);
           } else {
-            say("funes hooks", "created");
+            ctx.logger.warning(
+              "wiring funes in left no {wired} (exit {code}): {err}",
+              {
+                wired,
+                code: r.code,
+                err: (r.stderr || r.stdout).trim().split("\n").slice(-3).join(
+                  " ",
+                ),
+              },
+            );
+            say(
+              "funes in hermes",
+              "missing",
+              `no ${wired} was installed; see the warning`,
+            );
           }
         }
 
@@ -1512,7 +1761,7 @@ export const model = {
             label: `runtime/${f.path}`,
             f,
           })),
-          ...workdirFiles(b, workdir, runtime).map((f) => ({
+          ...workdirFiles(b, workdir, runtime, { funesPlugin }).map((f) => ({
             root: workdir,
             label: f.path,
             f,
@@ -1540,7 +1789,7 @@ export const model = {
         // provision pointed the funes MCP and the index hook at the workdir's
         // tools/, which the bot can write. Only that prefix changes.
         const configRel = "hermes/config.yaml";
-        const config = await readIfPresent(`${workdir}/${configRel}`);
+        const config = await readRegularFile(workdir, configRel);
         if (config !== null) {
           const m = migrateConfigTools(config, workdir, runtime);
           if (m.count === 0) {
@@ -1557,6 +1806,52 @@ export const model = {
               "migrated",
               `${m.count} tools/ path(s) now point at the runtime`,
             );
+          }
+        }
+
+        // -- the funes plugin, switched on -----------------------------------
+        // funes's setup enables its plugin only when `hermes` is on PATH,
+        // which inside the sandbox it is not; so a plugin-era install leaves
+        // the plugin on disk and off. The runtime's Hermes switches it on,
+        // inside the sandbox, after config.yaml exists — enabling writes
+        // `plugins.enabled` into it.
+        if (funesPlugin && await exists(funesPluginManifest(workdir))) {
+          const cfg = await readRegularFile(workdir, configRel);
+          if (cfg !== null && funesPluginEnabled(cfg)) {
+            say("funes plugin enabled", "present");
+          } else if (!await exists(profile) || !await exists(venvPy)) {
+            say(
+              "funes plugin enabled",
+              "skipped",
+              "needs the profile from render and the runtime's venv",
+            );
+          } else if (
+            !wouldChange("funes plugin enabled", "hermes plugins enable funes")
+          ) {
+            const r = await run(
+              "nono",
+              sandboxedPluginEnable(profile, workdir, runtime, inner),
+              ctx.signal,
+              { cwd: workdir, env: nonoEnv, clearEnv: true },
+            );
+            const after = await readRegularFile(workdir, configRel);
+            if (after !== null && funesPluginEnabled(after)) {
+              say("funes plugin enabled", "created");
+            } else {
+              ctx.logger.warning(
+                "hermes plugins enable funes did not enable it (exit {code}): {err}",
+                {
+                  code: r.code,
+                  err: (r.stderr || r.stdout).trim().split("\n").slice(-3)
+                    .join(" "),
+                },
+              );
+              say(
+                "funes plugin enabled",
+                "missing",
+                "hermes plugins enable funes did not take; see the warning",
+              );
+            }
           }
         }
 
@@ -1896,34 +2191,32 @@ export const model = {
           `${ctx.repoDir}/snapshots/${b.slug}-${stamp}.tar.gz`;
         await ensureDir(dirOf(out));
 
-        // -T with a list file rather than a long argv: the carried set is
-        // small today and a path list has no length limit to rediscover later.
-        const listFile = await Deno.makeTempFile();
-        await Deno.writeTextFile(
-          listFile,
-          present.map((c) => c.path).join("\n") + "\n",
-        );
-        try {
-          const r = await run("tar", [
+        // The path list goes to tar on stdin (-T -), not in a file. A list
+        // file in /tmp — where it used to be — is one every running bot can
+        // write and watch; a bot that swapped it named host files it cannot
+        // read itself, and tar, run as the operator, archived them.
+        const r = await run(
+          "tar",
+          [
             "-czf",
             out,
             "-C",
             workdir,
             ...EXCLUDES.flatMap((e) => ["--exclude", e]),
             "-T",
-            listFile,
-          ], ctx.signal);
-          if (r.code !== 0) {
-            throw new Error(
-              `tar failed: ${
-                (r.stderr || r.stdout).trim().split("\n").slice(-3).join(" ")
-              }`,
-            );
-          }
-        } finally {
-          try {
-            await Deno.remove(listFile);
-          } catch { /* already gone */ }
+            "-",
+          ],
+          ctx.signal,
+          {
+            input: present.map((c) => c.path).join("\n") + "\n",
+          },
+        );
+        if (r.code !== 0) {
+          throw new Error(
+            `tar failed: ${
+              (r.stderr || r.stdout).trim().split("\n").slice(-3).join(" ")
+            }`,
+          );
         }
 
         const bytes = (await Deno.stat(out)).size;
@@ -2009,9 +2302,15 @@ export const model = {
         // Unpack to a staging directory first. Extracting straight over a live
         // workdir would half-apply on any failure, and there would be no way
         // to tell which half.
-        const stage = await Deno.makeTempDir();
+        // Private, not /tmp: another bot could swap a staged file between
+        // extraction and the copy into this bot's workdir.
+        const stage = await privateTempDir(
+          b.workdirRoot.replace("$HOME", h.home),
+          "restore-",
+        );
         const placed: { path: string; action: string; rewrites: number }[] = [];
         const conflicts: string[] = [];
+        const refused: string[] = [];
         const residual: { path: string; mentions: string[] }[] = [];
         try {
           const r = await run("tar", [
@@ -2032,6 +2331,12 @@ export const model = {
           // says should have been: an archive from an older version of this
           // model type is still a valid thing to restore.
           for await (const rel of walkFiles(stage)) {
+            // Only what a snapshot carries. The archive came from a workdir
+            // the bot could write.
+            if (!isCarried(b, rel)) {
+              refused.push(rel);
+              continue;
+            }
             const src = `${stage}/${rel}`;
             const dest = `${toWorkdir}/${rel}`;
 
@@ -2123,7 +2428,15 @@ export const model = {
           );
         }
 
-        const clean = conflicts.length === 0 && residual.length === 0;
+        if (refused.length > 0) {
+          ctx.logger.warning(
+            "not restored, not a path a snapshot carries: {paths}",
+            { paths: refused.slice(0, 10).join(", ") },
+          );
+        }
+
+        const clean = conflicts.length === 0 && residual.length === 0 &&
+          refused.length === 0;
         const handle = await ctx.writeResource(
           "restored",
           `restored-${b.slug}`,

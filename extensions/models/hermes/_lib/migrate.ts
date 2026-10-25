@@ -204,3 +204,18 @@ export function residualMentions(
     .slice(0, limit)
     .map(({ l, i }) => `line ${i}: ${l.slice(0, 160)}`);
 }
+
+/**
+ * Whether `rel`, a path found in a snapshot archive, is one a snapshot of `b`
+ * carries: a carried path itself or something under one.
+ *
+ * restore places only these. An archive is the old machine's workdir, which
+ * the bot could write, and anything else in it — `home/.aws/credentials`, say,
+ * slipped in when the archive was made — would otherwise land in the new
+ * workdir for the bot to read.
+ */
+export function isCarried(b: Bot, rel: string): boolean {
+  return carriedPaths(b, { includeHfCache: true }).some((c) =>
+    rel === c.path || rel.startsWith(`${c.path}/`)
+  );
+}

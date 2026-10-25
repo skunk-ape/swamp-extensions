@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/hermes",
+  "version": "2026.10.24.1",
+  "reviewedAt": "2026-10-25T03:18:03Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "issue",
+      "note": "Two BLOCKERS. (B1) HOST CODE EXECUTION from any other running bot. The host-side integration fetch in hermes.ts uses Deno.makeTempDir({prefix: 'hermes-funes-'}), so the scratch dir is in /tmp (or the per-user $TMPDIR on macOS). Every bot profile extends nono's default, whose system_write group grants write to /tmp, and Landlock does not stop inotify_add_watch on /tmp. A sandboxed bot cannot list /tmp but inotify gives it the random name. Reproduced with nono 0.78.0 and funes 1.9.1: a script running under nono's default profile watched /tmp for hermes-funes-*, then planted .hermes/state.db and .hermes/plugins/funes/sqlite3.py in it. When the emulated provision fetch ran `funes add hermes`, the integration's setup ran its seed step on the host (`python3 convert.py`), which imported the planted module. That wrote a marker file outside every sandbox. A second run showed the integration files can also be overwritten after funes exits and before the cp -R into the runtime. The tampered setup then runs in the victim bot's sandbox, and its plugin in the victim's gateway. The same race applies to the hook-era fetch. FIX: create the scratch dir where no sandbox can write, e.g. Deno.makeTempDir({dir: `<workdirRoot>/.runtime`}). crossCheck already keeps grants off that tree. Also run the fetch itself inside nono (see F1). (B2) THE OPERATOR'S WHOLE ENVIRONMENT REACHES BOT-PLANTED CODE. The sandboxed steps run nono with env = Deno.env.toObject() + uvEnv, and nono passes the environment through unchanged (verified: FAKE_OPERATOR_SECRET and AWS_SECRET_ACCESS_KEY seen inside). setup's seed runs `python3 <workdir>/hermes/plugins/funes/convert.py` whenever hermes/state.db exists. Python puts the script's directory, which the bot can write, first on sys.path. Reproduced with the model's own sandboxedIntegrationSetup argv, a profile rendered by renderProfileFor, and a throwaway workdir: a planted sqlite3.py read FAKE_OPERATOR_SECRET, and provision would still report the step 'created'. The bot can force the step on the next provision by deleting its plugin.yaml. The hook-era sandboxedFunesAdd already had this exposure, through scripts under the bot-writable $HOME/.funes; this change adds a deterministic route. FIX: run nono with clearEnv and an explicit minimal environment: HOME = the real home, which nono needs for its state; PATH; LANG; plus uvEnv. Verified that nono 0.78.0 runs fine under env -i HOME PATH. FOLLOW-UP F1: running the catalog's setup on the host is the same trust the operator already gives the funes binary. Note that funes's sha256 check is against a catalog index from the same bucket, not a hash pinned in the binary (the integration's hash does not appear in it). It is not an independent anchor. Running the fetch inside nono costs little: `nono run -s -a <scratch> -r <runtime>/tools -- /usr/bin/env -i HOME=<scratch> ... funes add hermes`. Verified that this fetches integration 1.1.0 and that writes outside the grant are denied. Recommended. Carried over: (a) Landlock does not cover chmod on runtime files. (b) snapshot writes auth.json with umask permissions. Verified to hold: nothing bot-controlled is in the host fetch's argv, cwd or environment. The binary is <runtime>/tools/funes, read-only to the bot. .fetched-by is in the runtime. HERMES_HOME is absent, and with HOME pointing at the scratch dir, setup's hermes_home falls back to the scratch dir. There is no hermes on /usr/bin:/bin here. The sandboxed setup gets HERMES_HOME=<workdir>/hermes from uvEnv, so an operator HERMES_HOME is overridden."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "The old 'funes hooks created after funes declined' false report is CLOSED. Success is now judged by the marker (plugin.yaml or hooks/funes-index.sh), not the exit code, and a missing marker logs a structured warning with the exit code and the last stderr lines. Binary restage logs old -> new digests, and the integration step logs the fetched version. Minor: if the host fetch exits non-zero but leaves an integration, the run reports 'created' and drops the failure (see error-handling F2)."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "FOLLOW-UP F2: when the fetched integration exists, the host fetch ignores the exit code. Reproduced: with a PATH holding only tar and gzip, funes exited 1 because setup failed, but .funes/agents/hermes was fully present, so provision would copy it and record it as fetched. Nothing checks the copied files against the per-file sha256 map that funes writes in .funes/agents/hermes.json ('files'). Verify every file against that map in Deno before copying. Refuse non-regular files. Warn when the exit code is non-zero. FOLLOW-UP F3: the old <runtime>/funes-integrations/hermes is removed before the new fetch is known to be good. A network failure after a restage then leaves the runtime without an integration until the next successful run. Copy into a temp name in the runtime and rename it over, as stageFrom does for the binary. Carried over: verify still ignores the `nono run` exit code and has no completion sentinel. A restore that hits a tar error aborts, and files already placed stay placed."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "159 tests pass and `swamp extension fmt --check` passes. New unit tests cover: the argv shapes (hook-era funes add, integration setup, plugin enable), hostFetchEnv, integrationContract, funesPluginEnabled shapes, the config.yaml with and without the hook, the wrapper guard, and run() with input/clearEnv. FOLLOW-UP: no method-level test drives the new provision branches: fetch, record and settle; hook-era recorded once; contract refusal; restage forcing a re-run; check mode never fetching. No test covers the plantable inputs found here: the /tmp scratch, the inherited environment, and the sys.path of seed. Carried over: snapshot, restore, verify and the non-check provision path are still largely untested end to end."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "issue",
+      "note": "CLOSED: the plugin-era step now settles. Verified by tracing: .fetched-by is keyed to the staged digest, so a hook-era bot fetches once and is recorded. Its first run re-runs the sandboxed funes add once (integrationRefreshed), then reports present. The setup's hook pruning matches funes-(index|push).sh, not the model's funes-index-hook.sh, so the config.yaml hook entry stays, as the README says. The wrapper's `[ -f plugin.yaml ] && exit 0` is safe under set -eu. FOLLOW-UP F6: check mode with restageFunes reports only the binary as missing. stagedDigest stays the old one, so the integration and 'funes in hermes' steps report present although a real run would fetch and re-install. FOLLOW-UP F7: a downgrade from plugin-era to hook-era funes deletes the runtime integration. But config.yaml (clobber:false) was written without the hook, and plugins.enabled still lists funes, so indexing silently stops. A fresh bot whose integration fails the contract check has the same problem: it gets a hook-less config and no plugin. Report this, or write the hook config when funesPlugin is false. FOLLOW-UP F5 (bot-only): funesPluginEnabled ignores plugins.disabled, and Hermes's loader lets an explicit disable win. It also accepts an `enabled:` key at any depth in the plugins block, e.g. under entries. A flow mapping `plugins: {enabled: [funes]}` reads as off forever, while Hermes says 'already enabled' and writes nothing, so the step never settles. Verified that Hermes writes the block shape (`  enabled:` then `  - funes`, PyYAML safe_dump) and that it parses correctly. Enable with stdin closed declines allow_tool_override. A bot can make every marker or enabled check lie only about itself; none of them leads provision to act on the host."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "FOLLOW-UP F4: the clearEnv'd host fetch has PATH=/usr/bin:/bin. funes 1.9.1 shells out to tar ('running tar to list the integration'; reproduced with tar off PATH, exit 1). On NixOS neither directory has tar, so a plugin-era fetch throws and aborts provision there. The sandboxed setup's PATH has the same gap for dirname, cp, mkdir and awk. HTTPS_PROXY, NO_PROXY, SSL_CERT_FILE and SSL_CERT_DIR are dropped, so a proxied or custom-CA host cannot fetch. Fine on macOS and FHS Linux. Resolve tar and gzip from the operator's PATH into a scratch bin dir, and pass a short allowlist of proxy and CA variables. The integration contract_version gate (1) is good, and the setup entry point used (`setup add`, with FUNES_BIN, FUNES_HOME and FUNES_AGENT_ID) matches the fetched integration 1.1.0 script."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "issue",
+      "note": "FOLLOW-UP F3, see error-handling: the integration is deleted before the copy. The scratch dir is removed in a finally block; a removal that fails while another process is writing into it is swallowed. FOLLOW-UP F9: the two new host-side reads of hermes/config.yaml (plugin enabled, before and after) use readIfPresent, which follows a bot-planted symlink. A FIFO hangs provision, and the only leak is one bit. This is the same pattern as restore. Carried over, and now known to be in the same class as B1: the uv sync XDG_CONFIG_HOME temp dir comes from Deno.makeTempDir() in /tmp, so a running bot can plant uv/uv.toml (e.g. cache-dir) into a host-side uv sync. Not demonstrated; move it out of /tmp with the B1 fix. It is still removed non-recursively. run() writes stdin before draining stdout. That is safe for the 2-byte answer but would deadlock on input larger than a pipe buffer."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The new README funes section and code use placeholders only. No host-specific paths or identifiers. The README table is wider than the fmt line but passes fmt --check."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "issue",
+      "note": "restageFunes is a strict boolean, default false. Carried over: crossCheck compares filesystemAllow against .runtime as written, and free-form strings go unescaped into generated shell and YAML. Only the operator writes them."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "Unchanged. All specs declare lifetime and garbageCollection."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "issue",
+      "note": "Carried over: uninstall does not remove the runtime directory, and nothing does. That now includes funes-integrations/. Legacy in-workdir code is reported but deliberately not deleted. Nothing removes the funes plugin or switches it off after a downgrade (F7)."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "issue",
+      "note": "provision still refuses while this bot's gateway runs. B1 shows that this preflight protects only against THIS bot: other bots on the same host, same uid, can be running and can write /tmp. The contract check runs before the sandboxed setup. The profile and venv checks gate the plugin enable step. Symlink checks run on the runtime path and on every runtime write (ensureDirSafe, writeFileSafe)."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Unchanged: one instance per spec per bot, named <spec>-<slug>."
+    },
+    {
+      "id": "data-access",
+      "verdict": "pass",
+      "note": "Methods measure the host directly. The report uses the dataRepository API."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "issue",
+      "note": "Never published. Moving from the funes 1.3 hook to the plugin was traced, and the author ran it on a real bot: the hook entry stays, the wrapper exits, and the plugin is enabled. The reverse direction is not handled (F7). The README's upgrade steps match the code: restage happens only when the digests differ."
+    }
+  ]
+}

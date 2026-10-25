@@ -16,12 +16,24 @@ declare const Deno: any;
 export type RunResult = { stdout: string; stderr: string; code: number };
 
 /** Run a command, capturing both streams. Never through a shell: an argument
- * vector cannot be re-parsed by something that thinks it sees a metacharacter. */
+ * vector cannot be re-parsed by something that thinks it sees a metacharacter.
+ *
+ * stdin is closed unless `input` is given. Nothing here is interactive, and
+ * several of the things provisioning drives will happily block on a prompt if
+ * given a terminal to ask on. `input` is for the one that asks anyway and
+ * reads end-of-file as "no": `funes add`, which then skips the install and
+ * still exits 0. */
 export async function run(
   bin: string,
   args: string[],
   signal?: AbortSignal,
-  opts: { cwd?: string; env?: Record<string, string> } = {},
+  opts: {
+    cwd?: string;
+    env?: Record<string, string>;
+    /** Pass ONLY `env`, nothing inherited from the operator's environment. */
+    clearEnv?: boolean;
+    input?: string;
+  } = {},
 ): Promise<RunResult> {
   // swamp-quality-ignore deno-command
   const cmd = new Deno.Command(bin, {
@@ -31,11 +43,24 @@ export async function run(
     signal,
     cwd: opts.cwd,
     env: opts.env,
-    // Nothing here is interactive, and several of the things provisioning
-    // drives will happily block on a prompt if given a terminal to ask on.
-    stdin: "null",
+    clearEnv: opts.clearEnv ?? false,
+    stdin: opts.input === undefined ? "null" : "piped",
   });
-  const out = await cmd.output();
+  let out;
+  if (opts.input === undefined) {
+    out = await cmd.output();
+  } else {
+    const child = cmd.spawn();
+    // Output is collected while the input is written, so a child that fills
+    // its stdout pipe before reading all of stdin cannot deadlock against us.
+    const collected = child.output();
+    const w = child.stdin.getWriter();
+    // A child that exits without reading closes the pipe; its exit status
+    // below says why, so a failed write is not the error to report.
+    await w.write(new TextEncoder().encode(opts.input)).catch(() => {});
+    await w.close().catch(() => {});
+    out = await collected;
+  }
   const dec = new TextDecoder();
   return {
     stdout: dec.decode(out.stdout),

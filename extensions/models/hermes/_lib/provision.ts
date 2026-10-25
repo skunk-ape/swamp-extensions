@@ -191,7 +191,12 @@ function q(s: string): string {
  * and the exception that proves it: it holds no credential and reads a memory
  * inside this workdir, so running it inside the sandbox is what we want.
  */
-export function configYaml(b: Bot, workdir: string, runtime: string): string {
+export function configYaml(
+  b: Bot,
+  workdir: string,
+  runtime: string,
+  opts: { funesPlugin?: boolean } = {},
+): string {
   const L: string[] = [];
   L.push(`# ${b.displayName} — starter configuration, written by provision.`);
   L.push(`#`);
@@ -243,12 +248,19 @@ export function configYaml(b: Bot, workdir: string, runtime: string): string {
   L.push(`    profile_build_offered: true`);
   L.push(`    busy_input_prompt: true`);
   L.push(`    tool_progress_prompt: true`);
-  L.push(`hooks:`);
-  L.push(`  post_llm_call:`);
-  L.push(
-    `    - command: bash ${q(`${runtime}/tools/funes-index-hook.sh`)} 'hermes'`,
-  );
-  L.push(`      timeout: 30`);
+  // A hook-era funes indexes through this shell hook; a plugin-era one indexes
+  // from its own Hermes plugin, and the hook would only run a wrapper that has
+  // nothing to do.
+  if (!opts.funesPlugin) {
+    L.push(`hooks:`);
+    L.push(`  post_llm_call:`);
+    L.push(
+      `    - command: bash ${
+        q(`${runtime}/tools/funes-index-hook.sh`)
+      } 'hermes'`,
+    );
+    L.push(`      timeout: 30`);
+  }
   if (b.runtime.fallback.length > 0) {
     L.push(`fallback_providers:`);
     for (const f of b.runtime.fallback) {
@@ -354,6 +366,10 @@ export function indexHook(b: Bot, workdir: string, runtime: string): string {
 # These paths are ${b.slug}'s and no other bot's.
 set -eu
 W=${workdir}
+# A funes that installs the Hermes plugin indexes each turn from inside the
+# gateway and deletes the hook script below. A config.yaml written before the
+# switch still calls this wrapper, so it steps aside rather than fail.
+[ -f "\$W/hermes/plugins/funes/plugin.yaml" ] && exit 0
 export HOME="\$W"
 export FUNES_HOME="\$W/funes"
 export HF_HOME="\$W/funes/hf"
@@ -388,11 +404,12 @@ export function workdirFiles(
   b: Bot,
   workdir: string,
   runtime: string,
+  opts: { funesPlugin?: boolean } = {},
 ): WorkdirFile[] {
   return [
     {
       path: "hermes/config.yaml",
-      content: configYaml(b, workdir, runtime),
+      content: configYaml(b, workdir, runtime, opts),
       mode: 0o644,
       clobber: false,
       because: "Hermes writes to it at runtime; provision never overwrites it",
@@ -620,21 +637,105 @@ export function uvEnv(
   };
 }
 
+// ---------------------------------------------------------------------------
+// funes integration
+// ---------------------------------------------------------------------------
+//
+// funes has wired itself into Hermes two ways. Up to 1.3 it installed a
+// post_llm_call SHELL hook, `hooks/funes-index.sh`, which this model's
+// runtime wrapper (indexHook) supplies an environment to. From the release
+// that introduced its integration catalog it installs a Hermes PLUGIN at
+// `hermes/plugins/funes/`, fetched as a versioned integration, which indexes
+// each turn inside the gateway and deletes the old hook script. Which one a
+// bot gets is decided by the funes it has staged, not by a setting here.
+
+/** `funes add` asks before indexing existing sessions and reads end-of-file
+ * as "no" — skipping the install and still exiting 0. This is the answer. */
+export const FUNES_ADD_ANSWER = "y\n";
+
+/** Where provision keeps the fetched funes integration: in the runtime, so
+ * the setup script a sandboxed install runs is one the bot cannot edit. */
+export function funesIntegrationDir(runtime: string): string {
+  return `${runtime}/funes-integrations/hermes`;
+}
+
+/** The marker of a plugin-era install. */
+export function funesPluginManifest(workdir: string): string {
+  return `${workdir}/hermes/plugins/funes/plugin.yaml`;
+}
+
+/** The marker of a hook-era install. */
+export function funesHookScript(workdir: string): string {
+  return `${workdir}/hermes/hooks/funes-index.sh`;
+}
+
+/** Host variables the integration fetch keeps: what reaching the catalog
+ * through a proxy, or with a non-default CA bundle (NixOS), needs. */
+export const FETCH_PASSTHROUGH = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NIX_SSL_CERT_FILE",
+];
+
 /**
- * argv for `funes add hermes`, run inside the bot's own sandbox.
+ * argv for fetching the integration: `nono run` with a throwaway grant.
  *
- * Never on the host: funes runs integration scripts it keeps under
- * $HOME/.funes, and HOME here is the workdir, which the bot can write. Inside
- * nono a planted script gets the bot's own access and nothing more.
- *
- * HOME goes to funes through `env` inside the sandbox, not to nono: nono keeps
- * its state under $HOME/.nono and refuses a grant that overlaps it, so a
- * workdir HOME handed to nono fails before funes starts (nono 0.78.0).
+ * The fetch IS `funes add hermes` — funes has no fetch-only command — and that
+ * runs the integration's setup too. So it runs inside nono, able to write only
+ * `scratch` (a private directory under .runtime/.tmp, never /tmp, which every
+ * bot can write) and read the runtime's tools, with `env -i` and a HOME that
+ * is the scratch directory: whatever the catalog's setup does, it does there.
+ * funes checks the integration against the catalog's sha256; the sandbox is
+ * for everything that check cannot rule out.
  */
-export function sandboxedFunesAdd(
+export function sandboxedFetch(
+  scratch: string,
+  runtime: string,
+  inner: InnerEnv & { extra?: Record<string, string> },
+): string[] {
+  return [
+    "run",
+    "-s",
+    "--allow",
+    scratch,
+    "--read",
+    `${runtime}/tools`,
+    "--",
+    "/usr/bin/env",
+    "-i",
+    `HOME=${scratch}`,
+    `FUNES_HOME=${scratch}/funes`,
+    `HF_HOME=${scratch}/funes/hf`,
+    `TMPDIR=${scratch}`,
+    `PATH=${inner.path}`,
+    `LANG=${inner.lang}`,
+    ...Object.entries(inner.extra ?? {}).map(([k, v]) => `${k}=${v}`),
+    `${runtime}/tools/funes`,
+    "add",
+    "hermes",
+  ];
+}
+
+/** Where a host-side fetch left the integration, under its throwaway HOME. */
+export function fetchedIntegration(scratch: string): string {
+  return `${scratch}/.funes/agents/hermes`;
+}
+
+/** What a command run inside a sandbox may inherit from the host: a PATH for
+ * its tools and a locale. Everything else it is given explicitly. */
+export type InnerEnv = { path: string; lang: string };
+
+/** The common head of a command run inside the bot's own sandbox. */
+function inSandbox(
   profile: string,
   workdir: string,
-  funes: string,
+  inner: InnerEnv,
 ): string[] {
   return [
     "run",
@@ -644,12 +745,176 @@ export function sandboxedFunesAdd(
     "--workdir",
     workdir,
     "--",
+    // `env -i`: the command gets exactly what is listed here and nothing of
+    // the operator's environment. Whatever runs in the sandbox may be code
+    // the bot planted — a module beside a script python runs, say — and the
+    // operator's environment holds cloud credentials and tokens.
+    //
+    // HOME goes to the command here, not to nono: nono keeps its state under
+    // $HOME/.nono and refuses a grant that overlaps it, so a workdir HOME
+    // handed to nono fails before anything starts (nono 0.78.0).
     "/usr/bin/env",
+    "-i",
     `HOME=${workdir}`,
+    `PATH=${inner.path}`,
+    `LANG=${inner.lang}`,
+    // The default is outside the workdir: funes downloads its catalog into
+    // TMPDIR and then cannot read it back. The gateway uses this directory.
+    `TMPDIR=${workdir}/hermes/cache/scratch`,
+  ];
+}
+
+/**
+ * argv for `funes add hermes`, run inside the bot's own sandbox. Hook-era
+ * funes only: it carries its hook scripts and needs no catalog.
+ *
+ * Never on the host: funes runs scripts it keeps under $HOME/.funes, and HOME
+ * here is the workdir, which the bot can write. Inside nono a planted script
+ * gets the bot's own access and nothing more.
+ */
+export function sandboxedFunesAdd(
+  profile: string,
+  workdir: string,
+  funes: string,
+  inner: InnerEnv,
+  opts: { hfOffline?: boolean } = {},
+): string[] {
+  return [
+    ...inSandbox(profile, workdir, inner),
     `FUNES_HOME=${workdir}/funes`,
     `HF_HOME=${workdir}/funes/hf`,
+    ...(opts.hfOffline ? ["HF_HUB_OFFLINE=1"] : []),
     funes,
     "add",
     "hermes",
   ];
+}
+
+/** The integration contract this model knows how to run. */
+export const FUNES_INTEGRATION_CONTRACT = 1;
+
+/** The `contract_version` an integration's manifest.json declares, or null. */
+export function integrationContract(manifest: string): number | null {
+  try {
+    const v = JSON.parse(manifest)?.contract_version;
+    return typeof v === "number" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * argv for a plugin-era install: the integration's own `setup add`, from the
+ * runtime, inside the bot's sandbox.
+ *
+ * Not `funes add hermes --from <runtime copy>`: funes will not vouch for a
+ * local source and asks a person at a terminal to confirm it, so that path
+ * cannot run unattended. Not a plain `funes add hermes` either: that fetches
+ * from the catalog, and a bot with a named egress allowlist has no route to
+ * it. The integration was fetched — and checked against the catalog's sha256
+ * by funes — on the host; what runs here is its documented entry point
+ * (contract_version 1: `setup add [MEMORY]`, configured by FUNES_BIN,
+ * FUNES_HOME and FUNES_AGENT_ID). No network, and nothing the bot can edit.
+ */
+export function sandboxedIntegrationSetup(
+  profile: string,
+  workdir: string,
+  runtime: string,
+  inner: InnerEnv,
+): string[] {
+  return [
+    ...inSandbox(profile, workdir, {
+      ...inner,
+      path: `${runtime}/tools:${inner.path}`,
+    }),
+    `FUNES_HOME=${workdir}/funes`,
+    `HF_HOME=${workdir}/funes/hf`,
+    "FUNES_AGENT_ID=hermes",
+    `FUNES_BIN=${runtime}/tools/funes`,
+    // The runtime's funes first. No hermes on that PATH, deliberately — the
+    // caller drops any directory holding one: setup would register funes as
+    // an MCP server with none of this bot's environment, and config.yaml
+    // already has the right one. The plugin is enabled separately.
+    "/bin/sh",
+    `${funesIntegrationDir(runtime)}/setup`,
+    "add",
+  ];
+}
+
+/**
+ * argv for `hermes plugins enable funes`, inside the bot's own sandbox.
+ *
+ * funes's setup runs this itself only when `hermes` is on PATH, which inside
+ * the sandbox it is not, so a plugin-era install leaves the plugin on disk and
+ * switched off. The runtime's Hermes does it here; it writes
+ * `plugins.enabled` in config.yaml, which is why this runs after provision has
+ * written that file.
+ */
+export function sandboxedPluginEnable(
+  profile: string,
+  workdir: string,
+  runtime: string,
+  inner: InnerEnv,
+): string[] {
+  return [
+    ...inSandbox(profile, workdir, inner),
+    `HERMES_HOME=${workdir}/hermes`,
+    `${runtime}/hermes-agent/venv/bin/python`,
+    "-I",
+    "-m",
+    "hermes_cli.main",
+    "plugins",
+    "enable",
+    "funes",
+  ];
+}
+
+/**
+ * Whether config.yaml has funes enabled, as Hermes decides it: listed under
+ * `plugins.enabled` and not under `plugins.disabled`, which wins.
+ *
+ * Read as text rather than parsed: this model takes no YAML dependency. Only
+ * the direct children of a top-level `plugins:` count, in the shapes Hermes
+ * writes — a block list (its own) or a flow list. Anything this cannot read
+ * reads as "not enabled", which costs one idempotent re-enable and a step
+ * that reports itself unsettled rather than a wrong "present".
+ */
+export function funesPluginEnabled(config: string): boolean {
+  const lists = pluginLists(config);
+  return lists.enabled.includes("funes") && !lists.disabled.includes("funes");
+}
+
+/** The `enabled` and `disabled` lists directly under a top-level `plugins:`. */
+function pluginLists(
+  config: string,
+): { enabled: string[]; disabled: string[] } {
+  const out = { enabled: [] as string[], disabled: [] as string[] };
+  const lines = config.split("\n");
+  const top = lines.findIndex((l) => /^plugins:\s*(#.*)?$/.test(l));
+  if (top === -1) return out;
+  const unquote = (s: string) => s.trim().replace(/^['"]|['"]$/g, "");
+  let childIndent = -1;
+  for (let i = top + 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*(#.*)?$/.test(l)) continue;
+    if (/^\S/.test(l)) break; // left the plugins block
+    const indent = l.length - l.trimStart().length;
+    if (childIndent === -1) childIndent = indent;
+    if (indent !== childIndent) continue; // deeper than a direct child
+    const key = l.match(/^\s+(enabled|disabled):\s*(.*?)\s*(#.*)?$/);
+    if (!key) continue;
+    const name = key[1] as "enabled" | "disabled";
+    const flow = key[2].match(/^\[(.*)\]$/);
+    if (flow) {
+      out[name] = flow[1].split(",").map(unquote).filter((s) => s !== "");
+      continue;
+    }
+    if (key[2] !== "") continue; // a scalar, or a shape not read here
+    for (let j = i + 1; j < lines.length; j++) {
+      const item = lines[j].match(/^(\s*)-\s*(.*?)\s*(#.*)?$/);
+      if (!item || item[1].length < childIndent) break;
+      out[name].push(unquote(item[2]));
+    }
+  }
+  return out;
 }

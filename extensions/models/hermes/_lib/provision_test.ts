@@ -18,7 +18,14 @@ import {
   resolvedWorkdir,
   runtimeDirectories,
   runtimeFiles,
+  FUNES_ADD_ANSWER,
+  funesPluginEnabled,
+  sandboxedFetch,
+  FUNES_INTEGRATION_CONTRACT,
+  integrationContract,
   sandboxedFunesAdd,
+  sandboxedIntegrationSetup,
+  sandboxedPluginEnable,
   soulMd,
   uvEnv,
   uvSteps,
@@ -43,6 +50,7 @@ function bot(over: Record<string, unknown> = {}): Bot {
 
 const WD = "/Users/x/agents/demo";
 const RT = "/Users/x/agents/.runtime/demo";
+const INNER = { path: "/opt/tools/bin:/usr/bin", lang: "en_US.UTF-8" };
 
 Deno.test("workdir resolves $HOME", () => {
   assertEquals(resolvedWorkdir(bot(), "/Users/x"), WD);
@@ -467,7 +475,12 @@ Deno.test("provision keeps what it found and owns what it produced", () => {
 // funes runs integration scripts from $HOME/.funes, and HOME is the workdir.
 // On the host that was code the bot could write, run as the operator.
 Deno.test("funes add hermes runs inside the sandbox, with HOME set inside it", () => {
-  const a = sandboxedFunesAdd("/r/profiles/demo.linux.nono.json", WD, `${RT}/tools/funes`);
+  const a = sandboxedFunesAdd(
+    "/r/profiles/demo.linux.nono.json",
+    WD,
+    `${RT}/tools/funes`,
+    INNER,
+  );
   assertEquals(a.slice(0, 7), [
     "run",
     "-s",
@@ -481,4 +494,172 @@ Deno.test("funes add hermes runs inside the sandbox, with HOME set inside it", (
   const sep = a.indexOf("--");
   assert(a.indexOf(`HOME=${WD}`) > sep);
   assertEquals(a.slice(-3), [`${RT}/tools/funes`, "add", "hermes"]);
+});
+
+// ---------------------------------------------------------------------------
+// funes: shell hook (up to 1.3) or Hermes plugin (since its catalog)
+// ---------------------------------------------------------------------------
+
+Deno.test("plugins.enabled is read in every shape Hermes writes it", () => {
+  // PyYAML's default: the sequence at the key's own indent.
+  assert(funesPluginEnabled("plugins:\n  enabled:\n  - funes\n"));
+  // Indented sequence, quoted, with a neighbour and a comment.
+  assert(
+    funesPluginEnabled(
+      "model:\n  provider: x\nplugins:\n  enabled:\n    - other\n    - 'funes'  # memory\n",
+    ),
+  );
+  // Flow list.
+  assert(funesPluginEnabled('plugins:\n  enabled: [other, "funes"]\n'));
+  // Not enabled: absent, elsewhere, or only on the deny-list.
+  assert(!funesPluginEnabled("model:\n  provider: x\n"));
+  assert(!funesPluginEnabled("plugins:\n  enabled:\n  - other\n"));
+  assert(!funesPluginEnabled("plugins:\n  disabled:\n  - funes\n"));
+  // An explicit disable wins over enabled, as it does in Hermes.
+  assert(
+    !funesPluginEnabled("plugins:\n  enabled:\n  - funes\n  disabled:\n  - funes\n"),
+  );
+  // Only direct children of plugins: count, not a key of that name deeper.
+  assert(
+    !funesPluginEnabled("plugins:\n  settings:\n    enabled:\n    - funes\n"),
+  );
+  assert(!funesPluginEnabled("plugins:\n  enabled: []\nother:\n  - funes\n"));
+});
+
+Deno.test("hook-era funes add answers its prompt and runs with the bot's paths", () => {
+  // funes asks before indexing existing sessions and reads EOF as "no",
+  // skipping the install while exiting 0.
+  assertEquals(FUNES_ADD_ANSWER, "y\n");
+  const a = sandboxedFunesAdd("/p.json", WD, `${RT}/tools/funes`, INNER, {
+    hfOffline: true,
+  });
+  // funes downloads into TMPDIR and cannot read it back from /tmp in here.
+  assert(a.includes(`TMPDIR=${WD}/hermes/cache/scratch`));
+  assert(a.includes("HF_HUB_OFFLINE=1"));
+  assertEquals(a.slice(-3), [`${RT}/tools/funes`, "add", "hermes"]);
+});
+
+// `funes add --from` asks a person to vouch for a local source, and a plain
+// `funes add` needs the catalog, which an allowlisted bot cannot reach. The
+// verified integration's own entry point needs neither.
+Deno.test("a plugin-era install runs the runtime's integration setup, sandboxed", () => {
+  const a = sandboxedIntegrationSetup("/p.json", WD, RT, INNER);
+  assertEquals(a.slice(0, 7), [
+    "run",
+    "-s",
+    "--profile",
+    "/p.json",
+    "--workdir",
+    WD,
+    "--",
+  ]);
+  assert(a.includes("FUNES_AGENT_ID=hermes"));
+  assert(a.includes(`FUNES_BIN=${RT}/tools/funes`));
+  // No hermes on PATH, or setup registers an MCP server without the bot's env.
+  assert(a.includes(`PATH=${RT}/tools:${INNER.path}`));
+  assertEquals(a.slice(-3), [
+    "/bin/sh",
+    `${RT}/funes-integrations/hermes/setup`,
+    "add",
+  ]);
+});
+
+Deno.test("only an integration contract this model knows is run", () => {
+  assertEquals(FUNES_INTEGRATION_CONTRACT, 1);
+  assertEquals(
+    integrationContract('{"contract_version": 1, "id": "hermes"}'),
+    1,
+  );
+  assertEquals(integrationContract('{"contract_version": 2}'), 2);
+  assertEquals(integrationContract("{}"), null);
+  assertEquals(integrationContract("not json"), null);
+});
+
+Deno.test("the plugin is enabled by the runtime's Hermes, inside the sandbox", () => {
+  const a = sandboxedPluginEnable("/p.json", WD, RT, INNER);
+  assertEquals(a.slice(0, 7), [
+    "run",
+    "-s",
+    "--profile",
+    "/p.json",
+    "--workdir",
+    WD,
+    "--",
+  ]);
+  assert(a.indexOf(`HERMES_HOME=${WD}/hermes`) > a.indexOf("--"));
+  assertEquals(a.slice(-7), [
+    `${RT}/hermes-agent/venv/bin/python`,
+    "-I",
+    "-m",
+    "hermes_cli.main",
+    "plugins",
+    "enable",
+    "funes",
+  ]);
+});
+
+// The fetch runs funes's own setup, so it runs inside nono, able to write
+// only its private scratch directory, with nothing of the operator's
+// environment but a PATH, a locale and proxy/CA settings.
+Deno.test("the integration is fetched inside nono, in its scratch directory only", () => {
+  const scratch = "/Users/x/agents/.runtime/.tmp/funes-fetch-1";
+  const a = sandboxedFetch(scratch, RT, {
+    ...INNER,
+    extra: { HTTPS_PROXY: "http://proxy:3128" },
+  });
+  assertEquals(a.slice(0, 7), [
+    "run",
+    "-s",
+    "--allow",
+    scratch,
+    "--read",
+    `${RT}/tools`,
+    "--",
+  ]);
+  assertEquals(a.slice(7, 9), ["/usr/bin/env", "-i"]);
+  assert(a.includes(`HOME=${scratch}`));
+  assert(a.includes(`FUNES_HOME=${scratch}/funes`));
+  assert(a.includes("HTTPS_PROXY=http://proxy:3128"));
+  assert(!a.some((x) => x.startsWith("HERMES_HOME=")));
+  assertEquals(a.slice(-3), [`${RT}/tools/funes`, "add", "hermes"]);
+});
+
+// Whatever runs in a bot's sandbox may be code the bot planted; it must not
+// see the operator's environment.
+Deno.test("every sandboxed step clears the environment and lists what it passes", () => {
+  for (
+    const a of [
+      sandboxedFunesAdd("/p.json", WD, `${RT}/tools/funes`, INNER),
+      sandboxedIntegrationSetup("/p.json", WD, RT, INNER),
+      sandboxedPluginEnable("/p.json", WD, RT, INNER),
+    ]
+  ) {
+    const sep = a.indexOf("--");
+    assertEquals(a.slice(sep + 1, sep + 3), ["/usr/bin/env", "-i"]);
+    assert(a.includes(`HOME=${WD}`));
+    assert(a.includes("LANG=en_US.UTF-8"));
+  }
+  // The integration's setup finds the runtime's funes first.
+  assert(
+    sandboxedIntegrationSetup("/p.json", WD, RT, INNER).includes(
+      `PATH=${RT}/tools:/opt/tools/bin:/usr/bin`,
+    ),
+  );
+});
+
+Deno.test("a plugin-era config has no shell hook; a hook-era one keeps it", () => {
+  assert(configYaml(bot(), WD, RT).includes("post_llm_call"));
+  const y = configYaml(bot(), WD, RT, { funesPlugin: true });
+  assert(!y.includes("hooks:"));
+  assert(!y.includes("funes-index-hook.sh"));
+  // The funes MCP stays: the plugin only indexes.
+  assertStringIncludes(y, `command: ${RT}/tools/funes`);
+});
+
+Deno.test("the hook wrapper steps aside once the plugin is installed", () => {
+  const h = indexHook(bot(), WD, RT);
+  const guard = h.indexOf('[ -f "$W/hermes/plugins/funes/plugin.yaml" ] && exit 0');
+  assert(guard !== -1);
+  // Before it does anything else.
+  assert(guard < h.indexOf('export HOME="$W"'));
 });

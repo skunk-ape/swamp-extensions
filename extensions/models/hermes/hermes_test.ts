@@ -198,6 +198,7 @@ Deno.test("provision --check reports a workdir that does not exist yet", async (
       seedHfFrom: "",
       funesBin: `${dir}/nonexistent-funes`,
       skipDeps: false,
+      restageFunes: false,
     }, a.ctx);
 
     const p = a.written[0].data as Record<string, unknown>;
@@ -255,6 +256,7 @@ const PROVISION_CHECK = (dir: string) => ({
   seedHfFrom: "",
   funesBin: `${dir}/nonexistent-funes`,
   skipDeps: false,
+  restageFunes: false,
 });
 
 Deno.test("provision --check reports the runtime and code left by the old layout", async () => {

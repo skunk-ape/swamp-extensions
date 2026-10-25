@@ -210,6 +210,43 @@ runtime writable again.
 workdir instead of downloading it, which is the only route available to a bot
 whose `egress` is a named allowlist.
 
+### funes
+
+Each bot runs its own staged copy of `funes`, in the runtime, so updating the
+host's copy changes nothing until you say so. funes has wired itself into
+Hermes two ways, and `provision` handles both, deciding by the funes it staged:
+
+| funes                          | Wiring                                                    |
+| ------------------------------ | --------------------------------------------------------- |
+| up to 1.3                      | a `post_llm_call` shell hook, run through the runtime's wrapper |
+| with an integration catalog (1.6, 1.9, …) | a Hermes plugin at `hermes/plugins/funes`, enabled in `config.yaml` |
+
+For a plugin-era funes, `provision` fetches the integration by running
+`funes add hermes` inside nono with a throwaway grant: it can write only a
+private scratch directory under `.runtime/.tmp` (never `/tmp`, which every bot's
+sandbox can write and watch) and sees none of your environment beyond PATH, a
+locale and proxy/CA settings. Each file it fetched is checked against the
+sha256 funes recorded before it is swapped into the runtime. The install itself runs that integration's
+own `setup add` inside the bot's sandbox, so it needs no network: a bot whose
+`egress` is a named allowlist installs the same way. The runtime's Hermes then
+enables the plugin, also inside the sandbox. An integration with a
+`contract_version` other than 1 is refused rather than run on assumptions it
+may have broken.
+
+To move bots to a newer funes:
+
+```bash
+funes update                                          # on the host
+swamp model method run <slug> uninstall
+swamp model method run <slug> provision --input restageFunes=true
+swamp model method run <slug> install
+```
+
+`restageFunes` replaces the staged binary, fetches the matching integration, and
+re-runs the install. Moving from a 1.3 hook to the plugin, funes removes its old
+hook scripts itself; the hook entry in an existing `config.yaml` stays and its
+wrapper exits at once, since the plugin does the indexing.
+
 ### Upgrading a bot from the old layout
 
 Earlier versions kept the checkout, venv, interpreter and `funes` inside the

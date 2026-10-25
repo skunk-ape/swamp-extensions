@@ -20,7 +20,9 @@ export class SymlinkRefused extends Error {}
 
 async function lstatOrNull(
   path: string,
-): Promise<{ isSymlink: boolean; isDirectory: boolean } | null> {
+): Promise<
+  { isSymlink: boolean; isDirectory: boolean; isFile: boolean } | null
+> {
   try {
     return await Deno.lstat(path);
   } catch (e) {
@@ -97,4 +99,47 @@ export async function writeFileSafe(
 /** True when `path` is a symlink. Missing is not a symlink. */
 export async function isSymlink(path: string): Promise<boolean> {
   return (await lstatOrNull(path))?.isSymlink ?? false;
+}
+
+/**
+ * A fresh temp directory under `<workdirRoot>/.runtime/.tmp`, private to the
+ * operator.
+ *
+ * Not the system temp directory. Every bot's sandbox can write /tmp — nono's
+ * default profile grants it — and although a bot cannot list it, it can watch
+ * it for new entries and learn a "random" name the moment it appears. A
+ * host-side step that put anything there a later command reads (a cwd python
+ * imports from, a HOME an integration's setup reads, a config directory uv
+ * reads) was reachable from every other bot on the host. No sandbox is granted
+ * anything under .runtime: crossCheck refuses a filesystemAllow that covers it.
+ */
+export async function privateTempDir(
+  workdirRoot: string,
+  prefix: string,
+): Promise<string> {
+  await assertNoSymlinks(workdirRoot, ".runtime/.tmp");
+  const base = `${workdirRoot}/.runtime/.tmp`;
+  await Deno.mkdir(base, { recursive: true, mode: 0o700 });
+  await Deno.chmod(base, 0o700);
+  return await Deno.makeTempDir({ dir: base, prefix });
+}
+
+/**
+ * `root/rel` as text, or null when it does not exist. Refuses a symlink on the
+ * way and anything that is not a regular file: a FIFO the bot left would hang
+ * the read, and a device would never end.
+ */
+export async function readRegularFile(
+  root: string,
+  rel: string,
+): Promise<string | null> {
+  await assertNoSymlinks(root, rel);
+  const st = await lstatOrNull(`${root}/${rel}`);
+  if (st === null) return null;
+  if (!st.isFile) {
+    throw new SymlinkRefused(
+      `${root}/${rel} is not a regular file; remove it and re-run.`,
+    );
+  }
+  return await Deno.readTextFile(`${root}/${rel}`);
 }

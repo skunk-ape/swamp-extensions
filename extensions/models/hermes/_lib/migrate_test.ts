@@ -3,6 +3,7 @@ import { BotSchema } from "./decl.ts";
 import type { Bot } from "./decl.ts";
 import {
   carriedPaths,
+  isCarried,
   EXCLUDES,
   rebuiltPaths,
   residualMentions,
@@ -174,4 +175,15 @@ Deno.test("residual reporting is capped so one bad file cannot bury the rest", (
     "\n",
   );
   assertEquals(residualMentions(content, "/Users/x").length, 5);
+});
+
+// An archive is the old workdir, which the bot could write. restore places
+// what a snapshot carries and nothing else.
+Deno.test("only carried paths are restored", () => {
+  const b = bot();
+  assert(isCarried(b, "hermes/state.db"));
+  assert(isCarried(b, "hermes/sessions/2026/a.json"));
+  assert(!isCarried(b, "home/seth/.aws/credentials"));
+  assert(!isCarried(b, "hermes/state.dbx"));
+  assert(!isCarried(b, "tools/funes"));
 });

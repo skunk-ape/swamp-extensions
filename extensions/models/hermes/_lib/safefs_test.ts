@@ -2,6 +2,8 @@ import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
 import {
   assertNoSymlinks,
   ensureDirSafe,
+  privateTempDir,
+  readRegularFile,
   SymlinkRefused,
   writeFileSafe,
 } from "./safefs.ts";
@@ -85,5 +87,32 @@ Deno.test("a path that climbs out of the root is refused", async () => {
     );
   } finally {
     await Deno.remove(base, { recursive: true });
+  }
+});
+
+// Every bot can write /tmp and watch it for new names; the operator's temp
+// directories live where no sandbox is granted anything.
+Deno.test("private temp dirs live under .runtime/.tmp, owner-only", async () => {
+  const root = await Deno.makeTempDir({ prefix: "hermes-priv-" });
+  try {
+    const t = await privateTempDir(root, "fetch-");
+    assert(t.startsWith(`${root}/.runtime/.tmp/fetch-`));
+    assertEquals((await Deno.stat(`${root}/.runtime/.tmp`)).mode! & 0o777, 0o700);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a read refuses a FIFO the bot left, rather than hang on it", async () => {
+  const root = await Deno.makeTempDir({ prefix: "hermes-fifo-" });
+  try {
+    await Deno.mkdir(`${root}/hermes`);
+    const mk = await new Deno.Command("mkfifo", { args: [`${root}/hermes/config.yaml`] })
+      .output();
+    assert(mk.success);
+    await assertRejects(() => readRegularFile(root, "hermes/config.yaml"), SymlinkRefused);
+    assertEquals(await readRegularFile(root, "hermes/absent.yaml"), null);
+  } finally {
+    await Deno.remove(root, { recursive: true });
   }
 });
