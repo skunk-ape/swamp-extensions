@@ -1,0 +1,22 @@
+{
+  "extension": "@skunk-ape/is-it-us",
+  "version": "2026.10.28.1",
+  "reviewedAt": "2026-10-28T19:29:21Z",
+  "dimensions": [
+    { "id": "credentials-secrets", "verdict": "pass", "note": "No credentials: all three endpoints are public. The ntfy topic lives in the user's vault and is consumed by @mgreten/ntfy-notify, not this extension." },
+    { "id": "logging-quality", "verdict": "pass", "note": "Info on entry (providers read) and completion (open/new/resolved counts), warning per unreachable provider, structured placeholders throughout." },
+    { "id": "error-handling", "verdict": "pass", "note": "Per-provider failures (HTTP status, timeout, unparseable body) are recorded on that provider rather than thrown, by design: one slow page must not hide the other two. The method throws before any write when every provider fails. HTTP errors record the status, not the body." },
+    { "id": "testing-completeness", "verdict": "pass", "note": "21 tests against real responses saved 2026-10-28: parsing, UTF-16 decoding, region filter, new/resolved detection, single and consecutive provider outages, the method with stubbed fetch (success, one 503, garbled body, all unreachable with no writes), and the report's success, failed-run and missing-summary paths." },
+    { "id": "idempotency-resilience", "verdict": "pass", "note": "Read-only. New-incident state carries across unreachable checks (a bug where two consecutive failures re-alerted on recovery was found in this review and fixed, with a regression test). Removing a provider or region from config makes its incidents read as resolved, and re-adding makes them new again; that is intended." },
+    { "id": "api-contracts", "verdict": "pass", "note": "Statuspage summary.json is documented; the AWS currentevents feed is public but undocumented, so its shape is validated (must be an array) and a format change reads as unreachable rather than all clear. Bodies are read whole; the largest (Cloudflare) is about 230 KB. No pagination or rate limits apply to one GET per check." },
+    { "id": "resource-management", "verdict": "pass", "note": "Non-OK response bodies are cancelled; every fetch has a timeout combined with the run's abort signal. Nothing is created outside swamp data." },
+    { "id": "published-surface-hygiene", "verdict": "pass", "note": "Fixtures are trimmed public status responses with no private identifiers; README uses public endpoints and a vault reference for the ntfy topic. No IP literals." },
+    { "id": "schema-strictness", "verdict": "pass", "note": "Plain z.object schemas, no passthrough; every field the workflow reads by CEL (newIncidentCount, alertTitle, alertMessage, alertPriority, checkedAt) is declared." },
+    { "id": "lifetime-gc", "verdict": "pass", "note": "provider: 30d, 50 versions. summary: infinite, 50 versions, since it carries the seen-incident state the next check compares against." },
+    { "id": "crud-completeness", "verdict": "na", "note": "Read-only status reader; it manages no resource." },
+    { "id": "preflight-checks", "verdict": "na", "note": "No mutating methods." },
+    { "id": "instance-names", "verdict": "pass", "note": "provider-github, provider-cloudflare, provider-aws and summary; unique across specs." },
+    { "id": "data-access", "verdict": "pass", "note": "Previous summary read with readResource." },
+    { "id": "version-upgrades", "verdict": "na", "note": "Initial version." }
+  ]
+}

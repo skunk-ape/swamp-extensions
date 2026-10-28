@@ -10,6 +10,7 @@ repository around them to develop and test against.
 | --- | --- |
 | [`@skunk-ape/coros`](extensions/coros/) | COROS sleep, recovery, training data and workouts as swamp data, from the official MCP server and the Training Hub API. |
 | [`@skunk-ape/hermes`](extensions/hermes/) | Run Hermes agents on macOS or Linux, each confined to its own directory by a nono sandbox. |
+| [`@skunk-ape/is-it-us`](extensions/is-it-us/) | Check the GitHub, Cloudflare and AWS status pages, roll them into one report, and push to ntfy when an incident is new. |
 | [`@skunk-ape/restic-backup`](extensions/restic-backup/) | Nightly restic backups of a whole machine, with live SQLite databases copied consistently, on a repository several machines can share. |
 | [`@skunk-ape/rocky-road`](extensions/rocky-road/) | Chunked implementation for `@swamp/software-factory`: a factory definition, a board report, and the skill that drives it. |
 | [`@skunk-ape/stef`](extensions/stef/) | Simple Technical English Flavored: a deterministic prose linter, a mechanical fixer, and a bounded LLM rewrite loop. |
