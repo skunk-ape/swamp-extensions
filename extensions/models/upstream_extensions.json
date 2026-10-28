@@ -4,7 +4,6 @@
     "pulledAt": "2026-08-28T20:40:22.829Z",
     "files": [
       ".claude/skills/software-factory",
-      ".swamp/bundles/a324fda6/software_factory.js",
       ".swamp/pulled-extensions/@swamp/software-factory/files/LICENSE.txt",
       ".swamp/pulled-extensions/@swamp/software-factory/files/README.md",
       ".swamp/pulled-extensions/@swamp/software-factory/manifest.yaml",
@@ -18,8 +17,7 @@
       ".swamp/pulled-extensions/@swamp/software-factory/models/_lib/run_names.ts",
       ".swamp/pulled-extensions/@swamp/software-factory/models/_lib/summary.ts",
       ".swamp/pulled-extensions/@swamp/software-factory/models/software_factory.ts",
-      ".swamp/pulled-extensions/@swamp/software-factory/reports/work_item_summary_report.ts",
-      ".swamp/report-bundles/637144ef/work_item_summary_report.js"
+      ".swamp/pulled-extensions/@swamp/software-factory/reports/work_item_summary_report.ts"
     ],
     "checksum": "29622d1cb0a3bffabf82f68b3d6cbe7e18efcac2c38458b7231e436eb91ab55f",
     "filesChecksum": "b67885110295b63236743cdc42522703b2c5b18fae873892420b72e662c6c9d7",
@@ -29,7 +27,6 @@
     "version": "2026.08.26.1",
     "pulledAt": "2026-08-28T20:41:34.519Z",
     "files": [
-      ".swamp/bundles/da06fc84/cli_agent.js",
       ".swamp/pulled-extensions/@mgreten/cli-agent/files/LICENSE.txt",
       ".swamp/pulled-extensions/@mgreten/cli-agent/files/README.md",
       ".swamp/pulled-extensions/@mgreten/cli-agent/files/cli_agent.sandbox.sb",
@@ -46,7 +43,6 @@
     "version": "2026.07.20.7",
     "pulledAt": "2026-08-21T15:43:41.953Z",
     "files": [
-      ".swamp/bundles/e66d9778/brief_sanitize.js",
       ".swamp/pulled-extensions/@mgreten/brief-sanitize/files/LICENSE.txt",
       ".swamp/pulled-extensions/@mgreten/brief-sanitize/files/README.md",
       ".swamp/pulled-extensions/@mgreten/brief-sanitize/manifest.yaml",
