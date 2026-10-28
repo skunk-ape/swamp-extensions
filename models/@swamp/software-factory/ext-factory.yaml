@@ -5,7 +5,7 @@ name: ext-factory
 version: 1
 tags: {}
 
-# The factory that governs work on the extensions in this monorepo (fka, stef,
+# The factory that governs work on the extensions in this monorepo (stef, hermes,
 # and whatever comes next).
 #
 # The issue lives in the factory itself — there is no external tracker to sync —
@@ -17,7 +17,7 @@ tags: {}
 # first. Both transitions share the issue-approval gate, so the choice of path
 # is made once, by the person who approved the issue.
 #
-# Work items are named <EXT>-<n>: FKA-1, STEF-1.
+# Work items are named <EXT>-<n>: STEF-1, HERMES-1.
 globalArguments:
   stages:
     - id: intake
@@ -43,7 +43,7 @@ globalArguments:
               title: { type: string, minLength: 1 }
               extension:
                 type: string
-                description: The extension this issue is against, e.g. fka.
+                description: The extension this issue is against, e.g. stef.
                 minLength: 1
               motivation:
                 type: string
