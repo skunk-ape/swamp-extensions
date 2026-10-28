@@ -1,0 +1,49 @@
+id: 33d43ef1-f156-47ed-b92d-8aafba007c09
+name: is-it-us
+description: >-
+  Check GitHub, Cloudflare and AWS status pages, roll them up, and push to
+  ntfy when an incident appears that the previous check had not seen.
+tags: {}
+vaults: [ntfy]
+jobs:
+  - name: main
+    description: Check upstream status, then push only what is new
+    steps:
+      - name: check
+        description: Read the three public status pages and roll them up
+        task:
+          type: behavior
+          behavior: is-it-us
+          methodName: check
+        dependsOn: []
+        weight: 0
+        allowFailure: false
+      - name: notify
+        description: Push the new incidents to ntfy; skipped when nothing is new
+        # Truthy guard skips the step. Null-safe so it reads this run's summary.
+        guard: >-
+          ${{ data.latest("is-it-us", "summary").?attributes.?newIncidentCount.orValue(0) == 0 }}
+        task:
+          type: behavior
+          behavior: is-it-us-ntfy
+          # sendOutboxTransport throws when ntfy rejects the POST, so a push
+          # that did not arrive fails the run; `send` would report success.
+          methodName: sendOutboxTransport
+          inputs:
+            idempotencyKey: >-
+              ${{ "is-it-us-" + data.latest("is-it-us", "summary").?attributes.?checkedAt.orValue("") }}
+            payload:
+              title: ${{ data.latest("is-it-us", "summary").?attributes.?alertTitle.orValue("") }}
+              message: ${{ data.latest("is-it-us", "summary").?attributes.?alertMessage.orValue("") }}
+            options:
+              priority: ${{ data.latest("is-it-us", "summary").?attributes.?alertPriority.orValue(3) }}
+              tags: [warning]
+        dependsOn:
+          - step: check
+            condition:
+              type: succeeded
+        weight: 0
+        allowFailure: false
+    dependsOn: []
+    weight: 0
+version: 1

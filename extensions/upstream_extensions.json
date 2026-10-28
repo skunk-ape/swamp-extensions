@@ -54,5 +54,19 @@
     "filesChecksum": "c635fddb23a1f1a93e092c5d9f5bc1e1c0c762a96741d884903e09156d3c5752",
     "serverUrl": "https://swamp-club.com",
     "publishedChannel": "stable"
+  },
+  "@mgreten/ntfy-notify": {
+    "version": "2026.10.14.1",
+    "pulledAt": "2026-10-28T19:20:19.417Z",
+    "files": [
+      ".swamp/pulled-extensions/@mgreten/ntfy-notify/files/LICENSE.txt",
+      ".swamp/pulled-extensions/@mgreten/ntfy-notify/files/README.md",
+      ".swamp/pulled-extensions/@mgreten/ntfy-notify/manifest.yaml",
+      ".swamp/pulled-extensions/@mgreten/ntfy-notify/models/ntfy_notify.ts"
+    ],
+    "checksum": "2d2ec1817f33e772b5e5b9d344037eef10ed92a748112ce53d65606f3a142ddc",
+    "filesChecksum": "49170129c9328f538fa29097e96be8cc732fbc5508d18c6b49e9c799bf9865a3",
+    "serverUrl": "https://swamp-club.com",
+    "publishedChannel": "stable"
   }
 }

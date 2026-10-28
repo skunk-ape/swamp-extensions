@@ -1,0 +1,10 @@
+type: '@mgreten/ntfy-notify'
+typeVersion: 2026.08.23.1
+id: 59e7c66f-7e7c-4659-a465-bf1b3a46f8d2
+name: is-it-us-ntfy
+version: 1
+tags: {}
+globalArguments:
+  ntfyUrl: https://ntfy.sh
+  defaultTopic: ${{ vault.get(ntfy, NTFY_TOPIC) }}
+methods: {}
