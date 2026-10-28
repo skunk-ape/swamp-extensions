@@ -1,0 +1,65 @@
+manifestVersion: 1
+name: "@skunk-ape/is-it-us"
+version: 2026.10.28.1
+license: MIT
+description: |
+  When something breaks, find out whether it is upstream before assuming it is
+  you.
+
+  `check` reads the public status pages for GitHub, Cloudflare and AWS, writes
+  one record per provider, and rolls them up into a single summary. The rollup
+  works out which open incidents are new since the previous check and carries
+  a ready-made alert title, message and ntfy priority.
+
+  ## Alerts on what is new, not on what is open
+
+  A push fires when an incident appears that the last check had not seen. An
+  outage that stays open for hours, or an AWS regional event that stays open
+  for months, pushes once. A status page that is briefly unreachable keeps its
+  incidents marked as seen, so it does not re-alert when it comes back. The
+  first check alerts on everything already open, since that is when watching
+  began.
+
+  ## Pieces
+
+  - `@skunk-ape/is-it-us` — the behavior. One read-only method, `check`: one
+    GET per provider. It fails only when every provider is unreachable, since a
+    rollup of nothing would read as all clear.
+  - `@skunk-ape/is-it-us/rollup` — a report attached to the behavior by
+    default: one table of providers, their open incidents, new ones marked.
+
+  The push goes through `@mgreten/ntfy-notify`. The README has a workflow that
+  runs `check` and then `send`, guarded so `send` is skipped when nothing is
+  new.
+
+  ## Sources
+
+  GitHub and Cloudflare publish Atlassian Statuspage `summary.json`. AWS
+  publishes its Health Dashboard feed as UTF-16 JSON, which is decoded before
+  parsing. Scheduled maintenance is not counted as an incident.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+behaviors:
+  - is_it_us.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports:
+  - rollup_report.ts
+skills: []
+additionalFiles:
+  - README.md
+  - LICENSE
+dependencies:
+  - "@mgreten/ntfy-notify"
+labels:
+  - status
+  - incidents
+  - github
+  - cloudflare
+  - aws
+  - ntfy
