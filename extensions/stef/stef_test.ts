@@ -6,8 +6,8 @@
 // is the branch worth testing without a model call; the generation step itself
 // belongs to `claude -p`.
 
-import { assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1";
-import { model } from "./stef.ts";
+import { assertEquals, assertRejects, assertStringIncludes } from "jsr:@std/assert@1.0.19";
+import { behavior } from "./stef.ts";
 
 // --- harness ---------------------------------------------------------------
 
@@ -34,7 +34,7 @@ function harness(opts: {
     writes,
     logs,
     ctx: {
-      globalArgs: model.globalArguments.parse(opts.globals ?? {}),
+      globalArgs: behavior.globalArguments.parse(opts.globals ?? {}),
       signal: new AbortController().signal,
       logger: {
         info: (msg: string, props?: Record<string, unknown>) => {
@@ -62,8 +62,8 @@ function harness(opts: {
 type Method = { arguments: any; execute: (a: any, c: any) => Promise<any> };
 
 /** Parse through the method's own schema, so defaults are under test too. */
-function run(name: keyof typeof model.methods, input: unknown, h: ReturnType<typeof harness>) {
-  const method = model.methods[name] as unknown as Method;
+function run(name: keyof typeof behavior.methods, input: unknown, h: ReturnType<typeof harness>) {
+  const method = behavior.methods[name] as unknown as Method;
   return method.execute(method.arguments.parse(input), h.ctx);
 }
 
@@ -402,7 +402,7 @@ Deno.test("record: the session owns source and textType, not the submission", as
 // --- published contract ----------------------------------------------------
 
 Deno.test("every method writes a resource the model declares", async () => {
-  const specs = Object.keys(model.resources);
+  const specs = Object.keys(behavior.resources);
   const h = harness({ stored: {} });
   for (const method of ["lint", "normalize", "rewrite", "start"] as const) {
     await run(method, { text: CLEAN }, h);
@@ -424,7 +424,7 @@ Deno.test("written artifacts validate against their declared schemas", async () 
 
   assertEquals(h.writes.length, 5);
   for (const w of h.writes) {
-    const spec = model.resources[w.spec as keyof typeof model.resources];
+    const spec = behavior.resources[w.spec as keyof typeof behavior.resources];
     spec.schema.parse(w.data);
   }
 });
@@ -458,6 +458,6 @@ Deno.test("record logs the attempt count and the phase it landed in", async () =
 });
 
 Deno.test("model type and version are the published identifiers", () => {
-  assertEquals(model.type, "@skunk-ape/stef");
-  assertEquals(/^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(model.version), true);
+  assertEquals(behavior.type, "@skunk-ape/stef");
+  assertEquals(/^\d{4}\.\d{2}\.\d{2}\.\d+$/.test(behavior.version), true);
 });

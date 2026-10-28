@@ -39,17 +39,17 @@ enforces less than it claims, so `install` refuses on either unless you pass
 ## Quick start
 
 ```bash
-swamp model create @skunk-ape/hermes/bot mybot
-swamp model method run mybot scaffold --input slug=mybot
+swamp behavior create @skunk-ape/hermes/bot mybot
+swamp behavior run mybot scaffold --input slug=mybot
 
 $EDITOR models/@skunk-ape/hermes/bot/mybot.yaml   # egress is left empty on purpose
 
-swamp model method run mybot render               # write the profile, launchers and units
-swamp model method run mybot provision            # build the runtime and the workdir
+swamp behavior run mybot render               # write the profile, launchers and units
+swamp behavior run mybot provision            # build the runtime and the workdir
 swamp vault put mybot-secrets anthropic-key        # prompts for the value
 swamp vault put mybot-secrets telegram-bot-token   # prompts for the value
-swamp model method run mybot verify               # prove the boundary
-swamp model method run mybot install              # load it into launchd/systemd
+swamp behavior run mybot verify               # prove the boundary
+swamp behavior run mybot install              # load it into launchd/systemd
 ```
 
 ## The declaration
@@ -240,9 +240,9 @@ To move bots to a newer funes:
 
 ```bash
 funes update                                          # on the host
-swamp model method run <slug> uninstall
-swamp model method run <slug> provision --input restageFunes=true
-swamp model method run <slug> install
+swamp behavior run <slug> uninstall
+swamp behavior run <slug> provision --input restageFunes=true
+swamp behavior run <slug> install
 ```
 
 `restageFunes` replaces the staged binary, fetches the matching integration, and
@@ -255,7 +255,7 @@ wrapper exits at once, since the plugin does the indexing.
 Earlier versions kept the checkout, venv, interpreter and `funes` inside the
 workdir. For each existing bot:
 
-1. Stop it: `swamp model method run <slug> uninstall`.
+1. Stop it: `swamp behavior run <slug> uninstall`.
 2. `render` — the launchers and profile now point at the runtime.
 3. `provision` — builds a fresh runtime. It never copies the old code (the bot
    could have modified it), updates the two `tools/` paths in `config.yaml`, and
@@ -293,10 +293,10 @@ and the `config.yaml` the agent has been editing since it was provisioned.
 
 ```bash
 # on the old machine, with the gateway stopped
-swamp model method run mybot snapshot
+swamp behavior run mybot snapshot
 
 # on the new one, after render + provision
-swamp model method run mybot restore \
+swamp behavior run mybot restore \
   --input archive=/path/to/mybot-....tar.gz \
   --input fromHome=/Users/you
 ```

@@ -172,7 +172,7 @@ function today(tz: string, offsetDays = 0): string {
 // --- model -----------------------------------------------------------------
 
 /** The `@skunk-ape/coros/hub` behavior type. */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/coros/hub",
   version: "2026.10.24.1",
   globalArguments: GlobalArgsSchema,

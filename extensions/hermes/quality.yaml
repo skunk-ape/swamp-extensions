@@ -1,0 +1,4 @@
+version: 1
+accept:
+  - rule: behavior-spelling
+    reason: Written with the current behavior spelling on purpose. Installing needs a swamp client from after the rename.

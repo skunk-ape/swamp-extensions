@@ -3,9 +3,9 @@
 A daily digest of Swamp Club's public Lab, computed rather than written.
 
 ```bash
-swamp model create @skunk-ape/swamp-lab swamp-lab
-swamp model method run swamp-lab sync
-swamp model method run swamp-lab digest
+swamp behavior create @skunk-ape/swamp-lab swamp-lab
+swamp behavior run swamp-lab sync
+swamp behavior run swamp-lab digest
 swamp data query 'modelName == "swamp-lab" && name == "current"' --select 'attributes.markdown'
 ```
 

@@ -360,7 +360,7 @@ function sessionPacket(
     ? `Stop. ${attempt} of ${maxAttempts} attempts used and ${base.blockingCount} ` +
       `blocking finding(s) remain. Raise maxAttempts or fix them by hand.`
     : `Rewrite the \`text\` field to fix the ${base.blockingCount} blocking finding(s), ` +
-      `then submit it with: swamp model method run <model> record ` +
+      `then submit it with: swamp behavior run <model> record ` +
       `--input session=${base.session} --input text="<your rewrite>". ` +
       `Attempt ${attempt + 1} of ${maxAttempts}.`;
 
@@ -376,7 +376,7 @@ function sessionPacket(
  * hold state and enforce the attempt cap while a calling agent does the
  * writing.
  */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/stef",
   version: "2026.10.24.1",
   globalArguments: GlobalArgsSchema,

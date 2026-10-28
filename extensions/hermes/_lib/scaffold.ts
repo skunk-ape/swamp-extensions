@@ -1,6 +1,6 @@
 // A starter declaration for a new bot.
 //
-// `swamp model create` writes a stub with `globalArguments: {}`, which is
+// `swamp behavior create` writes a stub with `globalArguments: {}`, which is
 // syntactically a model and semantically nothing: every required field is
 // absent, every default is invisible, and the fields that actually matter —
 // what this bot may reach on the network, what it may read outside its workdir
@@ -27,7 +27,7 @@ export type ScaffoldInput = {
   displayName: string;
   vault: string;
   typeVersion: string;
-  /** Reuse the id of a stub written by `swamp model create`, so scaffolding an
+  /** Reuse the id of a stub written by `swamp behavior create`, so scaffolding an
    * already-created model keeps its identity and its data lineage. */
   id: string;
 };

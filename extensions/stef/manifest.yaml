@@ -68,7 +68,7 @@ repository: 'https://github.com/skunk-ape/swamp-extensions'
 paths:
   base: manifest
 
-models:
+behaviors:
   - stef.ts
 workflows: []
 vaults: []

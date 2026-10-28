@@ -5,11 +5,11 @@
 # wave at a time and can adapt the breakdown mid-flight.
 #
 # Usage:
-#   swamp model create @swamp/software-factory chunked
-#   swamp model edit chunked        # paste this under globalArguments
-#   swamp model method run chunked validate
-#   swamp model method run chunked describe
-#   swamp model method run chunked start --input workItem=issue-42
+#   swamp behavior create @swamp/software-factory chunked
+#   swamp behavior edit chunked        # paste this under globalArguments
+#   swamp behavior run chunked validate
+#   swamp behavior run chunked describe
+#   swamp behavior run chunked start --input workItem=issue-42
 #
 # In the definition file, as a top-level sibling of globalArguments:
 #   reports:

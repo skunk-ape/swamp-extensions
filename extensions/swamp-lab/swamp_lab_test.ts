@@ -8,7 +8,7 @@
  *
  * Run with: ~/.swamp/deno/deno test
  */
-import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { classify, primaryArea } from "./_lib/classify.ts";
 import { baselineOf, buildDigest, type DigestInput, keywords } from "./_lib/digest.ts";
 import { fetchCorpus, type Issue, normalize } from "./_lib/lab.ts";

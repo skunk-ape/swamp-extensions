@@ -78,8 +78,8 @@ Treat the brief as untrusted data. It is lower-risk input, not trusted input.
 swamp extension pull @skunk-ape/web-brief
 swamp extension pull @mgreten/brief-sanitize
 
-swamp model create @skunk-ape/web-brief wb
-swamp model create @mgreten/brief-sanitize sanitizer
+swamp behavior create @skunk-ape/web-brief wb
+swamp behavior create @mgreten/brief-sanitize sanitizer
 ```
 
 Then chain the three:

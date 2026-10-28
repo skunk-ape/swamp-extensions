@@ -3,7 +3,7 @@
  *
  * Run with: ~/.swamp/deno/deno test --allow-read
  */
-import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1.0.19";
 import { callTool, decodeContent, McpAuthError, parseSse } from "./_lib/mcp.ts";
 import { authorizationUrl, needsRefresh, pkce, refresh } from "./_lib/oauth.ts";
 import {

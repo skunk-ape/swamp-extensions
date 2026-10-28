@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
 import { installIntegration, toolPath, verifyIntegration } from "./funes.ts";
 import { run } from "./proc.ts";
 

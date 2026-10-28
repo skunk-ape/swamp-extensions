@@ -3,7 +3,7 @@
  *
  * Run with: ~/.swamp/deno/deno test
  */
-import { assertEquals, assertStringIncludes, assertThrows } from "jsr:@std/assert@1";
+import { assertEquals, assertStringIncludes, assertThrows } from "jsr:@std/assert@1.0.19";
 import {
   distanceMetres,
   durationSeconds,

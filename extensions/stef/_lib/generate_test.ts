@@ -1,4 +1,4 @@
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals } from "jsr:@std/assert@1.0.19";
 import { claudeArgs } from "./generate.ts";
 
 Deno.test("claudeArgs: the rewrite session holds no tools or MCP servers", () => {

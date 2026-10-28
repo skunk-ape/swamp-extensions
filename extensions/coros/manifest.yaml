@@ -49,7 +49,7 @@ repository: "https://github.com/skunk-ape/swamp-extensions"
 paths:
   base: manifest
 
-models:
+behaviors:
   - official.ts
   - hub.ts
 workflows: []

@@ -11,8 +11,8 @@ import {
   assertEquals,
   assertRejects,
   assertThrows,
-} from "jsr:@std/assert@1";
-import { model } from "./restic_backup.ts";
+} from "jsr:@std/assert@1.0.19";
+import { behavior } from "./restic_backup.ts";
 import {
   buildEnv,
   errorOf,
@@ -304,7 +304,7 @@ function fakeCtx(globalArgs: Record<string, unknown>) {
       logs.push(
         `${level} ${msg.replace(/\{(\w+)\}/g, (_, k) => String(props[k]))}`,
       );
-  const g = model.globalArguments.parse(globalArgs);
+  const g = behavior.globalArguments.parse(globalArgs);
   return {
     store,
     logs,
@@ -360,7 +360,7 @@ async function fixture() {
     hostname: Deno.hostname(),
   };
   const init = fakeCtx(args);
-  await model.methods.init.execute({ s3Lifecycle: true }, init.ctx);
+  await behavior.methods.init.execute({ s3Lifecycle: true }, init.ctx);
   return { d, src, db, repo, args };
 }
 
@@ -383,7 +383,7 @@ Deno.test({
   fn: async () => {
     const { d, src, db, repo, args } = await fixture();
     const { ctx, store } = fakeCtx(args);
-    await model.methods.backup.execute({ dryRun: false }, ctx);
+    await behavior.methods.backup.execute({ dryRun: false }, ctx);
 
     // deno-lint-ignore no-explicit-any
     const last = (store.get("status") as any).lastBackup;
@@ -404,7 +404,7 @@ Deno.test({
 
     // The staged copy restores as a working database.
     const out = `${d}/out`;
-    await model.methods.restore.execute(
+    await behavior.methods.restore.execute(
       { target: out, snapshot: "latest" },
       ctx,
     );
@@ -424,7 +424,7 @@ Deno.test({
     await touch(`${src}/secret.txt`, "no");
     await Deno.chmod(`${src}/secret.txt`, 0o000);
     const { ctx, store, logs } = fakeCtx(args);
-    await model.methods.backup.execute({ dryRun: false }, ctx);
+    await behavior.methods.backup.execute({ dryRun: false }, ctx);
     // deno-lint-ignore no-explicit-any
     const last = (store.get("status") as any).lastBackup;
     assertEquals(last.complete, false);
@@ -442,10 +442,10 @@ Deno.test({
   fn: async () => {
     const { d, args } = await fixture();
     const { ctx, store } = fakeCtx(args);
-    await model.methods.backup.execute({ dryRun: true }, ctx);
+    await behavior.methods.backup.execute({ dryRun: true }, ctx);
     // deno-lint-ignore no-explicit-any
     assertEquals((store.get("status") as any).lastBackup.dryRun, true);
-    await model.methods.snapshots.execute({}, ctx);
+    await behavior.methods.snapshots.execute({}, ctx);
     // deno-lint-ignore no-explicit-any
     assertEquals((store.get("snapshots") as any).count, 0);
     await Deno.remove(d, { recursive: true });
@@ -464,7 +464,7 @@ Deno.test({
       hostname: "otherhost",
     });
     for (let i = 0; i < 3; i++) {
-      await model.methods.backup.execute({ dryRun: false }, mine.ctx);
+      await behavior.methods.backup.execute({ dryRun: false }, mine.ctx);
     }
     // restic records the real hostname; override it for the other machine.
     const r = await new Deno.Command("restic", {
@@ -485,7 +485,7 @@ Deno.test({
     }).output();
     assertEquals(r.code, 0);
 
-    await model.methods.forget.execute(
+    await behavior.methods.forget.execute(
       {
         keepLast: 1,
         keepDaily: 0,
@@ -508,7 +508,7 @@ Deno.test({
     const unscoped = fakeCtx({ ...args, machineTag: "" });
     await assertRejects(
       () =>
-        model.methods.forget.execute(
+        behavior.methods.forget.execute(
           { prune: false, dryRun: true },
           unscoped.ctx,
         ),
@@ -523,7 +523,7 @@ Deno.test({
 Deno.test("backup refuses an empty path list", async () => {
   const { ctx } = fakeCtx({ repository: "/nonexistent", resticPassword: "p" });
   await assertRejects(
-    () => model.methods.backup.execute({ dryRun: false }, ctx),
+    () => behavior.methods.backup.execute({ dryRun: false }, ctx),
     Error,
     "No paths",
   );
@@ -596,7 +596,7 @@ Deno.test("methods remove the GCS key file even when restic fails", async () => 
   const before = new Set(
     [...Deno.readDirSync(Deno.env.get("TMPDIR") ?? "/tmp")].map((e) => e.name),
   );
-  await assertRejects(() => model.methods.snapshots.execute({}, ctx));
+  await assertRejects(() => behavior.methods.snapshots.execute({}, ctx));
   const leaked = [...Deno.readDirSync(Deno.env.get("TMPDIR") ?? "/tmp")]
     .map((e) => e.name)
     .filter((n) => n.startsWith("restic-backup-") && !before.has(n));

@@ -735,7 +735,7 @@ async function writeStatus(
  * macOS only, deliberately: launchd is macOS, and `nono run` versus `nono wrap`
  * is a macOS-proxy fact.
  */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/hermes/bot",
   version: "2026.09.22.1",
   globalArguments: BotSchema,
@@ -794,7 +794,7 @@ export const model = {
           `${ctx.repoDir}/models/@skunk-ape/hermes/bot/${args.slug}.yaml`;
         const existing = await readIfPresent(path);
 
-        // Keep the id of a stub written by `swamp model create`, so scaffolding
+        // Keep the id of a stub written by `swamp behavior create`, so scaffolding
         // an already-created model keeps its identity and its data lineage
         // instead of orphaning both.
         let id: string = crypto.randomUUID();
@@ -815,7 +815,7 @@ export const model = {
           slug: args.slug,
           displayName,
           vault: args.vault || `${args.slug}-secrets`,
-          typeVersion: model.version,
+          typeVersion: behavior.version,
           id,
         });
 
@@ -833,7 +833,7 @@ export const model = {
           { slug: args.slug },
         );
         ctx.logger.info(
-          "Then: swamp model method run {slug} render --input check=true, provision, install.",
+          "Then: swamp behavior run {slug} render --input check=true, provision, install.",
           { slug: args.slug },
         );
         return {};

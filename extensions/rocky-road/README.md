@@ -54,10 +54,10 @@ Pull the extension, create a factory instance, and paste the definition in:
 
 ```bash
 swamp extension pull @skunk-ape/rocky-road
-swamp model create @swamp/software-factory my-factory
-swamp model edit my-factory     # paste factory.yaml under globalArguments
-swamp model method run my-factory validate
-swamp model method run my-factory start --input workItem=<ref>
+swamp behavior create @swamp/software-factory my-factory
+swamp behavior edit my-factory     # paste factory.yaml under globalArguments
+swamp behavior run my-factory validate
+swamp behavior run my-factory start --input workItem=<ref>
 ```
 
 Scope the board report in the definition so it fires on `status` and nowhere
@@ -74,7 +74,7 @@ it derives ready/blocked state, shows the current wave, and calls out any
 chunk that needs a human:
 
 ```bash
-swamp model method run my-factory status --input workItem=<ref>
+swamp behavior run my-factory status --input workItem=<ref>
 ```
 
 Or pull the same board as its own report, for example as markdown:

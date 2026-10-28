@@ -11,7 +11,7 @@
 // through a constructed `ReportContext`-shaped mock rather than importing
 // internals directly.
 
-import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { report } from "./breakdown_board.ts";
 
 const FACTORY_TYPE = "@swamp/software-factory";

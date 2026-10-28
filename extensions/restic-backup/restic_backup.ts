@@ -218,7 +218,7 @@ function writeSnapshots(ctx: Ctx, snapshots: Snapshot[]) {
 const mb = (n: number) => Math.round(n / 1024 / 1024);
 
 /** The `@skunk-ape/restic-backup` behavior type. */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/restic-backup",
   version: "2026.10.24.2",
   globalArguments: GlobalArgsSchema,
@@ -816,7 +816,7 @@ export const model = {
   },
 };
 
-for (const m of Object.values(model.methods)) {
+for (const m of Object.values(behavior.methods)) {
   // deno-lint-ignore no-explicit-any
   (m as any).execute = withEnv(m.execute);
 }

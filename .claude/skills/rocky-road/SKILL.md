@@ -131,7 +131,7 @@ stranded chunk without being asked.
 the chunks, which is the question a human asks mid-run:
 
 ```bash
-swamp model method run <factory> status --input workItem=<ref>
+swamp behavior run <factory> status --input workItem=<ref>
 swamp report get @skunk-ape/rocky-road/breakdown-board --model <factory> --markdown
 ```
 
@@ -158,11 +158,11 @@ two approvals of the breakdown, which is the trade this design makes.
 
 ```bash
 swamp extension pull @skunk-ape/rocky-road
-swamp model create @swamp/software-factory <factory>
-swamp model edit <factory>     # paste factory.yaml under globalArguments
-swamp model method run <factory> validate
-swamp model method run <factory> describe
-swamp model method run <factory> start --input workItem=<ref>
+swamp behavior create @swamp/software-factory <factory>
+swamp behavior edit <factory>     # paste factory.yaml under globalArguments
+swamp behavior run <factory> validate
+swamp behavior run <factory> describe
+swamp behavior run <factory> start --input workItem=<ref>
 ```
 
 `factory.yaml` and the constraints files arrive under

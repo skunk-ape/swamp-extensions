@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
 import { BotSchema } from "./decl.ts";
 import type { Bot } from "./decl.ts";
 import {

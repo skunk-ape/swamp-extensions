@@ -1,6 +1,6 @@
-import { assert, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { scaffoldYaml } from "./scaffold.ts";
-import { parse as parseYaml } from "jsr:@std/yaml@1";
+import { parse as parseYaml } from "jsr:@std/yaml@1.2.0";
 
 function scaffold(over: Record<string, string> = {}): string {
   return scaffoldYaml({

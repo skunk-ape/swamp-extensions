@@ -109,7 +109,7 @@ const DetailSchema = z.object({
 });
 
 /** The `@skunk-ape/swamp-lab` behavior type. */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/swamp-lab",
   version: "2026.10.24.1",
   globalArguments: GlobalArgsSchema,

@@ -103,7 +103,7 @@ add their own.
 `human-approval` gate, so execution cannot begin until a human runs:
 
 ```
-swamp model method run rocky-road approve --input workItem=issue-42 \
+swamp behavior run rocky-road approve --input workItem=issue-42 \
   --input gateId=breakdown-approval
 ```
 
@@ -111,14 +111,14 @@ Before approving, the human reads the breakdown. Three ways, increasing detail:
 
 ```bash
 # What is this work item waiting on right now, and which gates are unmet?
-swamp model method run rocky-road status --input workItem=issue-42
+swamp behavior run rocky-road status --input workItem=issue-42
 
 # Just the chunk list, without pulling the whole envelope
 swamp data query --select attributes.payload.chunks \
   --name artifact-issue-42-breakdown
 
 # Everything, as markdown — statically rendered, no LLM
-swamp model method run rocky-road summary --input workItem=issue-42
+swamp behavior run rocky-road summary --input workItem=issue-42
 ```
 
 ### Watch it evolve
@@ -183,7 +183,7 @@ version. Two ways to reject instead:
 
 ```bash
 # Refuse the current breakdown outright — blocks the gate for this cycle
-swamp model method run rocky-road reject --input workItem=issue-42 \
+swamp behavior run rocky-road reject --input workItem=issue-42 \
   --input gateId=breakdown-approval --input reason="missing the migration step"
 ```
 
@@ -541,7 +541,7 @@ route that keeps that true, without a shared writable directory, is
 
 ```
 swamp serve --auth-mode token --host 127.0.0.1 --port 8899 --admins user:<you>
-swamp model method run <factory> status --input workItem=<ref> \
+swamp behavior run <factory> status --input workItem=<ref> \
   --server ws://127.0.0.1:8899 --token <name>.<secret>
 ```
 

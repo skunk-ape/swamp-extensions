@@ -7,7 +7,7 @@
  *
  * Run with: ~/.swamp/deno/deno test --allow-read
  */
-import { assertEquals } from "jsr:@std/assert@1";
+import { assertEquals } from "jsr:@std/assert@1.0.19";
 import {
   minutes,
   num,

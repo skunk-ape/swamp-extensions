@@ -23,7 +23,7 @@ costs a tangle.
 The board renders the same decision. Use it while a human is watching:
 
 ```bash
-swamp model method run <f> status --input workItem=<w>
+swamp behavior run <f> status --input workItem=<w>
 swamp report get @skunk-ape/rocky-road/breakdown-board --model <f> --markdown
 ```
 
@@ -33,7 +33,7 @@ swamp report get @skunk-ape/rocky-road/breakdown-board --model <f> --markdown
 but progress omits read as "not started", so keep them all in the payload.
 
 ```bash
-swamp model method run <f> record_artifact --input workItem=<w> \
+swamp behavior run <f> record_artifact --input workItem=<w> \
   --input name=progress --input payload='{
     "currentChunks": ["c2", "c3"],
     "chunks": [
@@ -43,7 +43,7 @@ swamp model method run <f> record_artifact --input workItem=<w> \
       {"id": "c4", "status": "pending"}
     ]
   }'
-swamp model method run <f> record_dispatch --input workItem=<w>
+swamp behavior run <f> record_dispatch --input workItem=<w>
 ```
 
 Then implement `c2` and `c3` in parallel, one subagent per chunk. Give each
@@ -53,7 +53,7 @@ Neither one then wanders into the other chunk's files.
 ## Close the wave and submit it
 
 ```bash
-swamp model method run <f> record_artifact --input workItem=<w> \
+swamp behavior run <f> record_artifact --input workItem=<w> \
   --input name=progress --input payload='{
     "currentChunks": ["c2", "c3"],
     "chunks": [
@@ -63,7 +63,7 @@ swamp model method run <f> record_artifact --input workItem=<w> \
       {"id": "c4", "status": "pending"}
     ]
   }'
-swamp model method run <f> advance --input workItem=<w> --input transition=submit_chunk
+swamp behavior run <f> advance --input workItem=<w> --input transition=submit_chunk
 ```
 
 Two `cel` gates guard this edge. `DEPS_NOT_DONE` means a chunk in the wave
@@ -77,7 +77,7 @@ another. Submit the dependency first and the dependent later.
 Merge the findings into one record. Name the chunk in every finding id:
 
 ```bash
-swamp model method run <f> record_artifact --input workItem=<w> \
+swamp behavior run <f> record_artifact --input workItem=<w> \
   --input name=chunk-review --input payload='{
     "findings": [
       {"id": "c3-1", "severity": "high", "category": "correctness",
@@ -90,7 +90,7 @@ An empty `findings` array is a clean review. With no critical or high finding
 open, `accept` is satisfied:
 
 ```bash
-swamp model method run <f> advance --input workItem=<w> --input transition=accept
+swamp behavior run <f> advance --input workItem=<w> --input transition=accept
 ```
 
 ## Rework a wave
@@ -100,8 +100,8 @@ them, and set them back to `in_progress`. Chunks that passed stay `done` and
 leave the wave.
 
 ```bash
-swamp model method run <f> advance --input workItem=<w> --input transition=rework
-swamp model method run <f> record_artifact --input workItem=<w> \
+swamp behavior run <f> advance --input workItem=<w> --input transition=rework
+swamp behavior run <f> record_artifact --input workItem=<w> \
   --input name=progress --input payload='{
     "currentChunks": ["c3"],
     "chunks": [
@@ -116,7 +116,7 @@ swamp model method run <f> record_artifact --input workItem=<w> \
 Fix the finding, then mark the resolution so `findings-clear` sees it:
 
 ```bash
-swamp model method run <f> resolve_findings --input workItem=<w> \
+swamp behavior run <f> resolve_findings --input workItem=<w> \
   --input artifact=chunk-review \
   --input resolutions='[{"findingId": "c3-1", "note": "guard added, test covers empty input"}]'
 ```
@@ -133,9 +133,9 @@ From `executing` use `adapt`. From `chunk-review` use `escalate`. Both land in
 `breakdown`, where a new version of the chunk list gets recorded:
 
 ```bash
-swamp model method run <f> advance --input workItem=<w> --input transition=adapt
-swamp model method run <f> record_dispatch --input workItem=<w>
-swamp model method run <f> record_artifact --input workItem=<w> \
+swamp behavior run <f> advance --input workItem=<w> --input transition=adapt
+swamp behavior run <f> record_dispatch --input workItem=<w>
+swamp behavior run <f> record_artifact --input workItem=<w> \
   --input name=breakdown --input payload='{
     "rationale": "c3 was two changes wearing one hat",
     "chunks": [
@@ -161,7 +161,7 @@ ids match the new breakdown.
 needs a `droppedReason`:
 
 ```bash
-swamp model method run <f> advance --input workItem=<w> --input transition=complete
+swamp behavior run <f> advance --input workItem=<w> --input transition=complete
 ```
 
 From there the graph is ordinary: `conformance-review` compares the whole diff

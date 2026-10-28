@@ -31,8 +31,8 @@ Use when the caller wants a single command, or for a file you do not want to
 pull into context.
 
 ```
-swamp model method run <model> rewrite --input path=DRAFT.md
-swamp data get <model> rewrite-latest --json | jq -r '.content.text'
+swamp behavior run <model> rewrite --input path=DRAFT.md
+swamp data query 'behavior("<model>") && name == "rewrite-latest"' --select content.text
 ```
 
 ## Referee mode loop
@@ -46,7 +46,7 @@ takes both. Add `--input session=<name>` to run several drafts at once — it
 names the state slot, and defaults to `latest`.
 
 ```
-swamp model method run <model> start --input path=DRAFT.md
+swamp behavior run <model> start --input path=DRAFT.md
 ```
 
 ### Step 2 — Read the packet
@@ -54,8 +54,8 @@ swamp model method run <model> start --input path=DRAFT.md
 `nextAction` states exactly what to do next.
 
 ```
-swamp data get <model> session-latest --json | jq -r '.content |
-  "\(.phase) \(.attempt)/\(.maxAttempts)\n\(.nextAction)"'
+swamp data query 'behavior("<model>") && name == "session-latest"' \
+  --select 'content.phase + " " + string(content.attempt) + "/" + string(content.maxAttempts) + "\n" + content.nextAction'
 ```
 
 ### Step 3 — Rewrite
@@ -64,8 +64,8 @@ Fix every finding in `findings`, and apply the judgement rules below. Read the
 findings with:
 
 ```
-swamp data get <model> session-latest --json |
-  jq -r '.content.findings[] | select(.category != "recon") | .description'
+swamp data query 'behavior("<model>") && name == "session-latest"' \
+  --select 'content.findings.filter(f, f.category != "recon").map(f, f.description)'
 ```
 
 ### Step 4 — Submit
@@ -73,9 +73,9 @@ swamp data get <model> session-latest --json |
 The model re-lints your rewrite and advances the attempt count.
 
 ```
-swamp model method run <model> record --input text="<your rewrite>"
+swamp behavior run <model> record --input text="<your rewrite>"
 # or, for a file you edited in place:
-swamp model method run <model> record --input path=DRAFT.md
+swamp behavior run <model> record --input path=DRAFT.md
 ```
 
 ### Step 5 — Repeat

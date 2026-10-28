@@ -4,3 +4,5 @@ accept:
     file: README.md
     line: 113
     reason: The example shows the fetcher refusing a private RFC1918 address; a documentation-range address would not demonstrate that.
+  - rule: behavior-spelling
+    reason: Written with the current behavior spelling on purpose. Installing needs a swamp client from after the rename.

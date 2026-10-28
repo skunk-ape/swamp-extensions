@@ -3,7 +3,7 @@
  *
  * Run with: ~/.swamp/deno/deno test
  */
-import { assert, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { render } from "./recent_report.ts";
 
 const day = {

@@ -21,7 +21,7 @@ Results land as data: `status` (last backup summary, last check) and
 `snapshots`.
 
 ```bash
-swamp model method run my-backup backup --input dryRun=true
+swamp behavior run my-backup backup --input dryRun=true
 swamp data query 'modelName == "my-backup" && name == "status"' --select 'attributes.lastBackup' --json
 ```
 
@@ -88,7 +88,7 @@ To restore a database, restore its staged copy and move it to the original path
 while nothing has the database open:
 
 ```bash
-swamp model method run my-backup restore \
+swamp behavior run my-backup restore \
   --input target=/tmp/r --input 'include=["/home/me/.local/state/restic-backup/laptop/sqlite/home/me/app/state.db"]'
 mv /tmp/r/home/me/.local/state/restic-backup/laptop/sqlite/home/me/app/state.db ~/app/state.db
 ```

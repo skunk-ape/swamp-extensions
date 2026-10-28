@@ -7,7 +7,7 @@
  *
  * Run with: ~/.swamp/deno/deno test --allow-net --allow-read
  */
-import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import {
   fetchOne,
   type HostCheck,
@@ -18,10 +18,10 @@ import {
 } from "./_lib/fetch.ts";
 import { firecrawlOne, responseCap, titleFrom } from "./_lib/firecrawl.ts";
 import {
+  behavior,
   briefShape,
   detectNonceWrapping,
   extractBriefJson,
-  model,
   redactUrl,
   summarizerArgs,
 } from "./web_brief.ts";
@@ -757,7 +757,7 @@ Deno.test("redactUrl drops userinfo and leaves other URLs alone", () => {
 
 Deno.test("an API key is never sent over plain http to a remote host", async () => {
   const ctx = {
-    globalArgs: model.globalArguments.parse({
+    globalArgs: behavior.globalArguments.parse({
       fetcher: "firecrawl",
       firecrawlApiKey: "k",
       firecrawlApiUrl: "http://firecrawl.example.com",
@@ -767,7 +767,7 @@ Deno.test("an API key is never sent over plain http to a remote host", async () 
   };
   let message = "";
   try {
-    await model.methods.fetch.execute({ urls: ["https://example.com/"] }, ctx);
+    await behavior.methods.fetch.execute({ urls: ["https://example.com/"] }, ctx);
   } catch (e) {
     message = (e as Error).message;
   }

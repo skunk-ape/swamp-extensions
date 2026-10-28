@@ -44,7 +44,7 @@ repository: "https://github.com/skunk-ape/swamp-extensions"
 paths:
   base: manifest
 
-models:
+behaviors:
   - restic_backup.ts
 workflows: []
 vaults: []

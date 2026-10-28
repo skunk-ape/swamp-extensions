@@ -12,7 +12,7 @@ handles only the rules no script can judge.
 
 ```bash
 swamp extension pull @skunk-ape/stef
-swamp model create @skunk-ape/stef ste
+swamp behavior create @skunk-ape/stef ste
 ```
 
 `lint` and `normalize` need nothing else. `rewrite` needs Claude Code on
@@ -37,9 +37,9 @@ drafts never overwrite each other.
 ## Lint a draft
 
 ```bash
-swamp model method run ste lint --input path=DRAFT.md
-swamp data get ste findings-latest --json |
-  jq -r '.content.findings[] | select(.category != "recon") | .description'
+swamp behavior run ste lint --input path=DRAFT.md
+swamp data query 'behavior("ste") && name == "findings-latest"' \
+  --select 'content.findings.filter(f, f.category != "recon").map(f, f.description)'
 ```
 
 Pass `--input text=` for a snippet, or `--input textType=procedural` to drop the
@@ -52,8 +52,8 @@ abbreviations, and unambiguous contractions. On a sample `CLAUDE.md` that
 cleared 21 of 35 findings with no model call.
 
 ```bash
-swamp model method run ste normalize --input path=DRAFT.md
-swamp data get ste normalized-latest --json | jq -r '.content.text'
+swamp behavior run ste normalize --input path=DRAFT.md
+swamp data query 'behavior("ste") && name == "normalized-latest"' --select content.text
 ```
 
 `rewrite` and `start` both apply this first. Set `normalizeFirst: false` in
@@ -62,9 +62,9 @@ swamp data get ste normalized-latest --json | jq -r '.content.text'
 ## Rewrite in one command
 
 ```bash
-swamp model method run ste rewrite --input path=DRAFT.md
-swamp data get ste rewrite-latest --json |
-  jq -r '.content | "attempts=\(.attempts) clean=\(.clean)"'
+swamp behavior run ste rewrite --input path=DRAFT.md
+swamp data query 'behavior("ste") && name == "rewrite-latest"' \
+  --select '"attempts=" + string(content.attempts) + " clean=" + string(content.clean)'
 ```
 
 The result is data, not a file write, so you diff it before it lands.
@@ -75,9 +75,9 @@ Referee mode splits the work: the agent writes and the model gates. When the
 draft is already in the agent's context, use this mode.
 
 ```bash
-swamp model method run ste start --input path=DRAFT.md
-swamp data get ste session-latest --json | jq -r '.content.nextAction'
-swamp model method run ste record --input path=REWRITE.md
+swamp behavior run ste start --input path=DRAFT.md
+swamp data query 'behavior("ste") && name == "session-latest"' --select content.nextAction
+swamp behavior run ste record --input path=REWRITE.md
 ```
 
 `record` re-lints, counts the attempt against the cap, and refuses once the

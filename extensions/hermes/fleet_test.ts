@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
+import { assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { egressShape, report, verdict } from "./fleet.ts";
 
 Deno.test("egress shape sorts the widest first by wording", () => {

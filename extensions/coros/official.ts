@@ -323,7 +323,7 @@ function slug(s: string): string {
 // --- model -----------------------------------------------------------------
 
 /** The `@skunk-ape/coros/official` behavior type. */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/coros/official",
   version: "2026.10.24.1",
   globalArguments: GlobalArgsSchema,

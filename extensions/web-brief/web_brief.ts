@@ -412,7 +412,7 @@ async function runClaudeIn(
  * a vault, mutates a host, or accepts a command or a path. Anything of that kind
  * belongs in a separate model the agent is not granted.
  */
-export const model = {
+export const behavior = {
   type: "@skunk-ape/web-brief",
   version: "2026.08.22.1",
   globalArguments: GlobalArgsSchema,

@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "jsr:@std/assert@1";
+import { assert, assertEquals } from "jsr:@std/assert@1.0.19";
 import { run } from "./proc.ts";
 
 Deno.test("run passes input on stdin when given, and closes it otherwise", async () => {

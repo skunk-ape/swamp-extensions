@@ -8,8 +8,8 @@
 // Both bugs the first real provision run turned up lived in this layer, not in
 // the templates, which is the argument for these tests existing at all.
 
-import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1";
-import { model } from "./hermes.ts";
+import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
+import { behavior } from "./hermes.ts";
 import { BotSchema } from "./_lib/decl.ts";
 import type { Bot } from "./_lib/decl.ts";
 
@@ -76,7 +76,7 @@ async function inTempRepo(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 // deno-lint-ignore no-explicit-any
-const methods = model.methods as any;
+const methods = behavior.methods as any;
 
 Deno.test("render writes the runtime, and check mode writes nothing", async () => {
   await inTempRepo(async (dir) => {

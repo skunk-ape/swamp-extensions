@@ -24,12 +24,12 @@ programs sharing one would take turns invalidating each other.
 
 ```bash
 # official: create, then sign in once in a browser on this machine
-swamp model create @skunk-ape/coros/official coros
-swamp model method run coros authorize
+swamp behavior create @skunk-ape/coros/official coros
+swamp behavior run coros authorize
 
 # hub: credentials from a vault
-swamp model create @skunk-ape/coros/hub coros-hub
-swamp model edit coros-hub
+swamp behavior create @skunk-ape/coros/hub coros-hub
+swamp behavior edit coros-hub
 #   email:    ${{ vault.get("my-vault", "coros-email") }}
 #   password: ${{ vault.get("my-vault", "coros-password") }}
 #   region:   us
@@ -42,8 +42,8 @@ data.
 ## Reading data
 
 ```bash
-swamp model method run coros recent --input days=7
-swamp model method run coros-hub recent --input days=7
+swamp behavior run coros recent --input days=7
+swamp behavior run coros-hub recent --input days=7
 
 swamp data query 'behavior("coros") && name.startsWith("day-")' \
   --select 'attributes.date + " " + string(attributes.sleep.score)'
@@ -69,7 +69,7 @@ the tests pin the shape. Training Hub covers what needs to be exact.
 ## Creating workouts
 
 ```bash
-swamp model method run coros createWorkout --input-file six-by-800.yaml
+swamp behavior run coros createWorkout --input-file six-by-800.yaml
 ```
 
 ```yaml
@@ -103,7 +103,7 @@ from the steps, in the instance's `units`.
 To take a workout off the calendar, which the official server cannot do:
 
 ```bash
-swamp model method run coros-hub removeScheduledWorkout \
+swamp behavior run coros-hub removeScheduledWorkout \
   --input date=2026-11-03 --input 'name=6 x 800m' --input dryRun=true
 ```
 
