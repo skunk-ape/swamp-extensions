@@ -11,7 +11,7 @@ repo: swamp-extensions
 projects:
   - prefix: STEF
     project: stef
-    path: extensions/models/stef
+    path: extensions/stef
   - prefix: HERMES
     project: hermes
-    path: extensions/models/hermes
+    path: extensions/hermes

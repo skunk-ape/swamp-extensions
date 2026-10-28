@@ -5,3 +5,4 @@ tools:
   - claude
 gitignoreManaged: true
 upgradedAt: "2026-10-28T16:01:36.892Z"
+modelsDir: "extensions"

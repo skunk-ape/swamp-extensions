@@ -7,8 +7,8 @@ reports are kept here too, under the swamp-extension-review/ subdirectory the
 tool expects, and a push can find them with:
 
 ```bash
-SWAMP_EXTENSION_REVIEW_DIR=$PWD/extensions/models/hermes/.reviews \
-  swamp extension push extensions/models/hermes/manifest.yaml --dry-run
+SWAMP_EXTENSION_REVIEW_DIR=$PWD/extensions/hermes/.reviews \
+  swamp extension push extensions/hermes/manifest.yaml --dry-run
 ```
 
 A report here whose hash matches no current source is a review of an older

@@ -58,5 +58,5 @@ names rather than handles, one idea per bullet. Dates are in `timezone`.
 ## Tests
 
 ```bash
-~/.swamp/deno/deno test extensions/models/swamp-lab/
+~/.swamp/deno/deno test extensions/swamp-lab/
 ```

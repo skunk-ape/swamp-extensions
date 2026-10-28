@@ -197,8 +197,8 @@ schema-validated, and re-reviewed.
 `status` is stage-level. `summary` is history-level. Neither renders the chunk
 list as a board, which is the question a human actually asks mid-run.
 
-`@skunk-ape/rocky-road/breakdown-board` (in `extensions/reports/`) fills that
-in. It joins the agreed `breakdown` with the recorded `progress`, resolves
+`@skunk-ape/rocky-road/breakdown-board` fills that in. It joins the agreed
+`breakdown` with the recorded `progress`, resolves
 `dependsOn` against what is finished, and renders a table, a Mermaid dependency
 graph, and two conditional sections. Pure projection — no LLM, no model state
 touched, so the same run data always renders the same board.
@@ -490,7 +490,7 @@ cycle-scoped, but nothing proves who produced them. Enforcing that needs
    the wave is the unit of review. What stays unenforced is file disjointness
    inside a wave, which the review is asked about instead.
 6. ~~**Where does this get published?**~~ Answered: a per-subdirectory manifest
-   at `extensions/reports/rocky-road/manifest.yaml` with `paths.base: manifest`.
+   at `extensions/rocky-road/manifest.yaml` with `paths.base: manifest`.
    `swamp extension quality` packages it on its own.
 7. **How wide should a wave get?** Nothing bounds the wave size. Five parallel
    chunks means five agents in one working tree, and one review reading five
@@ -524,7 +524,7 @@ Left:
    "What the access probe found" below — `swamp serve` plus a per-sandbox
    token, with the two upstream asks it surfaced (method-scoped grants, actor
    stamped from the authenticated principal) still unfiled.
-4. Publish with `swamp extension push extensions/reports/rocky-road/manifest.yaml`
+4. Publish with `swamp extension push extensions/rocky-road/manifest.yaml`
    once this run has been through it.
 
 ## Notes

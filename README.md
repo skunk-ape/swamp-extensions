@@ -6,9 +6,9 @@ Swamp extensions published under `@skunk-ape`.
 
 | Extension | Path | What it does |
 | --- | --- | --- |
-| `@skunk-ape/stef` | `extensions/models/stef/` | Simple Technical English Flavored — a deterministic prose linter, a mechanical fixer, and a bounded LLM rewrite loop. |
-| `@skunk-ape/rocky-road` | `extensions/reports/rocky-road/` | Chunked implementation for `@swamp/software-factory` — a factory definition, a board report, and the skill that drives it. |
-| `@skunk-ape/hermes` | `extensions/models/hermes/` | Install and configure the Hermes agent on a host reached over SSH. In design. See `DESIGN.md`. |
+| `@skunk-ape/stef` | `extensions/stef/` | Simple Technical English Flavored — a deterministic prose linter, a mechanical fixer, and a bounded LLM rewrite loop. |
+| `@skunk-ape/rocky-road` | `extensions/rocky-road/` | Chunked implementation for `@swamp/software-factory` — a factory definition, a board report, and the skill that drives it. |
+| `@skunk-ape/hermes` | `extensions/hermes/` | Install and configure the Hermes agent on a host reached over SSH. In design. See `DESIGN.md`. |
 
 ## Layout
 
@@ -36,16 +36,16 @@ Some state is shared across every extension in this repository:
 Every command takes the path to that extension's manifest:
 
 ```bash
-swamp extension fmt     extensions/models/stef/manifest.yaml
-swamp extension quality extensions/models/stef/manifest.yaml
-swamp extension push    extensions/models/stef/manifest.yaml
+swamp extension fmt     extensions/stef/manifest.yaml
+swamp extension quality extensions/stef/manifest.yaml
+swamp extension push    extensions/stef/manifest.yaml
 ```
 
 Tests run under the deno that swamp vendors, so no separate deno install is
 needed:
 
 ```bash
-~/.swamp/deno/deno test --allow-all extensions/models/stef/
+~/.swamp/deno/deno test --allow-all extensions/stef/
 ```
 
 ## License

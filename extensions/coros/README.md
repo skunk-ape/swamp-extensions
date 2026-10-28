@@ -123,7 +123,7 @@ workflow rather than the instance.
 ## Tests
 
 ```bash
-~/.swamp/deno/deno test --allow-read extensions/models/coros/
+~/.swamp/deno/deno test --allow-read extensions/coros/
 ```
 
 The parser fixtures copy the official server's layout with invented numbers.

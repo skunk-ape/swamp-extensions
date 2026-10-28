@@ -68,7 +68,7 @@ description: |
 repository: 'https://github.com/skunk-ape/swamp-extensions'
 
 # Everything for this extension lives beside this manifest, so typed entries
-# and additionalFiles both resolve from here rather than from extensions/reports/.
+# and additionalFiles both resolve from here rather than from the extensions/ root.
 paths:
   base: manifest
 
