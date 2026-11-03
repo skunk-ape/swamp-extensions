@@ -6,7 +6,9 @@
  * saved, and writes what shipped, what opened, what moved, what repeats older
  * issues, and what lands near the reader's own recent work — with the
  * phone-friendly markdown alongside. Nothing in it is written by a model: the
- * agent that delivers it adds its own reading on top.
+ * agent that delivers it adds its own reading on top. `mine` is the reader's
+ * own slice — what they shipped since its last run, and what is on their
+ * plate — kept against a baseline of its own, for a daily journal.
  *
  * Read-only towards Swamp Club: public endpoints, no authentication, nothing
  * filed or commented.
@@ -14,7 +16,18 @@
 import { z } from "npm:zod@4";
 import { classify, primaryArea } from "./_lib/classify.ts";
 import { type Baseline, baselineOf, buildDigest } from "./_lib/digest.ts";
-import { fetchCorpus, fetchIssue, type Issue } from "./_lib/lab.ts";
+import {
+  fetchCorpus,
+  fetchIssue,
+  type Issue,
+  type IssueDetail,
+} from "./_lib/lab.ts";
+import {
+  plateCandidates,
+  plateItems,
+  shippedCandidates,
+  shippedItems,
+} from "./_lib/mine.ts";
 import { render } from "./_lib/render.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -108,10 +121,64 @@ const DetailSchema = z.object({
   fetchedAt: z.string(),
 });
 
+const MineSchema = z.object({
+  generatedAt: z.string(),
+  me: z.string(),
+  recorded: z.boolean(),
+  window: z.object({
+    start: z.string(),
+    end: z.string(),
+    from: z.enum(["baseline", "since", "hours"]).describe(
+      "Where the start came from: the last recorded run, an explicit `since`, or the `hours` fallback.",
+    ),
+  }),
+  coverage: z.object({ ok: z.boolean(), note: z.string() }),
+  shipped: z.array(z.object({
+    number: z.number(),
+    url: z.string(),
+    title: z.string(),
+    status: z.string(),
+    at: z.string().nullable(),
+    prs: z.array(z.object({
+      repo: z.string(),
+      number: z.number(),
+      url: z.string(),
+      at: z.string(),
+    })),
+  })),
+  plate: z.array(z.object({
+    number: z.number(),
+    url: z.string(),
+    title: z.string(),
+    status: z.string(),
+    since: z.string(),
+    sinceSource: z.enum(["status", "updated"]),
+  })),
+});
+
+/** Why a corpus cannot be trusted to close a window; empty when it can. */
+function coverageNotes(corpus: CorpusData, g: GlobalArgs): string[] {
+  const ageHours = (Date.now() - Date.parse(corpus.fetchedAt)) / 3600000;
+  const notes: string[] = [];
+  if (!corpus.ok) {
+    notes.push(
+      `The last sync saw ${corpus.seen} of the ${corpus.total} issues the Lab reports.`,
+    );
+  }
+  if (ageHours > g.maxCorpusAgeHours) {
+    notes.push(
+      `The corpus is ${
+        Math.round(ageHours)
+      } hours old; the sync before this run did not complete.`,
+    );
+  }
+  return notes;
+}
+
 /** The `@skunk-ape/swamp-lab` behavior type. */
 export const behavior = {
   type: "@skunk-ape/swamp-lab",
-  version: "2026.10.24.1",
+  version: "2026.10.30.1",
   globalArguments: GlobalArgsSchema,
   resources: {
     corpus: {
@@ -141,6 +208,20 @@ export const behavior = {
       schema: DetailSchema,
       lifetime: "30d",
       garbageCollection: 3,
+    },
+    mine: {
+      description:
+        "The reader's own Lab: issues assigned to `me` that shipped or closed in the window, with their linked PRs, and the open ones with how long each has sat.",
+      schema: MineSchema,
+      lifetime: "infinite",
+      garbageCollection: 30,
+    },
+    mineBaseline: {
+      description:
+        "Each issue's status and assignees at the end of the last recorded `mine` run. Separate from the digest's baseline, so neither reader moves the other's window.",
+      schema: BaselineSchema,
+      lifetime: "infinite",
+      garbageCollection: 10,
     },
   },
   methods: {
@@ -212,20 +293,7 @@ export const behavior = {
         const start = prev?.at ?? (g.firstWindowStart || defaultStart);
         const widened = start < defaultStart;
 
-        const ageHours = (Date.now() - Date.parse(corpus.fetchedAt)) / 3600000;
-        const notes: string[] = [];
-        if (!corpus.ok) {
-          notes.push(
-            `The last sync saw ${corpus.seen} of the ${corpus.total} issues the Lab reports.`,
-          );
-        }
-        if (ageHours > g.maxCorpusAgeHours) {
-          notes.push(
-            `The corpus is ${
-              Math.round(ageHours)
-            } hours old; the sync before this digest did not complete.`,
-          );
-        }
+        const notes = coverageNotes(corpus, g);
 
         const digest = buildDigest({
           issues: corpus.issues as Issue[],
@@ -276,6 +344,118 @@ export const behavior = {
             h: digest.window.hours,
           },
         );
+        return { dataHandles: handles };
+      },
+    },
+
+    mine: {
+      description:
+        "The reader's own Lab, for a daily journal: issues assigned to `me` that moved to shipped or closed since the last recorded run, each with its linked PRs, and the open ones with how long each has sat in its status. Keeps its own baseline (`mineBaseline`), never the digest's, so it can run on any schedule beside the digest. With no baseline yet, the window is the last `hours`; `since` previews from an explicit time and never records. A stale or partial corpus does not move the window. One detail request per issue listed.",
+      arguments: z.object({
+        record: z.boolean().default(true).describe(
+          "Save the baseline so the next run starts where this one ends. False previews.",
+        ),
+        hours: z.number().default(24).describe(
+          "Window length when there is no recorded run to start from.",
+        ),
+        since: z.string().default("").describe(
+          "ISO time to start the window from instead of the baseline. Implies record=false.",
+        ),
+      }),
+      execute: async (
+        args: { record: boolean; hours: number; since: string },
+        ctx: Ctx,
+      ) => {
+        const g = ctx.globalArgs as GlobalArgs;
+        const corpus = await ctx.readResource("corpus") as CorpusData | null;
+        if (!corpus) throw new Error("no corpus yet — run sync first");
+        const prev = args.since
+          ? null
+          : await ctx.readResource("mineBaseline") as BaselineData | null;
+
+        const end = corpus.fetchedAt;
+        let start: string;
+        let from: "baseline" | "since" | "hours";
+        if (args.since) {
+          const t = Date.parse(args.since);
+          if (!Number.isFinite(t)) {
+            throw new Error(`since: not a time: ${args.since}`);
+          }
+          start = new Date(t).toISOString();
+          from = "since";
+        } else if (prev) {
+          start = prev.at;
+          from = "baseline";
+        } else {
+          start = new Date(Date.parse(end) - args.hours * 3600000)
+            .toISOString();
+          from = "hours";
+        }
+
+        const issues = corpus.issues as Issue[];
+        const shipped = shippedCandidates({
+          issues,
+          me: g.me,
+          baseline: prev ? prev.issues : null,
+          windowStart: start,
+        });
+        const plate = plateCandidates(issues, g.me);
+
+        const details = new Map<number, IssueDetail>();
+        for (const i of [...shipped, ...plate]) {
+          try {
+            details.set(
+              i.number,
+              await fetchIssue(i.number, {
+                userAgent: g.userAgent,
+                signal: ctx.signal,
+              }),
+            );
+          } catch (e) {
+            // A missing detail costs that issue its PRs or its exact age,
+            // never its place in the list.
+            ctx.logger.warning("Lab issue {n}: {err}", {
+              n: i.number,
+              err: e instanceof Error ? e.message : String(e),
+            });
+          }
+          await new Promise((r) => setTimeout(r, 300));
+        }
+
+        const notes = coverageNotes(corpus, g);
+        const ok = notes.length === 0;
+        const record = args.record && !args.since && ok;
+        const shippedOut = shippedItems(shipped, details, {
+          confirmFrom: prev ? null : start,
+        });
+        const handles = [
+          await ctx.writeResource("mine", "mine", {
+            generatedAt: new Date().toISOString(),
+            me: g.me,
+            recorded: record,
+            window: { start, end, from },
+            coverage: { ok, note: notes.join(" ") },
+            shipped: shippedOut,
+            plate: plateItems(plate, details),
+          }),
+        ];
+        if (record) {
+          handles.push(
+            await ctx.writeResource("mineBaseline", "mine-baseline", {
+              at: end,
+              issues: baselineOf(issues),
+            }),
+          );
+        } else if (args.record && !args.since) {
+          ctx.logger.warning(
+            "Coverage gap — the window was not recorded, so the next run covers it again",
+          );
+        }
+        ctx.logger.info("{s} shipped or closed, {p} open, since {start}", {
+          s: shippedOut.length,
+          p: plate.length,
+          start,
+        });
         return { dataHandles: handles };
       },
     },

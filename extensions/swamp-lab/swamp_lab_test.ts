@@ -2,6 +2,8 @@
  * The Lab digest: classification, the diff against a baseline, every section,
  * the phone rules, and the API client against a fake server.
  *
+ * `mine` — one reader's shipped and plate — is tested at the end.
+ *
  * Fixtures follow Apalone's Python suite (#900 Seth ships Stagecraft, #901
  * Paul ships datastore, #902 Zack opens a lock issue echoing #800, #700 an old
  * open gatorwalk issue) with invented titles.
@@ -11,7 +13,8 @@
 import { assert, assertEquals, assertStringIncludes } from "jsr:@std/assert@1.0.19";
 import { classify, primaryArea } from "./_lib/classify.ts";
 import { baselineOf, buildDigest, type DigestInput, keywords } from "./_lib/digest.ts";
-import { fetchCorpus, type Issue, normalize } from "./_lib/lab.ts";
+import { fetchCorpus, type Issue, type IssueDetail, normalize } from "./_lib/lab.ts";
+import { plateCandidates, plateItems, prOf, shippedCandidates, shippedItems } from "./_lib/mine.ts";
 import { phrase, render, stripPrefix } from "./_lib/render.ts";
 
 const NOW = "2026-01-15T13:00:00.000Z";
@@ -298,4 +301,99 @@ Deno.test("fetchCorpus refuses a response with no issues array", async () => {
     err = (e as Error).message;
   }
   assertStringIncludes(err, "API shape changed");
+});
+
+// ---- mine: one reader's shipped and plate ---------------------------------
+
+function detail(
+  number: number,
+  history: Array<[string, string]>,
+  prs: Array<[number, string, string]> = [],
+): IssueDetail {
+  return {
+    number,
+    url: "",
+    title: "",
+    status: "",
+    body: "",
+    statusHistory: history.map(([at, to]) => ({ at, from: null, to })),
+    prs: prs.map(([n, url, at]) => ({ number: n, url, at })),
+  };
+}
+
+Deno.test("mine: with a baseline, shipped is a move into done since it", () => {
+  const issues = [
+    ...fixtures(),
+    issue({ number: 903, title: "closed before", status: "closed", assignees: ["skunk-ape"] }),
+    issue({ number: 904, title: "still open", assignees: ["skunk-ape"] }),
+  ];
+  const baseline = baselineOf(issues);
+  baseline["900"] = { status: "in_progress", assignees: ["skunk-ape"] };
+  const got = shippedCandidates({ issues, me: "skunk-ape", baseline, windowStart: SINCE });
+  // 903 was already closed in the baseline; 901 is Paul's; 904 is open.
+  assertEquals(got.map((i) => i.number), [900]);
+});
+
+Deno.test("mine: an issue created and shipped inside the window counts", () => {
+  const issues = fixtures();
+  const baseline = baselineOf(issues.filter((i) => i.number !== 900));
+  const got = shippedCandidates({ issues, me: "skunk-ape", baseline, windowStart: SINCE });
+  assertEquals(got.map((i) => i.number), [900]);
+});
+
+Deno.test("mine: without a baseline, history drops a late comment on an old ship", () => {
+  const issues = [
+    ...fixtures(),
+    issue({
+      number: 905,
+      title: "shipped last month, commented today",
+      status: "shipped",
+      assignees: ["skunk-ape"],
+      updatedAt: hoursAgo(1),
+    }),
+  ];
+  const cands = shippedCandidates({ issues, me: "skunk-ape", baseline: null, windowStart: SINCE });
+  assertEquals(cands.map((i) => i.number).sort(), [900, 905]);
+  const details = new Map([
+    [900, detail(900, [[hoursAgo(3), "in_progress"], [hoursAgo(2), "shipped"]])],
+    [905, detail(905, [[daysAgo(30), "shipped"]])],
+  ]);
+  const got = shippedItems(cands, details, { confirmFrom: SINCE });
+  assertEquals(got.map((i) => i.number), [900]);
+  assertEquals(got[0].at, hoursAgo(2));
+});
+
+Deno.test("mine: a failed detail keeps the issue, without PRs", () => {
+  const cands = fixtures().filter((i) => i.number === 900);
+  const got = shippedItems(cands, new Map(), { confirmFrom: SINCE });
+  assertEquals(got.length, 1);
+  assertEquals(got[0].prs, []);
+});
+
+Deno.test("mine: PRs are named by repo, deduplicated, in link order", () => {
+  const cands = fixtures().filter((i) => i.number === 900);
+  const details = new Map([[900, detail(900, [], [
+    [836, "https://git.swamp-club.com/swamp-club/swamp-uat/pulls/836", hoursAgo(2)],
+    [3467, "https://github.com/systeminit/swamp/pull/3467", hoursAgo(4)],
+    [3467, "https://github.com/systeminit/swamp/pull/3467", hoursAgo(1)],
+  ])]]);
+  const got = shippedItems(cands, details, { confirmFrom: null });
+  assertEquals(got[0].prs.map((p) => `${p.repo}#${p.number}`), ["swamp#3467", "swamp-uat#836"]);
+  assertEquals(prOf({ number: 7, url: "", at: "" }).repo, "pr");
+});
+
+Deno.test("mine: plate is open work, in progress first, oldest-sitting first", () => {
+  const issues = [
+    issue({ number: 1, title: "a", status: "open", assignees: ["skunk-ape"], updatedAt: daysAgo(2) }),
+    issue({ number: 2, title: "b", status: "in_progress", assignees: ["skunk-ape"], updatedAt: daysAgo(1) }),
+    issue({ number: 3, title: "c", status: "open", assignees: ["skunk-ape"], updatedAt: daysAgo(1) }),
+    issue({ number: 4, title: "d", status: "shipped", assignees: ["skunk-ape"] }),
+    issue({ number: 5, title: "e", status: "open", assignees: ["stack72"] }),
+  ];
+  const details = new Map([[3, detail(3, [[daysAgo(9), "open"]])]]);
+  const got = plateItems(plateCandidates(issues, "skunk-ape"), details);
+  assertEquals(got.map((i) => i.number), [2, 3, 1]);
+  assertEquals(got[1].since, daysAgo(9));
+  assertEquals(got[1].sinceSource, "status");
+  assertEquals(got[2].sinceSource, "updated");
 });
