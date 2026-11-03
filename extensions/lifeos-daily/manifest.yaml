@@ -1,0 +1,32 @@
+manifestVersion: 1
+name: "@skunk-ape/lifeos-daily"
+version: 2026.11.03.1
+license: MIT
+description: |
+  The day's journal file in a LifeOS vault, created before anyone opens it and
+  already filled with what you shipped yesterday and what is on your plate.
+
+  `journal` renders the page from an `@skunk-ape/swamp-lab` `mine` record that
+  a workflow passes in, laid out by the vault's own template, and writes
+  `<journalRoot>/YYYY/MM/YYYY-MM-DD.md`. It never overwrites a file that
+  exists. Deterministic: nothing in it is written by a model.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+behaviors:
+  - lifeos_daily.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - lifeos
+  - journal
+dependencies: []
