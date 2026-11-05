@@ -10,6 +10,7 @@ export type FetchLike = (
 ) => Promise<Response>;
 
 export const API_URL = "https://swamp-club.com/api/v1/lab";
+export const WHOAMI_URL = "https://swamp-club.com/api/whoami";
 export const WEB_URL = "https://swamp-club.com/lab/";
 export const STATUSES = [
   "open",
@@ -65,15 +66,30 @@ function retryDelay(res: Response, attempt: number): number {
   return BACKOFF_MS * 2 ** attempt;
 }
 
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function getJson(url: string, opts: ClientOptions): Promise<unknown> {
   const f = opts.fetchImpl ?? fetch;
-  const sleep = opts.sleep ??
-    ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const timeout = AbortSignal.timeout(TIMEOUT_MS);
-  const signal = opts.signal
-    ? AbortSignal.any([opts.signal, timeout])
-    : timeout;
+  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
   for (let attempt = 0;; attempt++) {
+    // Per attempt, so waiting out a Retry-After doesn't spend the next one's time.
+    const timeout = AbortSignal.timeout(TIMEOUT_MS);
+    const signal = opts.signal
+      ? AbortSignal.any([opts.signal, timeout])
+      : timeout;
     const res = await f(url, {
       method: "GET",
       redirect: "manual",
@@ -132,7 +148,7 @@ export async function listPage(
   offset: number,
   limit: number,
   opts: ClientOptions,
-): Promise<Row[]> {
+): Promise<{ rows: Row[]; received: number }> {
   const u = new URL(`${API_URL}/list`);
   u.searchParams.set("sort", "updated-desc");
   for (const s of statuses) u.searchParams.append("status", s);
@@ -143,7 +159,24 @@ export async function listPage(
   if (!body || !Array.isArray(body.issues)) {
     throw new Error("the list response has no issues array");
   }
-  return body.issues.map(normalizeRow).filter((r: Row | null) => r !== null);
+  return {
+    rows: body.issues.map(normalizeRow).filter((r: Row | null) => r !== null),
+    received: body.issues.length,
+  };
+}
+
+/**
+ * The Lab answers a rejected key as if there were none, with 200s and public
+ * data, so a bad key would otherwise read as a complete, smaller Lab. Only
+ * whoami refuses it.
+ */
+export async function checkKey(opts: ClientOptions): Promise<void> {
+  try {
+    await getJson(WHOAMI_URL, opts);
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new Error(`the API key could not be confirmed: ${why}`);
+  }
 }
 
 /** One issue with its full body. A request per issue: the list carries no bodies. */

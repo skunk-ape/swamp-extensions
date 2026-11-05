@@ -116,7 +116,7 @@ Deno.test("a trimmed body says so, with its original size and the way to get it 
   assertEquals(two.body, "short");
   assertEquals(two.bodyBytes, 5);
   assertEquals(two.bodyTruncated, false);
-  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null });
+  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null, maxIssues: 100 });
   assertEquals(d.complete, true);
 });
 
@@ -144,7 +144,7 @@ Deno.test("bodyLimit 0 makes no body requests for listed issues, and says bodies
     [2, null, null, true],
     [1, null, null, true],
   ]);
-  assertEquals(d.fullBodyInput, { numbers: [2, 1], bodyLimit: null });
+  assertEquals(d.fullBodyInput, { numbers: [2, 1], bodyLimit: null, maxIssues: 100 });
   assertEquals(d.complete, true);
 });
 
@@ -156,7 +156,7 @@ Deno.test("bodyLimit 0 with numbers still reads each, and reports the size it sa
     [2, null, 0, false],
     [1, null, 3, true],
   ]);
-  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null });
+  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null, maxIssues: 100 });
 });
 
 Deno.test("one failed read lands in failures with the rest intact", async () => {
@@ -182,7 +182,7 @@ Deno.test("a listed issue whose body read fails keeps its row and says the body 
     [1, "one", 3, false],
   ]);
   assertEquals(d.failures, [{ number: 2, error: "HTTP 500" }]);
-  assertEquals(d.fullBodyInput, { numbers: [2], bodyLimit: null });
+  assertEquals(d.fullBodyInput, { numbers: [2], bodyLimit: null, maxIssues: 100 });
 });
 
 Deno.test("a failed list page is reported, and what was read is kept", async () => {
@@ -213,7 +213,7 @@ Deno.test("since stops paging at the cursor and includes an issue exactly on it"
   assertEquals(d.issues.length, 70);
   assertEquals(d.issues.at(-1)?.number, 181);
   assertEquals(lab.listCalls().length, 1);
-  assertEquals(d.asOf, "2026-02-01T00:00:00.000Z");
+  assertEquals(d.asOf, "2026-01-31T23:55:00.000Z"); // five minutes of overlap
   assertEquals(d.complete, true);
   for (const s of ["open", "triaged", "in_progress", "shipped", "closed"]) {
     assert(lab.listCalls()[0].includes(`status=${s}`), `names ${s}`);
@@ -273,11 +273,182 @@ Deno.test("numbers and a selector combine without reading or counting an issue t
   assertEquals(d.truncated, false);
 });
 
+Deno.test("a rejected key stops the run before any read, even though the Lab would answer", async () => {
+  const seen: string[] = [];
+  const opts: ClientOptions = {
+    userAgent: "t",
+    apiKey: "expired",
+    sleep: () => Promise.resolve(),
+    fetchImpl: (input) => {
+      seen.push(String(input));
+      return Promise.resolve(
+        String(input).endsWith("/api/whoami") ? json({}, 401) : json({ issues: [], total: 0 }),
+      );
+    },
+  };
+  await assertRejects(
+    () => buildDigest({ ...defaults, status: ["open"] }, opts),
+    Error,
+    "could not be confirmed: HTTP 401",
+  );
+  assertEquals(seen, ["https://swamp-club.com/api/whoami"]);
+});
+
+Deno.test("a redirect from whoami is refused too, so the key goes nowhere else", async () => {
+  await assertRejects(
+    () =>
+      buildDigest({ ...defaults, numbers: [1] }, {
+        userAgent: "t",
+        apiKey: "k",
+        fetchImpl: () =>
+          Promise.resolve(new Response(null, { status: 302, headers: { location: "https://elsewhere.example/" } })),
+      }),
+    Error,
+    "refused a redirect",
+  );
+});
+
+Deno.test("only a since read gives a cursor, and an incomplete one does not move it", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(1), body: "b" }]);
+  const byNumber = await buildDigest({ ...defaults, numbers: [1] }, lab.opts, NOW);
+  assertEquals(byNumber.asOf, null);
+  const byStatus = await buildDigest({ ...defaults, status: ["open"] }, lab.opts, NOW);
+  assertEquals(byStatus.asOf, null);
+  const incomplete = await buildDigest({ ...defaults, since: T(0), maxIssues: 1, numbers: [1, 9] }, lab.opts, NOW);
+  assertEquals(incomplete.complete, false);
+  assertEquals(incomplete.asOf, T(0));
+});
+
+Deno.test("a since read writes its own instance, so other reads can't replace its cursor", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const u = String(input);
+    return Promise.resolve(
+      u.includes("/lab/list")
+        ? json({ issues: [row({ number: 1, updatedAt: T(1) })] })
+        : json({ issue: { ...row({ number: 1, updatedAt: T(1) }), body: "b" } }),
+    );
+  }) as typeof fetch;
+  try {
+    const names: string[] = [];
+    const ctx = {
+      globalArgs: { userAgent: "t" },
+      logger: { info: () => {}, warning: () => {} },
+      writeResource: (spec: string, name: string) => {
+        names.push(name);
+        return Promise.resolve({ spec, name });
+      },
+    };
+    await behavior.methods.issues.execute({ since: T(0), bodyLimit: 0, maxIssues: 5 }, ctx);
+    await behavior.methods.issues.execute({ numbers: [1], bodyLimit: 2000, maxIssues: 5 }, ctx);
+    assertEquals(names, ["changes", "digest"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+Deno.test("a run that read nothing fails and writes nothing", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(json({}, 500))) as typeof fetch;
+  try {
+    let wrote = false;
+    await assertRejects(
+      () =>
+        behavior.methods.issues.execute({ numbers: [1, 2], bodyLimit: 2000, maxIssues: 5 }, {
+          globalArgs: { userAgent: "t" },
+          logger: { info: () => {}, warning: () => {} },
+          writeResource: () => {
+            wrote = true;
+            return Promise.resolve({});
+          },
+        }),
+      Error,
+      "Nothing could be read: 2 failure(s), first #1: HTTP 500",
+    );
+    assertEquals(wrote, false);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+Deno.test("nothing selected is a good read, not a failure", async () => {
+  const lab = fakeLab([]);
+  const d = await buildDigest({ ...defaults, status: ["open"] }, lab.opts);
+  assertEquals(d.issues, []);
+  assertEquals(d.complete, true);
+});
+
+Deno.test("each attempt gets its own timeout signal", async () => {
+  const signals: (AbortSignal | null | undefined)[] = [];
+  let n = 0;
+  await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    sleep: () => Promise.resolve(),
+    fetchImpl: (_input, init) => {
+      signals.push(init?.signal);
+      return Promise.resolve(n++ === 0 ? new Response(null, { status: 429 }) : json({}, 404));
+    },
+  });
+  assertEquals(signals.length, 2);
+  assert(signals[0] !== signals[1]);
+});
+
+Deno.test("fullBodyInput carries a maxIssues large enough to replay it", async () => {
+  const issues = Array.from({ length: 150 }, (_, i) => ({ number: i + 1, updatedAt: T(i) }));
+  const lab = fakeLab(issues);
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, lab.opts);
+  assertEquals(d.fullBodyInput?.numbers.length, 150);
+  assertEquals(d.fullBodyInput?.maxIssues, 150);
+});
+
+Deno.test("a list row with no valid number is reported and doesn't end paging early", async () => {
+  const pages = [
+    [...Array.from({ length: 99 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) })), { title: "broken" }],
+    [row({ number: 200, updatedAt: T(1) })],
+  ];
+  let page = 0;
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json({ issues: pages[page++] })),
+  });
+  assertEquals(d.issues.length, 100);
+  assertEquals(d.failures, [{ number: null, error: "list at offset 0: 1 row(s) had no valid number" }]);
+  assertEquals(d.complete, false);
+});
+
+Deno.test("the page limit sets truncated", async () => {
+  const full = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(1) }));
+  let pages = 0;
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 1000 }, {
+    userAgent: "t",
+    fetchImpl: () => {
+      pages++;
+      return Promise.resolve(json({ issues: full })); // a Lab that never runs out
+    },
+  });
+  assertEquals(pages, 50);
+  assertEquals(d.issues.length, 100);
+  assertEquals(d.truncated, true);
+});
+
+Deno.test("cancelling a run stops it rather than recording failed reads", async () => {
+  const controller = new AbortController();
+  await assertRejects(() =>
+    buildDigest({ numbers: [1, 2], bodyLimit: 2000, maxIssues: 5 }, {
+      userAgent: "t",
+      signal: controller.signal,
+      fetchImpl: () => {
+        controller.abort(new Error("cancelled"));
+        return Promise.reject(new Error("aborted"));
+      },
+    })
+  );
+});
+
 Deno.test("redirects are refused, not followed", async () => {
   const seen: string[] = [];
   const opts: ClientOptions = {
     userAgent: "t",
-    apiKey: "k",
     fetchImpl: (input, init) => {
       seen.push(String(input));
       assertEquals(init?.redirect, "manual");
@@ -343,6 +514,7 @@ Deno.test("the key is sent to the Lab and never reaches the record or the logs",
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     auth.push(new Headers(init?.headers).get("authorization"));
     const u = new URL(String(input));
+    if (u.pathname === "/api/whoami") return Promise.resolve(json({ username: "me" }));
     if (u.pathname.endsWith("/issues/2")) return Promise.resolve(json({}, 500));
     return Promise.resolve(
       json({ issue: { ...row({ number: 1, updatedAt: T(1) }), body: "b" } }),
@@ -364,7 +536,7 @@ Deno.test("the key is sent to the Lab and never reaches the record or the logs",
       },
     );
     assertEquals(result.dataHandles, [{ spec: "digest", name: "digest" }]);
-    assertEquals(auth, [`Bearer ${KEY}`, `Bearer ${KEY}`]);
+    assertEquals(auth, [`Bearer ${KEY}`, `Bearer ${KEY}`, `Bearer ${KEY}`]);
     assert(!JSON.stringify(written).includes(KEY));
     assert(!JSON.stringify(logged).includes(KEY));
     assertEquals(behavior.resources.digest.schema.safeParse(written).success, true);

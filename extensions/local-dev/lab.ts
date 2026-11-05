@@ -9,6 +9,7 @@
  */
 import { z } from "npm:zod@4";
 import {
+  checkKey,
   type ClientOptions,
   type Detail,
   listPage,
@@ -23,6 +24,7 @@ const MAX_PAGES = 50;
 const BODY_CONCURRENCY = 6;
 const DEFAULT_BODY_LIMIT = 2000;
 const DEFAULT_MAX_ISSUES = 100;
+const CURSOR_OVERLAP_MS = 5 * 60_000;
 
 const GlobalArgsSchema = z.object({
   apiKey: z.string().meta({ sensitive: true }).optional().describe(
@@ -87,14 +89,15 @@ const DigestSchema = z.object({
     "False when anything selected is missing: a failed read, or truncated.",
   ),
   truncated: z.boolean().describe("maxIssues or the page limit was reached."),
-  asOf: z.string().describe(
-    "When the read began: the `since` for the next one. Only move a cursor to it when `complete` is true.",
+  asOf: z.string().nullable().describe(
+    "The `since` for the next read, safe to pass as it is: this read's own `since` when it was incomplete, so nothing is skipped. Null unless this read used `since`.",
   ),
   fullBodyInput: z.object({
     numbers: z.array(z.number()),
     bodyLimit: z.null(),
+    maxIssues: z.number(),
   }).nullable().describe(
-    "The input that returns every incomplete body whole, to pass as JSON: --input '<this>'. Null when none is incomplete.",
+    "The input that returns every incomplete body whole, to pass as JSON: --input '<this>'. Numbers in `failures` that have no row are not in it; retry those by number. Null when none is incomplete.",
   ),
 });
 export type Digest = z.infer<typeof DigestSchema>;
@@ -157,42 +160,55 @@ async function selectRows(
   capacity: number,
   known: Set<number>,
   opts: ClientOptions,
-): Promise<{ rows: Row[]; truncated: boolean; failure?: Failure }> {
+): Promise<{ rows: Row[]; truncated: boolean; failures: Failure[] }> {
   const rows = new Map<number, Row>();
+  const failures: Failure[] = [];
   let added = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
+    const offset = page * PAGE_SIZE;
     let batch: Row[];
+    let received: number;
     try {
-      batch = await listPage(statuses, page * PAGE_SIZE, PAGE_SIZE, opts);
+      ({ rows: batch, received } = await listPage(
+        statuses,
+        offset,
+        PAGE_SIZE,
+        opts,
+      ));
     } catch (e) {
-      return {
-        rows: [...rows.values()],
-        truncated: false,
-        failure: {
-          number: null,
-          error: `list at offset ${page * PAGE_SIZE}: ${message(e)}`,
-        },
-      };
+      failures.push({
+        number: null,
+        error: `list at offset ${offset}: ${message(e)}`,
+      });
+      return { rows: [...rows.values()], truncated: false, failures };
+    }
+    if (batch.length < received) {
+      failures.push({
+        number: null,
+        error: `list at offset ${offset}: ${
+          received - batch.length
+        } row(s) had no valid number`,
+      });
     }
     for (const row of batch) {
       if (sinceMs !== undefined && Date.parse(row.updatedAt) < sinceMs) {
-        return { rows: [...rows.values()], truncated: false };
+        return { rows: [...rows.values()], truncated: false, failures };
       }
       // An issue seen twice moved during paging; one named in `numbers` is
       // already counted. Neither takes up capacity.
       if (!rows.has(row.number) && !known.has(row.number)) {
         if (added >= capacity) {
-          return { rows: [...rows.values()], truncated: true };
+          return { rows: [...rows.values()], truncated: true, failures };
         }
         added++;
       }
       rows.set(row.number, row);
     }
-    if (batch.length < PAGE_SIZE) {
-      return { rows: [...rows.values()], truncated: false };
+    if (received < PAGE_SIZE) {
+      return { rows: [...rows.values()], truncated: false, failures };
     }
   }
-  return { rows: [...rows.values()], truncated: true };
+  return { rows: [...rows.values()], truncated: true, failures };
 }
 
 /** Selects, reads and shapes. Input problems throw; read problems are reported. */
@@ -216,9 +232,12 @@ export async function buildDigest(
     throw new Error(`since is not a time: ${since}`);
   }
 
+  if (opts.apiKey) await checkKey(opts);
+
   // Taken before the first request, so an update during the read is seen again
-  // next time rather than missed.
-  const asOf = now().toISOString();
+  // next time rather than missed. The overlap covers a local clock ahead of the
+  // Lab's; a reader sees an issue twice rather than never.
+  const cursor = new Date(now().getTime() - CURSOR_OVERLAP_MS).toISOString();
   const failures: Failure[] = [];
   const unique = [...new Set(args.numbers ?? [])];
   const numbers = unique.slice(0, maxIssues);
@@ -235,7 +254,7 @@ export async function buildDigest(
     );
     rows = selected.rows;
     truncated ||= selected.truncated;
-    if (selected.failure) failures.push(selected.failure);
+    failures.push(...selected.failures);
   }
 
   const rowsByNumber = new Map(rows.map((r) => [r.number, r]));
@@ -250,6 +269,7 @@ export async function buildDigest(
       failures.push({ number, error: message(e) });
     }
   });
+  opts.signal?.throwIfAborted(); // a cancelled run is not a run of failed reads
 
   // A row whose body read failed is still reported, without its body. A number
   // with neither appears only in failures.
@@ -264,14 +284,19 @@ export async function buildDigest(
   failures.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
 
   const incomplete = issues.filter((i) => i.bodyTruncated).map((i) => i.number);
+  const complete = failures.length === 0 && !truncated;
   return {
     issues,
     failures,
-    complete: failures.length === 0 && !truncated,
+    complete,
     truncated,
-    asOf,
+    asOf: since === undefined ? null : complete ? cursor : since,
     fullBodyInput: incomplete.length
-      ? { numbers: incomplete, bodyLimit: null }
+      ? {
+        numbers: incomplete,
+        bodyLimit: null,
+        maxIssues: Math.max(DEFAULT_MAX_ISSUES, incomplete.length),
+      }
       : null,
   };
 }
@@ -285,10 +310,11 @@ export const behavior = {
   globalArguments: GlobalArgsSchema,
   resources: {
     digest: {
-      description: "The issues the last `issues` run selected. One record.",
+      description:
+        "The issues the last `issues` run selected. Instance `changes` for a read with `since`, so its cursor is not replaced by other reads; `digest` otherwise.",
       schema: DigestSchema,
       lifetime: "infinite",
-      garbageCollection: 20,
+      garbageCollection: 10,
     },
   },
   methods: {
@@ -297,11 +323,28 @@ export const behavior = {
         "Read Lab issues by number, by status, or by what changed since a cursor, into one record with bodies trimmed visibly. Bodies take one request per issue; bodyLimit 0 skips them for issues selected by since or status.",
       arguments: IssuesArgs,
       execute: async (args: IssuesInput, ctx: Ctx) => {
+        ctx.logger.info(
+          "Reading: {numbers} number(s), since {since}, status {status}",
+          {
+            numbers: args.numbers?.length ?? 0,
+            since: args.since ?? "none",
+            status: args.status?.join(",") ?? "none",
+          },
+        );
         const digest = await buildDigest(args, {
           apiKey: ctx.globalArgs.apiKey,
           userAgent: ctx.globalArgs.userAgent,
           signal: ctx.signal,
         });
+        // Writing this would put an empty record where the last good one is.
+        if (digest.issues.length === 0 && digest.failures.length > 0) {
+          const f = digest.failures[0];
+          throw new Error(
+            `Nothing could be read: ${digest.failures.length} failure(s), first ${
+              f.number === null ? "" : `#${f.number}: `
+            }${f.error}`,
+          );
+        }
         if (!digest.complete) {
           ctx.logger.warning(
             "Incomplete: {failures} failed read(s), truncated {truncated}",
@@ -309,7 +352,11 @@ export const behavior = {
           );
         }
         ctx.logger.info("{n} Lab issue(s)", { n: digest.issues.length });
-        const handle = await ctx.writeResource("digest", "digest", digest);
+        const handle = await ctx.writeResource(
+          "digest",
+          args.since === undefined ? "digest" : "changes",
+          digest,
+        );
         return { dataHandles: [handle] };
       },
     },
