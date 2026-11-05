@@ -27,7 +27,7 @@ const DEFAULT_MAX_ISSUES = 100;
 const CURSOR_OVERLAP_MS = 5 * 60_000;
 
 const GlobalArgsSchema = z.object({
-  apiKey: z.string().meta({ sensitive: true }).optional().describe(
+  apiKey: z.string().min(1).meta({ sensitive: true }).optional().describe(
     "A Swamp Club API key, from a vault. Without one, only public issues can be read.",
   ),
   userAgent: z.string().default(
@@ -40,7 +40,7 @@ const IssuesArgs = z.object({
     "Issues to read by number. Always one request each, whatever bodyLimit is.",
   ),
   since: z.string().optional().describe(
-    "ISO time. Selects issues updated at or after it, across statuses unless `status` narrows them. Pass the last record's `asOf`.",
+    "ISO time. Selects issues updated at or after it, across statuses unless `status` narrows them. To follow changes, pass the `asOf` of the latest `changes` record.",
   ),
   status: z.array(z.enum(STATUSES)).min(1).optional().describe(
     "Selects issues in these statuses, most recently updated first.",
@@ -89,8 +89,9 @@ const DigestSchema = z.object({
     "False when anything selected is missing: a failed read, or truncated.",
   ),
   truncated: z.boolean().describe("maxIssues or the page limit was reached."),
+  since: z.string().nullable().describe("The `since` this read used."),
   asOf: z.string().nullable().describe(
-    "The `since` for the next read, safe to pass as it is: this read's own `since` when it was incomplete, so nothing is skipped. Null unless this read used `since`.",
+    "The `since` for the next read: this read's own `since` when it was incomplete, so nothing is skipped. Null unless this read used `since` across all statuses. Moves the cursor only if each read chains from the last one's asOf.",
   ),
   fullBodyInput: z.object({
     numbers: z.array(z.number()),
@@ -121,8 +122,8 @@ function shape(
     return { ...base, body: null, bodyBytes: null, bodyTruncated: true };
   }
   const bodyBytes = textEncoder.encode(detail.body).length;
-  if (bodyLimit === 0) {
-    return { ...base, body: null, bodyBytes, bodyTruncated: bodyBytes > 0 };
+  if (bodyLimit === 0 && bodyBytes > 0) {
+    return { ...base, body: null, bodyBytes, bodyTruncated: true };
   }
   if (bodyLimit === null || detail.body.length <= bodyLimit) {
     return { ...base, body: detail.body, bodyBytes, bodyTruncated: false };
@@ -163,13 +164,17 @@ async function selectRows(
 ): Promise<{ rows: Row[]; truncated: boolean; failures: Failure[] }> {
   const rows = new Map<number, Row>();
   const failures: Failure[] = [];
+  const narrowed = statuses.length < STATUSES.length;
+  let firstTotal: number | undefined;
+  let moved = false;
   let added = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * PAGE_SIZE;
     let batch: Row[];
     let received: number;
+    let total: number | undefined;
     try {
-      ({ rows: batch, received } = await listPage(
+      ({ rows: batch, received, total } = await listPage(
         statuses,
         offset,
         PAGE_SIZE,
@@ -188,6 +193,18 @@ async function selectRows(
         error: `list at offset ${offset}: ${
           received - batch.length
         } row(s) had no valid number`,
+      });
+    }
+    // Offset paging: when an issue leaves the selected statuses, the rows after
+    // it shift up, and an unrelated one falls between two pages. Across all
+    // statuses nothing leaves the list, so only a narrowed read can lose a row.
+    firstTotal ??= total;
+    if (narrowed && !moved && total !== firstTotal) {
+      moved = true;
+      failures.push({
+        number: null,
+        error:
+          `the list changed during the read (total ${firstTotal}, then ${total}), so an issue may be missing`,
       });
     }
     for (const row of batch) {
@@ -290,7 +307,14 @@ export async function buildDigest(
     failures,
     complete,
     truncated,
-    asOf: since === undefined ? null : complete ? cursor : since,
+    since: since ?? null,
+    // A read narrowed by status covers only those statuses, so moving the cursor
+    // on it would skip changes in the others.
+    asOf: since === undefined || status?.length
+      ? null
+      : complete
+      ? cursor
+      : since,
     fullBodyInput: incomplete.length
       ? {
         numbers: incomplete,
@@ -311,7 +335,7 @@ export const behavior = {
   resources: {
     digest: {
       description:
-        "The issues the last `issues` run selected. Instance `changes` for a read with `since`, so its cursor is not replaced by other reads; `digest` otherwise.",
+        "The issues the last `issues` run selected. Instance `changes` for a `since` read across all statuses, so other reads can't replace its cursor; `digest` otherwise.",
       schema: DigestSchema,
       lifetime: "infinite",
       garbageCollection: 10,
@@ -354,7 +378,7 @@ export const behavior = {
         ctx.logger.info("{n} Lab issue(s)", { n: digest.issues.length });
         const handle = await ctx.writeResource(
           "digest",
-          args.since === undefined ? "digest" : "changes",
+          digest.asOf === null ? "digest" : "changes",
           digest,
         );
         return { dataHandles: [handle] };

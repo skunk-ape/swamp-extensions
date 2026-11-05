@@ -148,7 +148,7 @@ export async function listPage(
   offset: number,
   limit: number,
   opts: ClientOptions,
-): Promise<{ rows: Row[]; received: number }> {
+): Promise<{ rows: Row[]; received: number; total?: number }> {
   const u = new URL(`${API_URL}/list`);
   u.searchParams.set("sort", "updated-desc");
   for (const s of statuses) u.searchParams.append("status", s);
@@ -162,6 +162,7 @@ export async function listPage(
   return {
     rows: body.issues.map(normalizeRow).filter((r: Row | null) => r !== null),
     received: body.issues.length,
+    total: typeof body.total === "number" ? body.total : undefined,
   };
 }
 

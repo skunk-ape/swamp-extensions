@@ -153,7 +153,7 @@ Deno.test("bodyLimit 0 with numbers still reads each, and reports the size it sa
   const d = await buildDigest({ ...defaults, numbers: [1, 2], bodyLimit: 0 }, lab.opts);
   assertEquals(lab.bodyCalls().length, 2);
   assertEquals(d.issues.map((i) => [i.number, i.body, i.bodyBytes, i.bodyTruncated]), [
-    [2, null, 0, false],
+    [2, "", 0, false],
     [1, null, 3, true],
   ]);
   assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null, maxIssues: 100 });
@@ -319,6 +319,110 @@ Deno.test("only a since read gives a cursor, and an incomplete one does not move
   assertEquals(incomplete.asOf, T(0));
 });
 
+Deno.test("a since read narrowed by status gives no cursor, so changes in other statuses aren't skipped", async () => {
+  const lab = fakeLab([
+    { number: 1, updatedAt: T(5), status: "open" },
+    { number: 2, updatedAt: T(5), status: "shipped" },
+  ]);
+  const narrow = await buildDigest({ since: T(0), status: ["open"], bodyLimit: 0, maxIssues: 10 }, lab.opts, NOW);
+  assertEquals(narrow.issues.map((i) => i.number), [1]);
+  assertEquals(narrow.asOf, null);
+  assertEquals(narrow.since, T(0));
+  const wide = await buildDigest({ since: T(0), bodyLimit: 0, maxIssues: 10 }, lab.opts, NOW);
+  assertEquals(wide.issues.map((i) => i.number), [2, 1]);
+  assertEquals(wide.asOf, "2026-01-31T23:55:00.000Z");
+});
+
+Deno.test("a failed list page or body read holds the cursor at this read's since", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(5), body: "b" }], {
+    detail: () => json({}, 500),
+  });
+  const failedBody = await buildDigest({ ...defaults, since: T(0) }, lab.opts, NOW);
+  assertEquals(failedBody.complete, false);
+  assertEquals(failedBody.asOf, T(0));
+  const failedList = await buildDigest({ ...defaults, since: T(0) }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json({}, 500)),
+  }, NOW);
+  assertEquals(failedList.failures, [{ number: null, error: "list at offset 0: HTTP 500" }]);
+  assertEquals(failedList.asOf, T(0));
+});
+
+Deno.test("a status read reports the list changing under it", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, {
+    issues: [row({ number: 200, updatedAt: T(1) })],
+    total: 149,
+  }];
+  let n = 0;
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  });
+  assertEquals(d.complete, false);
+  assertEquals(d.failures, [{
+    number: null,
+    error: "the list changed during the read (total 150, then 149), so an issue may be missing",
+  }]);
+  assertEquals(d.issues.length, 101);
+});
+
+Deno.test("across all statuses a growing total is not a failure: nothing can fall between pages", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, {
+    issues: [row({ number: 200, updatedAt: T(1) })],
+    total: 151,
+  }];
+  let n = 0;
+  const d = await buildDigest({ since: T(0), bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  });
+  assertEquals(d.failures, []);
+  assertEquals(d.complete, true);
+});
+
+Deno.test("an empty apiKey is refused rather than reading as no key", () => {
+  const schema = behavior.globalArguments;
+  assertEquals(schema.safeParse({ apiKey: "" }).success, false);
+  assertEquals(schema.safeParse({}).success, true);
+  assertEquals(schema.safeParse({ apiKey: "k" }).success, true);
+});
+
+Deno.test("cancelling during a real Retry-After wait stops at once", async () => {
+  const controller = new AbortController();
+  const started = Date.now();
+  setTimeout(() => controller.abort(new Error("cancelled")), 10);
+  await assertRejects(
+    () =>
+      buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+        userAgent: "t",
+        signal: controller.signal,
+        fetchImpl: () => Promise.resolve(new Response(null, { status: 429, headers: { "retry-after": "30" } })),
+      }),
+    Error,
+    "cancelled",
+  );
+  assert(Date.now() - started < 5000);
+});
+
+Deno.test("cancelling during list paging stops rather than recording a failed page", async () => {
+  const controller = new AbortController();
+  await assertRejects(
+    () =>
+      buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 5 }, {
+        userAgent: "t",
+        signal: controller.signal,
+        fetchImpl: () => {
+          controller.abort(new Error("cancelled"));
+          return Promise.reject(new Error("aborted"));
+        },
+      }),
+    Error,
+    "cancelled",
+  );
+});
+
 Deno.test("a since read writes its own instance, so other reads can't replace its cursor", async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = ((input: string | URL | Request) => {
@@ -341,7 +445,8 @@ Deno.test("a since read writes its own instance, so other reads can't replace it
     };
     await behavior.methods.issues.execute({ since: T(0), bodyLimit: 0, maxIssues: 5 }, ctx);
     await behavior.methods.issues.execute({ numbers: [1], bodyLimit: 2000, maxIssues: 5 }, ctx);
-    assertEquals(names, ["changes", "digest"]);
+    await behavior.methods.issues.execute({ since: T(0), status: ["open"], bodyLimit: 0, maxIssues: 5 }, ctx);
+    assertEquals(names, ["changes", "digest", "digest"]);
   } finally {
     globalThis.fetch = realFetch;
   }
