@@ -1,0 +1,386 @@
+/**
+ * The digest against a fake Lab: the fixed shape, visible trimming, per-issue
+ * failures, paging to the cursor, the cap, redirects, and the key.
+ *
+ * Run with: ~/.swamp/deno/deno test
+ */
+import { assert, assertEquals, assertRejects } from "jsr:@std/assert@1.0.19";
+import { behavior, buildDigest } from "./lab.ts";
+import { type ClientOptions, type FetchLike, normalizeRow } from "./_lib/lab_client.ts";
+
+type Raw = {
+  number: number;
+  updatedAt: string;
+  status?: string;
+  body?: string;
+};
+
+const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
+
+function row(r: Raw) {
+  return {
+    number: r.number,
+    title: ` Issue ${r.number} `,
+    status: r.status ?? "open",
+    type: "bug",
+    authorUsername: "someone",
+    assignees: [],
+    blocked: false,
+    updatedAt: r.updatedAt,
+  };
+}
+
+/** A Lab holding `issues`, served newest first, recording every URL it was asked for. */
+function fakeLab(issues: Raw[], over: { detail?: (n: number) => Response | undefined } = {}) {
+  const calls: string[] = [];
+  const sorted = [...issues].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const fetchImpl: FetchLike = (input) => {
+    const u = new URL(String(input));
+    calls.push(u.pathname + u.search);
+    if (u.pathname.endsWith("/lab/list")) {
+      const statuses = u.searchParams.getAll("status");
+      const offset = Number(u.searchParams.get("offset"));
+      const limit = Number(u.searchParams.get("limit"));
+      const page = sorted.filter((i) => statuses.includes(i.status ?? "open"))
+        .slice(offset, offset + limit).map(row);
+      return Promise.resolve(json({ issues: page, total: sorted.length }));
+    }
+    const n = Number(u.pathname.split("/").pop());
+    const custom = over.detail?.(n);
+    if (custom) return Promise.resolve(custom);
+    const found = sorted.find((i) => i.number === n);
+    if (!found) return Promise.resolve(json({ error: "not found" }, 404));
+    return Promise.resolve(json({ issue: { ...row(found), body: found.body ?? "" } }));
+  };
+  return {
+    calls,
+    bodyCalls: () => calls.filter((c) => c.includes("/lab/issues/")),
+    listCalls: () => calls.filter((c) => c.includes("/lab/list")),
+    opts: { userAgent: "test", fetchImpl, sleep: () => Promise.resolve() } as ClientOptions,
+  };
+}
+
+const T = (n: number) => new Date(Date.UTC(2026, 0, 1) + n * 3600_000).toISOString();
+const NOW = () => new Date("2026-02-01T00:00:00.000Z");
+const defaults = { bodyLimit: 2000 as number | null, maxIssues: 100 };
+
+Deno.test("every issue has the fixed shape, whatever form assignees take", () => {
+  const r = normalizeRow({
+    number: 7,
+    title: " t ",
+    status: "open",
+    type: "bug",
+    authorUsername: "a",
+    assignees: ["zed", { username: "amy" }, { name: "no-handle" }, null],
+    blocked: true,
+    updatedAt: T(1),
+  });
+  assertEquals(r, {
+    number: 7,
+    url: "https://swamp-club.com/lab/7",
+    title: "t",
+    status: "open",
+    type: "bug",
+    author: "a",
+    assignees: ["amy", "zed"],
+    blocked: true,
+    updatedAt: T(1),
+  });
+  assertEquals(normalizeRow({ number: 8, assignees: "nope" })?.author, null);
+  assertEquals(normalizeRow({ number: 8, assignees: "nope" })?.assignees, []);
+  assertEquals(normalizeRow({ title: "no number" }), null);
+});
+
+Deno.test("no selector is an error, and so is a since that is not a time", async () => {
+  const lab = fakeLab([]);
+  await assertRejects(() => buildDigest({ ...defaults }, lab.opts), Error, "at least one");
+  await assertRejects(
+    () => buildDigest({ ...defaults, since: "yesterday" }, lab.opts),
+    Error,
+    "not a time",
+  );
+  assertEquals(lab.calls, []);
+});
+
+Deno.test("a trimmed body says so, with its original size and the way to get it whole", async () => {
+  const lab = fakeLab([
+    { number: 1, updatedAt: T(1), body: "é".repeat(50) },
+    { number: 2, updatedAt: T(2), body: "short" },
+  ]);
+  const d = await buildDigest({ ...defaults, numbers: [1, 2], bodyLimit: 10 }, lab.opts);
+  const [two, one] = d.issues;
+  assertEquals(one.number, 1);
+  assertEquals(one.body, "é".repeat(10));
+  assertEquals(one.bodyBytes, 100);
+  assertEquals(one.bodyTruncated, true);
+  assertEquals(two.body, "short");
+  assertEquals(two.bodyBytes, 5);
+  assertEquals(two.bodyTruncated, false);
+  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null });
+  assertEquals(d.complete, true);
+});
+
+Deno.test("trimming never splits a surrogate pair", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(1), body: "ab😀cd" }]);
+  const d = await buildDigest({ ...defaults, numbers: [1], bodyLimit: 3 }, lab.opts);
+  assertEquals(d.issues[0].body, "ab");
+  assertEquals(d.issues[0].bodyTruncated, true);
+});
+
+Deno.test("bodyLimit null returns everything and no fullBodyInput", async () => {
+  const body = "x".repeat(5000);
+  const lab = fakeLab([{ number: 1, updatedAt: T(1), body }]);
+  const d = await buildDigest({ ...defaults, numbers: [1], bodyLimit: null }, lab.opts);
+  assertEquals(d.issues[0].body, body);
+  assertEquals(d.issues[0].bodyTruncated, false);
+  assertEquals(d.fullBodyInput, null);
+});
+
+Deno.test("bodyLimit 0 makes no body requests for listed issues, and says bodies were omitted", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(1), body: "b" }, { number: 2, updatedAt: T(2) }]);
+  const d = await buildDigest({ ...defaults, status: ["open"], bodyLimit: 0 }, lab.opts);
+  assertEquals(lab.bodyCalls(), []);
+  assertEquals(d.issues.map((i) => [i.number, i.body, i.bodyBytes, i.bodyTruncated]), [
+    [2, null, null, true],
+    [1, null, null, true],
+  ]);
+  assertEquals(d.fullBodyInput, { numbers: [2, 1], bodyLimit: null });
+  assertEquals(d.complete, true);
+});
+
+Deno.test("bodyLimit 0 with numbers still reads each, and reports the size it saw", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(1), body: "abc" }, { number: 2, updatedAt: T(2) }]);
+  const d = await buildDigest({ ...defaults, numbers: [1, 2], bodyLimit: 0 }, lab.opts);
+  assertEquals(lab.bodyCalls().length, 2);
+  assertEquals(d.issues.map((i) => [i.number, i.body, i.bodyBytes, i.bodyTruncated]), [
+    [2, null, 0, false],
+    [1, null, 3, true],
+  ]);
+  assertEquals(d.fullBodyInput, { numbers: [1], bodyLimit: null });
+});
+
+Deno.test("one failed read lands in failures with the rest intact", async () => {
+  const lab = fakeLab(
+    [{ number: 1, updatedAt: T(1), body: "one" }, { number: 3, updatedAt: T(3), body: "three" }],
+    { detail: (n) => n === 3 ? json({}, 500) : undefined },
+  );
+  const d = await buildDigest({ ...defaults, numbers: [1, 2, 3] }, lab.opts);
+  assertEquals(d.issues.map((i) => i.number), [1]);
+  assertEquals(d.failures, [{ number: 2, error: "HTTP 404" }, { number: 3, error: "HTTP 500" }]);
+  assertEquals(d.complete, false);
+  assertEquals(d.truncated, false);
+});
+
+Deno.test("a listed issue whose body read fails keeps its row and says the body is missing", async () => {
+  const lab = fakeLab(
+    [{ number: 1, updatedAt: T(1), body: "one" }, { number: 2, updatedAt: T(2), body: "two" }],
+    { detail: (n) => n === 2 ? json({}, 500) : undefined },
+  );
+  const d = await buildDigest({ ...defaults, status: ["open"] }, lab.opts);
+  assertEquals(d.issues.map((i) => [i.number, i.body, i.bodyBytes, i.bodyTruncated]), [
+    [2, null, null, true],
+    [1, "one", 3, false],
+  ]);
+  assertEquals(d.failures, [{ number: 2, error: "HTTP 500" }]);
+  assertEquals(d.fullBodyInput, { numbers: [2], bodyLimit: null });
+});
+
+Deno.test("a failed list page is reported, and what was read is kept", async () => {
+  const issues = Array.from({ length: 150 }, (_, i) => ({ number: i + 1, updatedAt: T(i) }));
+  const lab = fakeLab(issues);
+  const inner = lab.opts.fetchImpl!;
+  const opts: ClientOptions = {
+    ...lab.opts,
+    fetchImpl: (input, init) =>
+      String(input).includes("offset=100")
+        ? Promise.resolve(json({}, 500))
+        : inner(input, init),
+  };
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, opts);
+  assertEquals(d.issues.length, 100);
+  assertEquals(d.failures, [{ number: null, error: "list at offset 100: HTTP 500" }]);
+  assertEquals(d.complete, false);
+});
+
+Deno.test("since stops paging at the cursor and includes an issue exactly on it", async () => {
+  const issues = Array.from({ length: 250 }, (_, i) => ({ number: i + 1, updatedAt: T(i) }));
+  const lab = fakeLab(issues);
+  const d = await buildDigest(
+    { since: T(180), bodyLimit: 0, maxIssues: 500 },
+    lab.opts,
+    NOW,
+  );
+  assertEquals(d.issues.length, 70);
+  assertEquals(d.issues.at(-1)?.number, 181);
+  assertEquals(lab.listCalls().length, 1);
+  assertEquals(d.asOf, "2026-02-01T00:00:00.000Z");
+  assertEquals(d.complete, true);
+  for (const s of ["open", "triaged", "in_progress", "shipped", "closed"]) {
+    assert(lab.listCalls()[0].includes(`status=${s}`), `names ${s}`);
+  }
+  assert(lab.listCalls()[0].includes("sort=updated-desc"));
+});
+
+Deno.test("since pages as far as it must, and status narrows it", async () => {
+  const issues = Array.from({ length: 250 }, (_, i) => ({
+    number: i + 1,
+    updatedAt: T(i),
+    status: i % 2 ? "shipped" : "open",
+  }));
+  const lab = fakeLab(issues);
+  const d = await buildDigest(
+    { since: T(0), status: ["open"], bodyLimit: 0, maxIssues: 500 },
+    lab.opts,
+  );
+  assertEquals(d.issues.length, 125);
+  assert(d.issues.every((i) => i.status === "open"));
+  assertEquals(lab.listCalls().length, 2);
+});
+
+Deno.test("maxIssues sets truncated and complete false, so a cursor is not moved past what was dropped", async () => {
+  const issues = Array.from({ length: 10 }, (_, i) => ({ number: i + 1, updatedAt: T(i) }));
+  const lab = fakeLab(issues);
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 3 }, lab.opts);
+  assertEquals(d.issues.map((i) => i.number), [10, 9, 8]);
+  assertEquals(d.truncated, true);
+  assertEquals(d.complete, false);
+});
+
+Deno.test("exactly maxIssues issues is not truncated", async () => {
+  const issues = Array.from({ length: 3 }, (_, i) => ({ number: i + 1, updatedAt: T(i) }));
+  const lab = fakeLab(issues);
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 3 }, lab.opts);
+  assertEquals(d.truncated, false);
+  assertEquals(d.complete, true);
+});
+
+Deno.test("numbers beyond maxIssues are truncated", async () => {
+  const lab = fakeLab([{ number: 1, updatedAt: T(1) }, { number: 2, updatedAt: T(2) }]);
+  const d = await buildDigest({ numbers: [1, 2], bodyLimit: 2000, maxIssues: 1 }, lab.opts);
+  assertEquals(d.issues.map((i) => i.number), [1]);
+  assertEquals(d.truncated, true);
+});
+
+Deno.test("numbers and a selector combine without reading or counting an issue twice", async () => {
+  const lab = fakeLab([
+    { number: 1, updatedAt: T(1), body: "one", status: "closed" },
+    { number: 2, updatedAt: T(2), body: "two" },
+    { number: 3, updatedAt: T(3), body: "three" },
+  ]);
+  const d = await buildDigest({ numbers: [1, 3, 3], status: ["open"], bodyLimit: 2000, maxIssues: 3 }, lab.opts);
+  assertEquals(d.issues.map((i) => i.number), [3, 2, 1]);
+  assertEquals(lab.bodyCalls().length, 3);
+  assertEquals(d.truncated, false);
+});
+
+Deno.test("redirects are refused, not followed", async () => {
+  const seen: string[] = [];
+  const opts: ClientOptions = {
+    userAgent: "t",
+    apiKey: "k",
+    fetchImpl: (input, init) => {
+      seen.push(String(input));
+      assertEquals(init?.redirect, "manual");
+      return Promise.resolve(
+        new Response(null, { status: 302, headers: { location: "https://elsewhere.example/" } }),
+      );
+    },
+  };
+  const d = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, opts);
+  assertEquals(seen.length, 1);
+  assertEquals(d.failures, [{ number: 1, error: "refused a redirect (HTTP 302)" }]);
+});
+
+Deno.test("429 and 503 are retried, honoring Retry-After, then reported", async () => {
+  const waits: number[] = [];
+  let n = 0;
+  const responses = [
+    () => new Response(null, { status: 429, headers: { "retry-after": "2" } }),
+    () => new Response(null, { status: 503 }),
+    () => json({ issue: { ...row({ number: 1, updatedAt: T(1) }), body: "ok" } }),
+  ];
+  const d = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    sleep: (ms) => {
+      waits.push(ms);
+      return Promise.resolve();
+    },
+    fetchImpl: () => Promise.resolve(responses[n++]()),
+  });
+  assertEquals(d.issues[0].body, "ok");
+  assertEquals(waits, [2000, 2000]);
+
+  let attempts = 0;
+  const failed = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    sleep: () => Promise.resolve(),
+    fetchImpl: () => {
+      attempts++;
+      return Promise.resolve(new Response(null, { status: 429 }));
+    },
+  });
+  assertEquals(attempts, 4);
+  assertEquals(failed.failures, [{ number: 1, error: "HTTP 429" }]);
+});
+
+Deno.test("a body that is not this issue, or not JSON, is a failure", async () => {
+  const wrong = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json({ issue: row({ number: 2, updatedAt: T(1) }) })),
+  });
+  assertEquals(wrong.failures, [{ number: 1, error: "the response is not this issue" }]);
+  const html = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(new Response("<html>")),
+  });
+  assertEquals(html.failures, [{ number: 1, error: "the response was not JSON" }]);
+});
+
+Deno.test("the key is sent to the Lab and never reaches the record or the logs", async () => {
+  const KEY = "swamp_secret_key_value";
+  const realFetch = globalThis.fetch;
+  const auth: (string | null)[] = [];
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    auth.push(new Headers(init?.headers).get("authorization"));
+    const u = new URL(String(input));
+    if (u.pathname.endsWith("/issues/2")) return Promise.resolve(json({}, 500));
+    return Promise.resolve(
+      json({ issue: { ...row({ number: 1, updatedAt: T(1) }), body: "b" } }),
+    );
+  }) as typeof fetch;
+  try {
+    const logged: unknown[] = [];
+    let written: unknown;
+    const log = (...a: unknown[]) => logged.push(a);
+    const result = await behavior.methods.issues.execute(
+      { numbers: [1, 2], bodyLimit: 2000, maxIssues: 100 },
+      {
+        globalArgs: { apiKey: KEY, userAgent: "t" },
+        logger: { info: log, warning: log },
+        writeResource: (spec: string, name: string, data: unknown) => {
+          written = data;
+          return Promise.resolve({ spec, name });
+        },
+      },
+    );
+    assertEquals(result.dataHandles, [{ spec: "digest", name: "digest" }]);
+    assertEquals(auth, [`Bearer ${KEY}`, `Bearer ${KEY}`]);
+    assert(!JSON.stringify(written).includes(KEY));
+    assert(!JSON.stringify(logged).includes(KEY));
+    assertEquals(behavior.resources.digest.schema.safeParse(written).success, true);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+Deno.test("without a key no Authorization header is sent", async () => {
+  let header: string | null = "unset";
+  await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    fetchImpl: (_input, init) => {
+      header = new Headers(init?.headers).get("authorization");
+      return Promise.resolve(json({}, 404));
+    },
+  });
+  assertEquals(header, null);
+});

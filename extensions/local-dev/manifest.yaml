@@ -1,0 +1,35 @@
+manifestVersion: 1
+name: "@skunk-ape/local-dev"
+version: 2026.11.04.1
+license: MIT
+description: |
+  Tracker reads for local development, shaped so an agent can rerun them
+  cheaply: one call, one record, one fixed shape.
+
+  `lab` reads Swamp Club Lab issues by number, by status, or by what changed
+  since a cursor. Bodies are trimmed visibly, with the original size and the
+  exact input that returns them whole, and a failed read is reported per issue.
+
+  Read-only. Reads what the optional API key can see, and public issues without
+  one.
+repository: "https://github.com/skunk-ape/swamp-extensions"
+
+paths:
+  base: manifest
+
+behaviors:
+  - lab.ts
+workflows: []
+vaults: []
+drivers: []
+datastores: []
+reports: []
+skills: []
+additionalFiles:
+  - LICENSE
+  - README.md
+labels:
+  - swamp-club
+  - lab
+  - local-dev
+dependencies: []
