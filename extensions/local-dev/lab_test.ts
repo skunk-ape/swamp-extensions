@@ -367,6 +367,66 @@ Deno.test("a status read reports the list changing under it", async () => {
   assertEquals(d.issues.length, 101);
 });
 
+Deno.test("a status read reports an unread issue updated mid-read: it jumps behind the reader and rows repeat", async () => {
+  // 150 issues, newest first. After page 1, #140 is updated and moves to the top,
+  // so #100 repeats at the start of page 2 and #140 is never seen.
+  let list = Array.from({ length: 150 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  let page = 0;
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: (input) => {
+      const offset = Number(new URL(String(input)).searchParams.get("offset"));
+      const issues = list.slice(offset, offset + 100);
+      if (page++ === 0) {
+        const moved = list.find((r) => r.number === 140)!;
+        list = [{ ...moved, updatedAt: T(900) }, ...list.filter((r) => r !== moved)];
+      }
+      return Promise.resolve(json({ issues, total: 150 }));
+    },
+  });
+  assert(!d.issues.some((i) => i.number === 140));
+  assertEquals(d.complete, false);
+  assertEquals(d.failures, [{
+    number: null,
+    error: "the list changed during the read (#100 appeared twice), so an issue may be missing",
+  }]);
+});
+
+Deno.test("a since read across all statuses tolerates a repeat, because its cursor sees the update next time", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, { issues: [page[99]], total: 150 }];
+  let n = 0;
+  const d = await buildDigest({ since: T(0), bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  });
+  assertEquals(d.failures, []);
+  assertEquals(d.complete, true);
+});
+
+Deno.test("a since read reports a shrinking total, and holds its cursor: a row may have fallen between pages", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, {
+    issues: [row({ number: 200, updatedAt: T(1) })],
+    total: 149,
+  }];
+  let n = 0;
+  const d = await buildDigest({ since: T(0), bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  }, NOW);
+  assertEquals(d.complete, false);
+  assertEquals(d.asOf, T(0));
+});
+
+Deno.test("a detail response with no body field is a failed read, not an empty body", async () => {
+  const d = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json({ issue: row({ number: 1, updatedAt: T(1) }) })),
+  });
+  assertEquals(d.failures, [{ number: 1, error: "the response has no body" }]);
+});
+
 Deno.test("across all statuses a growing total is not a failure: nothing can fall between pages", async () => {
   const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
   const responses = [{ issues: page, total: 150 }, {

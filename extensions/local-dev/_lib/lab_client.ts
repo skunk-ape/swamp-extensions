@@ -112,8 +112,9 @@ async function getJson(url: string, opts: ClientOptions): Promise<unknown> {
       await res.body?.cancel();
       throw new Error(`HTTP ${res.status}`);
     }
+    const text = await res.text(); // a timeout here says so, rather than "not JSON"
     try {
-      return await res.json();
+      return JSON.parse(text);
     } catch {
       throw new Error("the response was not JSON");
     }
@@ -191,5 +192,7 @@ export async function readIssue(
   if (!row || row.number !== number) {
     throw new Error("the response is not this issue");
   }
+  // Missing is not empty: recording "" would claim a whole body we never saw.
+  if (d.issue.body === undefined) throw new Error("the response has no body");
   return { row, body: String(d.issue.body ?? "") };
 }

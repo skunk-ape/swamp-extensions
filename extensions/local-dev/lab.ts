@@ -158,15 +158,24 @@ async function mapBounded<T>(
 async function selectRows(
   statuses: readonly Status[],
   sinceMs: number | undefined,
+  cursorRead: boolean,
   capacity: number,
   known: Set<number>,
   opts: ClientOptions,
 ): Promise<{ rows: Row[]; truncated: boolean; failures: Failure[] }> {
   const rows = new Map<number, Row>();
   const failures: Failure[] = [];
-  const narrowed = statuses.length < STATUSES.length;
   let firstTotal: number | undefined;
   let moved = false;
+  const reportMoved = (detail: string) => {
+    if (moved) return;
+    moved = true;
+    failures.push({
+      number: null,
+      error:
+        `the list changed during the read (${detail}), so an issue may be missing`,
+    });
+  };
   let added = 0;
   for (let page = 0; page < MAX_PAGES; page++) {
     const offset = page * PAGE_SIZE;
@@ -195,24 +204,26 @@ async function selectRows(
         } row(s) had no valid number`,
       });
     }
-    // Offset paging: when an issue leaves the selected statuses, the rows after
-    // it shift up, and an unrelated one falls between two pages. Across all
-    // statuses nothing leaves the list, so only a narrowed read can lose a row.
+    // Offset paging. An issue leaving the list shifts the rows after it up, and an
+    // unrelated one falls between two pages, so a shrinking total is always
+    // reported. Without a cursor to catch up next time, so is a total that moved
+    // at all, and a repeated row: an unread issue updated mid-read jumps to the
+    // top, behind the reader, and the rows it passed repeat.
     firstTotal ??= total;
-    if (narrowed && !moved && total !== firstTotal) {
-      moved = true;
-      failures.push({
-        number: null,
-        error:
-          `the list changed during the read (total ${firstTotal}, then ${total}), so an issue may be missing`,
-      });
+    if (
+      total !== undefined && firstTotal !== undefined &&
+      (total < firstTotal || (!cursorRead && total !== firstTotal))
+    ) {
+      reportMoved(`total ${firstTotal}, then ${total}`);
     }
     for (const row of batch) {
       if (sinceMs !== undefined && Date.parse(row.updatedAt) < sinceMs) {
         return { rows: [...rows.values()], truncated: false, failures };
       }
-      // An issue seen twice moved during paging; one named in `numbers` is
-      // already counted. Neither takes up capacity.
+      if (!cursorRead && rows.has(row.number)) {
+        reportMoved(`#${row.number} appeared twice`);
+      }
+      // An issue seen twice, or named in `numbers`, doesn't take up capacity.
       if (!rows.has(row.number) && !known.has(row.number)) {
         if (added >= capacity) {
           return { rows: [...rows.values()], truncated: true, failures };
@@ -265,6 +276,7 @@ export async function buildDigest(
     const selected = await selectRows(
       status?.length ? status : STATUSES,
       sinceMs,
+      since !== undefined && !status?.length,
       maxIssues - numbers.length,
       new Set(numbers),
       opts,
