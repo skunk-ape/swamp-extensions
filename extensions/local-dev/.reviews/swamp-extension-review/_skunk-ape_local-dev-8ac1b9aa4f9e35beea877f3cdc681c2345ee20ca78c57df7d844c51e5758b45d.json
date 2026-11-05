@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/local-dev",
+  "version": "2026.11.04.1",
+  "reviewedAt": "2026-11-05T19:56:30Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "apiKey is optional and min(1). sensitive sits on the inner schema, and z.toJSONSchema keeps sensitive true through the optional wrapper. The key goes only in the Authorization header, redirects are refused including on whoami, and a test asserts it is absent from the record and logs. No-key whoami returns 401 on production. Reviewed by reading and tests only: the vault path is still unexercised, and C1 is to confirm it."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Structured info on entry and completion, warning when incomplete, nothing sensitive logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "R4-F5 (low): HTTP failures carry only the status, a disclosed deviation. Otherwise sound: input errors throw before any request, a run that read nothing throws before writing, and cancellation throws rather than recording failures. A real body stall reported a timeout, not 'not JSON'."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "43 tests pass on a scratch copy. R4-F2 (medium): mutants survive for the R3-F3 timeout path, for since plus status being treated as a cursor read, and for a growing total on a no-cursor read. The test context is hand-built instead of createModelTestContext, disclosed; a grep confirms no extension in the repository uses it."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only, so a rerun is safe. A failed or incomplete since read holds the cursor, and a run that read nothing leaves the last record in place. The one way a cursor passes a missed row is under api-contracts, R4-F1."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "R4-F1 (medium): a total that grows then shrinks across pages hides a removal from a since read, so a row is lost with complete true and the cursor moves past it (reproduced). R4-F3 (low): paging ignores total, so a server page cap reads as complete. R4-F4 (low): a row with no updatedAt passes the since test. Checked read-only on production: updated-desc had no inversions or ties over 300 rows, total was present on every page, limit=100 was honored, and 60 detail responses all had a non-empty string body, so R3-F4 raises no false failures in that sample. Retry-After and backoff are correct."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Response bodies are cancelled on redirect, retry and error paths, timeouts are per attempt, and the method creates no files or external resources."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Examples use the public swamp-club.com URLs and placeholder values; the key in tests is fake, and private #2581 is not in the tree. No IPs or internal hostnames."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "No passthrough. Mechanical checks pass: all seven DigestSchema fields are written on the one writeResource call, with no placeholders. truncated is set from both the maxIssues cap and the page limit, and both digest and changes use the one schema."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "lifetime infinite with garbageCollection 10, and the README states that private bodies are kept for 10 versions."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only digest, not a CRUD lifecycle."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "issue",
+      "note": "R4-F6 (low): numbers plus since writes named but unchanged issues into changes. Mechanically sound: one instance per run, either digest or changes, in the same shape, and a narrowed read cannot replace the cursor."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "The method reads no stored state; the caller passes the cursor as input."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "Initial version, never published per the dry run. The manifest and behavior versions agree at 2026.11.04.1."
+    }
+  ]
+}
