@@ -442,6 +442,73 @@ Deno.test("across all statuses a growing total is not a failure: nothing can fal
   assertEquals(d.complete, true);
 });
 
+Deno.test("a since read reports a fall from the page before, even if the total only returns to where it began", async () => {
+  // 250 issues. Before page 2 one is created, so #100 repeats. Before page 3 a read
+  // one is removed, so #200 falls between the pages, with the total back at 250.
+  const rows = Array.from({ length: 250 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [
+    { issues: rows.slice(0, 100), total: 250 },
+    { issues: rows.slice(99, 199), total: 251 },
+    { issues: rows.slice(200), total: 250 },
+  ];
+  let n = 0;
+  const d = await buildDigest({ since: T(0), bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  }, NOW);
+  assert(!d.issues.some((i) => i.number === 200));
+  assertEquals(d.failures, [{
+    number: null,
+    error: "the list changed during the read (total 251, then 250), so an issue may be missing",
+  }]);
+  assertEquals(d.complete, false);
+  assertEquals(d.asOf, T(0));
+});
+
+Deno.test("a since read narrowed by status reports a repeat, because no later read would catch what it missed", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, { issues: [page[99]], total: 150 }];
+  let n = 0;
+  const d = await buildDigest({ since: T(0), status: ["open"], bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  });
+  assertEquals(d.failures, [{
+    number: null,
+    error: "the list changed during the read (#100 appeared twice), so an issue may be missing",
+  }]);
+  assertEquals(d.complete, false);
+  assertEquals(d.asOf, null);
+});
+
+Deno.test("a status read reports a growing total: the new issue sits behind the reader", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => row({ number: i + 1, updatedAt: T(500 - i) }));
+  const responses = [{ issues: page, total: 150 }, {
+    issues: [row({ number: 200, updatedAt: T(1) })],
+    total: 151,
+  }];
+  let n = 0;
+  const d = await buildDigest({ status: ["open"], bodyLimit: 0, maxIssues: 500 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(json(responses[n++])),
+  });
+  assertEquals(d.failures, [{
+    number: null,
+    error: "the list changed during the read (total 150, then 151), so an issue may be missing",
+  }]);
+  assertEquals(d.complete, false);
+});
+
+Deno.test("a timeout while reading a response says so, rather than that it was not JSON", async () => {
+  const stalled = new Response("{}");
+  stalled.text = () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+  const d = await buildDigest({ numbers: [1], bodyLimit: 2000, maxIssues: 1 }, {
+    userAgent: "t",
+    fetchImpl: () => Promise.resolve(stalled),
+  });
+  assertEquals(d.failures, [{ number: 1, error: "The operation was aborted due to timeout" }]);
+});
+
 Deno.test("an empty apiKey is refused rather than reading as no key", () => {
   const schema = behavior.globalArguments;
   assertEquals(schema.safeParse({ apiKey: "" }).success, false);

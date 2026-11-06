@@ -72,6 +72,7 @@ const IssueSchema = z.object({
     "True when `body` is not the whole body, including when it is null because it was omitted or its read failed.",
   ),
 });
+/** One issue in a digest. `bodyTruncated` is true whenever `body` is not the whole body. */
 export type DigestIssue = z.infer<typeof IssueSchema>;
 
 const FailureSchema = z.object({
@@ -101,6 +102,7 @@ const DigestSchema = z.object({
     "The input that returns every incomplete body whole, to pass as JSON: --input '<this>'. Numbers in `failures` that have no row are not in it; retry those by number. Null when none is incomplete.",
   ),
 });
+/** The record an `issues` run writes: the issues, any failed reads, and the cursor. */
 export type Digest = z.infer<typeof DigestSchema>;
 
 const textEncoder = new TextEncoder();
@@ -165,7 +167,7 @@ async function selectRows(
 ): Promise<{ rows: Row[]; truncated: boolean; failures: Failure[] }> {
   const rows = new Map<number, Row>();
   const failures: Failure[] = [];
-  let firstTotal: number | undefined;
+  let previousTotal: number | undefined;
   let moved = false;
   const reportMoved = (detail: string) => {
     if (moved) return;
@@ -205,17 +207,18 @@ async function selectRows(
       });
     }
     // Offset paging. An issue leaving the list shifts the rows after it up, and an
-    // unrelated one falls between two pages, so a shrinking total is always
-    // reported. Without a cursor to catch up next time, so is a total that moved
-    // at all, and a repeated row: an unread issue updated mid-read jumps to the
-    // top, behind the reader, and the rows it passed repeat.
-    firstTotal ??= total;
+    // unrelated one falls between two pages, so a total lower than the page before
+    // is always reported, even if an earlier rise brings it back to where it began.
+    // Without a cursor to catch up next time, so is a total that moved at all, and
+    // a repeated row: an unread issue updated mid-read jumps to the top, behind the
+    // reader, and the rows it passed repeat.
     if (
-      total !== undefined && firstTotal !== undefined &&
-      (total < firstTotal || (!cursorRead && total !== firstTotal))
+      total !== undefined && previousTotal !== undefined &&
+      (total < previousTotal || (!cursorRead && total !== previousTotal))
     ) {
-      reportMoved(`total ${firstTotal}, then ${total}`);
+      reportMoved(`total ${previousTotal}, then ${total}`);
     }
+    previousTotal = total ?? previousTotal;
     for (const row of batch) {
       if (sinceMs !== undefined && Date.parse(row.updatedAt) < sinceMs) {
         return { rows: [...rows.values()], truncated: false, failures };
@@ -340,6 +343,7 @@ export async function buildDigest(
 // deno-lint-ignore no-explicit-any
 type Ctx = any;
 
+/** The `@skunk-ape/local-dev/lab` behavior type, with its one method, `issues`. */
 export const behavior = {
   type: "@skunk-ape/local-dev/lab",
   version: "2026.11.04.1",
