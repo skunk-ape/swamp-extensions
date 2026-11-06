@@ -8,6 +8,7 @@
  * Read-only. Issue text is stored as data, for a reader to weigh, not to obey.
  */
 import { z } from "npm:zod@4";
+import { mapBounded, message } from "./_lib/http.ts";
 import {
   checkKey,
   type ClientOptions,
@@ -136,24 +137,6 @@ function shape(
     bodyBytes,
     bodyTruncated: true,
   };
-}
-
-function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-async function mapBounded<T>(
-  items: T[],
-  limit: number,
-  work: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) await work(items[next++]);
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, worker),
-  );
 }
 
 /** Pages the list, newest first, until the cursor or the cap. */

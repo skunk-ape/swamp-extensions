@@ -1,17 +1,20 @@
 manifestVersion: 1
 name: "@skunk-ape/local-dev"
-version: 2026.11.04.1
+version: 2026.11.06.1
 license: MIT
 description: |
-  Tracker reads for local development, shaped so an agent can rerun them
-  cheaply: one call, one record, one fixed shape.
+  Tracker and forge reads for local development, shaped so an agent can rerun
+  them cheaply: one call, one record, one fixed shape.
 
   `lab` reads Swamp Club Lab issues by number, by status, or by what changed
   since a cursor. Bodies are trimmed visibly, with the original size and the
   exact input that returns them whole, and a failed read is reported per issue.
 
-  Read-only. Reads what the optional API key can see, and public issues without
-  one.
+  `github` and `forgejo` read a list of pull requests, across repositories, into
+  one shape: state, mergeability, and checks as counts plus only the failures.
+
+  Read-only. Reads what the token or API key can see. Lab and Forgejo read public
+  data without one; GitHub requires a token.
 repository: "https://github.com/skunk-ape/swamp-extensions"
 
 paths:
@@ -19,6 +22,8 @@ paths:
 
 behaviors:
   - lab.ts
+  - github.ts
+  - forgejo.ts
 workflows: []
 vaults: []
 drivers: []
@@ -31,5 +36,8 @@ additionalFiles:
 labels:
   - swamp-club
   - lab
+  - github
+  - forgejo
+  - pull-requests
   - local-dev
 dependencies: []

@@ -4,10 +4,9 @@
 // refused rather than followed, so it cannot be carried to another host, and it
 // never appears in an error message.
 
-export type FetchLike = (
-  input: string | URL,
-  init?: RequestInit,
-) => Promise<Response>;
+import { type FetchLike, type HttpOptions, requestJson } from "./http.ts";
+
+export type { FetchLike };
 
 export const API_URL = "https://swamp-club.com/api/v1/lab";
 export const WHOAMI_URL = "https://swamp-club.com/api/whoami";
@@ -21,18 +20,7 @@ export const STATUSES = [
 ] as const;
 export type Status = typeof STATUSES[number];
 
-const MAX_ATTEMPTS = 4;
-const BACKOFF_MS = 1000;
-const MAX_RETRY_AFTER_MS = 30_000;
-const TIMEOUT_MS = 30_000;
-
-export type ClientOptions = {
-  userAgent: string;
-  apiKey?: string;
-  signal?: AbortSignal;
-  fetchImpl?: FetchLike;
-  sleep?: (ms: number) => Promise<void>;
-};
+export type ClientOptions = Omit<HttpOptions, "token"> & { apiKey?: string };
 
 /** A list row: everything about an issue except its body. */
 export type Row = {
@@ -49,76 +37,9 @@ export type Row = {
 
 export type Detail = { row: Row; body: string };
 
-function headers(opts: ClientOptions): Record<string, string> {
-  const h: Record<string, string> = {
-    "User-Agent": opts.userAgent,
-    Accept: "application/json",
-  };
-  if (opts.apiKey) h.Authorization = `Bearer ${opts.apiKey}`;
-  return h;
-}
-
-function retryDelay(res: Response, attempt: number): number {
-  const seconds = Number(res.headers.get("retry-after"));
-  if (Number.isFinite(seconds) && seconds > 0) {
-    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
-  }
-  return BACKOFF_MS * 2 ** attempt;
-}
-
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(signal.reason);
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-async function getJson(url: string, opts: ClientOptions): Promise<unknown> {
-  const f = opts.fetchImpl ?? fetch;
-  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
-  for (let attempt = 0;; attempt++) {
-    // Per attempt, so waiting out a Retry-After doesn't spend the next one's time.
-    const timeout = AbortSignal.timeout(TIMEOUT_MS);
-    const signal = opts.signal
-      ? AbortSignal.any([opts.signal, timeout])
-      : timeout;
-    const res = await f(url, {
-      method: "GET",
-      redirect: "manual",
-      headers: headers(opts),
-      signal,
-    });
-    if (
-      res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)
-    ) {
-      await res.body?.cancel();
-      throw new Error(`refused a redirect (HTTP ${res.status})`);
-    }
-    const retryable = res.status === 429 || res.status === 503;
-    if (retryable && attempt < MAX_ATTEMPTS - 1) {
-      await res.body?.cancel();
-      await sleep(retryDelay(res, attempt));
-      continue;
-    }
-    if (!res.ok) {
-      await res.body?.cancel();
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const text = await res.text(); // a timeout here says so, rather than "not JSON"
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error("the response was not JSON");
-    }
-  }
+function getJson(url: string, opts: ClientOptions): Promise<unknown> {
+  const { apiKey, ...rest } = opts;
+  return requestJson(url, { ...rest, token: apiKey });
 }
 
 // deno-lint-ignore no-explicit-any

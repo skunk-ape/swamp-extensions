@@ -12,7 +12,7 @@ repository around them to develop and test against.
 | [`@skunk-ape/hermes`](extensions/hermes/) | Run Hermes agents on macOS or Linux, each confined to its own directory by a nono sandbox. |
 | [`@skunk-ape/is-it-us`](extensions/is-it-us/) | Check the GitHub, Cloudflare and AWS status pages, roll them into one report, and push to ntfy when an incident is new. |
 | [`@skunk-ape/lifeos-daily`](extensions/lifeos-daily/) | The day's LifeOS journal file, created before anyone opens it and filled with what you shipped yesterday and what is on your plate. |
-| [`@skunk-ape/local-dev`](extensions/local-dev/) | Tracker reads for local development in one call and one fixed shape: Lab issues by number, status or what changed, with bodies trimmed visibly. |
+| [`@skunk-ape/local-dev`](extensions/local-dev/) | Tracker and forge reads for local development in one call and one fixed shape: Lab issues by number, status or what changed, with bodies trimmed visibly, and GitHub and Forgejo pull requests with their checks. |
 | [`@skunk-ape/restic-backup`](extensions/restic-backup/) | Nightly restic backups of a whole machine, with live SQLite databases copied consistently, on a repository several machines can share. |
 | [`@skunk-ape/rocky-road`](extensions/rocky-road/) | Chunked implementation for `@swamp/software-factory`: a factory definition, a board report, and the skill that drives it. |
 | [`@skunk-ape/stef`](extensions/stef/) | Simple Technical English Flavored: a deterministic prose linter, a mechanical fixer, and a bounded LLM rewrite loop. |
