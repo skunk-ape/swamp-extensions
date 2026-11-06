@@ -143,16 +143,21 @@ writes one record in the same shape on either forge.
 
 ```bash
 swamp behavior create @skunk-ape/local-dev/forgejo forgejo
+set -o pipefail
 swamp behavior run forgejo pr_state --input 'prs=["swamp-club/swamp-extensions#666"]' --skip-reports --json \
-  | jq '.dataArtifacts[0].attributes'
+  | jq -e '.dataArtifacts[0].attributes'
 ```
 
 The run's own `--json` output holds the record, so a status check is one command.
-To read the latest record again without another request:
+`pipefail` and `jq -e` keep a failed run from looking like a good one. To read the
+latest record again without another request:
 
 ```bash
 swamp data query 'modelName == "forgejo" && name == "pr-state"' --select content --single --json
 ```
+
+That shows the last successful read, whenever it was, even if a later run failed.
+Run the method again when you need the checks as they are now.
 
 `github` needs its token set first; see [Auth](#auth-1).
 
@@ -233,8 +238,10 @@ gets seen.
 - **Forgejo:** two REST requests per PR, plus any further pages of statuses, six
   PRs at a time. Waits and retries on 429 and 503.
 
-Redirects are refused on both, so a token can't follow one to another host. A
-renamed repository therefore reports a failure until you use its new name.
+Redirects are refused on both, so a token can't follow one to another host. On
+Forgejo, a renamed repository therefore reports a failure until you use its new
+name. GitHub resolves a rename itself: `repo` keeps the name you gave, and `url`
+shows the new one.
 
 ### Auth
 

@@ -197,6 +197,11 @@ async function toPr(ref: PrRef, node: any, opts: HttpOptions): Promise<Pr> {
     throw new Error("the response is not this PR");
   }
   const commit = node.commits?.nodes?.[0]?.commit;
+  // A closed PR can really have no commits listed, and then no checks. An open
+  // one always has a head, so a missing commit there is missing data.
+  if (commit ? commit.oid !== node.headRefOid : state === "open") {
+    throw new Error("the checks are not for the head");
+  }
   const contexts = commit?.statusCheckRollup?.contexts;
   const more = await remainingChecks(ref, commit?.oid, contexts, opts);
   const checks = [...(contexts?.nodes ?? []), ...more].filter((n) =>

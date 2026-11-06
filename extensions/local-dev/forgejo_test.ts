@@ -70,7 +70,13 @@ function fakeForgejo(
       if (page > 1 && slice.length === 0) {
         return json({ state: "", statuses: null, total_count: 0 });
       }
-      return json({ state: "ignored", statuses: slice, total_count: all.length });
+      // As production answers: total_count is this page's length, and only the
+      // header has the real total.
+      return json(
+        { state: "ignored", statuses: slice, total_count: slice.length },
+        200,
+        { "x-total-count": String(all.length) },
+      );
     }
     return json({}, 500);
   };
@@ -140,7 +146,50 @@ Deno.test("a failure past the first page of statuses is not lost", async () => {
   const f = fakeForgejo({ "o/r#1": prBody(1) }, { sha1: many });
   const { prs: [pr] } = await read(["o/r#1"], f.opts);
   assertEquals(pr.checks.total, 61);
+  assertEquals(pr.checks.state, "failing");
   assertEquals(pr.checks.failures[0].name, "late");
+  assertEquals(f.calls.filter((c) => c.url.pathname.endsWith("/status")).length, 2);
+});
+
+Deno.test("a full last page takes no extra request", async () => {
+  const many = Array.from({ length: 50 }, (_, i) => status(`c${i}`, "success"));
+  const f = fakeForgejo({ "o/r#1": prBody(1) }, { sha1: many });
+  const { prs: [pr] } = await read(["o/r#1"], f.opts);
+  assertEquals(pr.checks.total, 50);
+  assertEquals(f.calls.length, 2);
+});
+
+Deno.test("with no total in the headers, it pages to the empty page", async () => {
+  const pageOf = (page: number) => {
+    const start = (page - 1) * 50;
+    return Array.from({ length: 60 }, (_, i) => status(`c${i}`, i === 55 ? "failure" : "success"))
+      .slice(start, start + 50);
+  };
+  const f = fakeForgejo({ "o/r#1": prBody(1) }, {}, {
+    respond: (url) => {
+      if (!url.pathname.endsWith("/status")) return undefined;
+      const statuses = pageOf(Number(url.searchParams.get("page")));
+      return json({ statuses: statuses.length ? statuses : null, total_count: statuses.length });
+    },
+  });
+  const { prs: [pr] } = await read(["o/r#1"], f.opts);
+  assertEquals(pr.checks.total, 60);
+  assertEquals(pr.checks.failures.map((c) => c.name), ["c55"]);
+});
+
+Deno.test("a server capping pages below the limit still gives every status", async () => {
+  const all = Array.from({ length: 25 }, (_, i) => status(`c${i}`, i === 24 ? "failure" : "success"));
+  const f = fakeForgejo({ "o/r#1": prBody(1) }, {}, {
+    respond: (url) => {
+      if (!url.pathname.endsWith("/status")) return undefined;
+      const start = (Number(url.searchParams.get("page")) - 1) * 10;
+      const statuses = all.slice(start, start + 10);
+      return json({ statuses, total_count: statuses.length }, 200, { "x-total-count": "25" });
+    },
+  });
+  const { prs: [pr] } = await read(["o/r#1"], f.opts);
+  assertEquals(pr.checks.total, 25);
+  assertEquals(pr.checks.failed, 1);
 });
 
 Deno.test("status pages that end before their total fail that PR", async () => {
@@ -148,7 +197,11 @@ Deno.test("status pages that end before their total fail that PR", async () => {
     respond: (url) => {
       if (!url.pathname.includes("/sha1/status")) return undefined;
       return url.searchParams.get("page") === "1"
-        ? json({ statuses: Array.from({ length: 50 }, (_, i) => status(`c${i}`, "success")), total_count: 80 })
+        ? json(
+          { statuses: Array.from({ length: 50 }, (_, i) => status(`c${i}`, "success")), total_count: 50 },
+          200,
+          { "x-total-count": "80" },
+        )
         : json({ statuses: null, total_count: 0 });
     },
   });

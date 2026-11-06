@@ -276,6 +276,27 @@ Deno.test("PRs are batched at 20 per request, across repositories, in input orde
   assertEquals(state.prs[0].repo, "o1/r");
 });
 
+Deno.test("checks from a commit other than the head fail that PR", async () => {
+  const f = fakeGithub({
+    "o/r#1": prNode(1, [run("a", "FAILURE")], { headRefOid: "newer" }),
+    "o/r#2": prNode(2, []),
+  });
+  const state = await read(["o/r#1", "o/r#2"], f.opts);
+  assertEquals(state.failures, [{ pr: "o/r#1", error: "the checks are not for the head" }]);
+  assertEquals(state.prs.map((p) => p.number), [2]);
+});
+
+Deno.test("no commit listed fails an open PR, and is no checks on a closed one", async () => {
+  const noCommits = { commits: { nodes: [] } };
+  const f = fakeGithub({
+    "o/r#1": prNode(1, [], noCommits),
+    "o/r#2": prNode(2, [], { ...noCommits, state: "CLOSED" }),
+  });
+  const state = await read(["o/r#1", "o/r#2"], f.opts);
+  assertEquals(state.failures, [{ pr: "o/r#1", error: "the checks are not for the head" }]);
+  assertEquals(state.prs.map((p) => [p.number, p.checks.state]), [[2, "none"]]);
+});
+
 Deno.test("merged and closed PRs say so, and mergeability is unknown on both", async () => {
   const f = fakeGithub({
     "o/r#1": prNode(1, [], { state: "MERGED", mergeable: "MERGEABLE", mergeCommit: { oid: "m1" } }),

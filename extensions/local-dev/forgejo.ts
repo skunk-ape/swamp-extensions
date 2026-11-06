@@ -15,6 +15,7 @@ import {
   mapBounded,
   message,
   requestJson,
+  requestWithHeaders,
 } from "./_lib/http.ts";
 import {
   absoluteLink,
@@ -75,28 +76,34 @@ async function readStatuses(
 ): Promise<any[]> {
   // deno-lint-ignore no-explicit-any
   const statuses: any[] = [];
+  let total: number | undefined;
   for (let page = 1; page <= MAX_STATUS_PAGES; page++) {
     const url = `${api}/repos/${ref.repo}/commits/${
       encodeURIComponent(sha)
     }/status?limit=${STATUS_PAGE_SIZE}&page=${page}`;
+    const response = await requestWithHeaders(url, opts);
     // deno-lint-ignore no-explicit-any
-    const body = await requestJson(url, opts) as any;
+    const body = response.body as any;
     const batch = Array.isArray(body?.statuses) ? body.statuses : [];
     statuses.push(...batch);
+    // The body's total_count is only this page's length. The header is the real
+    // total. Without one, page to the empty page: a short page proves nothing,
+    // because a server can cap a page below the limit asked for.
+    const header = response.headers.get("x-total-count");
+    if (header !== null && Number.isInteger(Number(header))) {
+      total = Number(header);
+    }
     if (batch.length === 0) {
-      // Trust the first page's count: an early end must not read as fewer checks.
-      if (page > 1) {
-        throw new Error("the status pages ended before their total");
-      }
-      if (body?.total_count > 0) {
+      if (page === 1 && body?.total_count > 0) {
         throw new Error("the status response is missing its statuses");
+      }
+      // An early end must not read as fewer checks.
+      if (total !== undefined && statuses.length < total) {
+        throw new Error("the status pages ended before their total");
       }
       return statuses;
     }
-    if (typeof body?.total_count !== "number") {
-      throw new Error("the status response has no total");
-    }
-    if (statuses.length >= body.total_count) return statuses;
+    if (total !== undefined && statuses.length >= total) return statuses;
   }
   throw new Error(`more than ${MAX_STATUS_PAGES} pages of statuses`);
 }

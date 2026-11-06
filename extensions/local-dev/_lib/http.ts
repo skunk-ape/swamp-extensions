@@ -65,6 +65,15 @@ export async function requestJson(
   opts: HttpOptions,
   spec: RequestSpec = {},
 ): Promise<unknown> {
+  return (await requestWithHeaders(url, opts, spec)).body;
+}
+
+/** `requestJson`, for a caller that also needs what the headers say. */
+export async function requestWithHeaders(
+  url: string,
+  opts: HttpOptions,
+  spec: RequestSpec = {},
+): Promise<{ body: unknown; headers: Headers }> {
   const f = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, opts.signal));
   const retryable = spec.retryable ??
@@ -105,7 +114,7 @@ export async function requestJson(
     }
     const text = await res.text(); // a timeout here says so, rather than "not JSON"
     try {
-      return JSON.parse(text);
+      return { body: JSON.parse(text), headers: res.headers };
     } catch {
       throw new Error("the response was not JSON");
     }

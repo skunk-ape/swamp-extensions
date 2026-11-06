@@ -98,15 +98,18 @@ const forgejo: FetchLike = (input) => {
       updated_at: "2026-11-06T12:00:00Z",
     }));
   }
-  return Promise.resolve(json({
-    total_count: 4,
-    statuses: [
-      { context: "build", status: "success", target_url: "/ci/build" },
-      { context: "test", status: "failure", target_url: "https://ci.example/test" },
-      { context: "lint", status: "pending", target_url: "" },
-      { context: "docs", status: "skipped", target_url: "" },
-    ],
-  }));
+  return Promise.resolve(new Response(
+    JSON.stringify({
+      total_count: 4,
+      statuses: [
+        { context: "build", status: "success", target_url: "/ci/build" },
+        { context: "test", status: "failure", target_url: "https://ci.example/test" },
+        { context: "lint", status: "pending", target_url: "" },
+        { context: "docs", status: "skipped", target_url: "" },
+      ],
+    }),
+    { headers: { "x-total-count": "4" } },
+  ));
 };
 
 Deno.test("both forges write the same shape and the same counts for the same PR", async () => {
