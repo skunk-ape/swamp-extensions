@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/local-dev",
+  "version": "2026.11.04.1",
+  "reviewedAt": "2026-11-06T13:34:30Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "apiKey is sensitive, optional and non-empty; sent only as a Bearer header on GET; redirects refused; absent from logs and errors. The vault path itself has not been run; the keyed run used an env expression, and C1 covers the vault path."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "Info on entry and completion with structured placeholders, warning when incomplete, no secrets."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "Low, open by scope. R4-F5: HTTP failures carry only the status. R4-F7: docs say number null means a list page failed, but it also covers a moved list and an invalid row. Input errors and a run that read nothing throw before writing."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "Low. R5-F1: mutating 'total ?? previousTotal' to 'total' survives all 47 tests. The R4-F1 test fails against first-total comparison, and each R4-F2 test kills its mutant. The hand-built context instead of createModelTestContext is disclosed."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only. An incomplete since read holds its cursor, a complete one overlaps by five minutes, and a run that read nothing leaves the last record as latest."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "Low, open by scope. R4-F3: paging ends on a short page without consulting total. R4-F4: a row with no updatedAt passes the since test. Both latent on production. Falling totals are now compared page to page; 429 and 503 retry with Retry-After."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Unused response bodies are cancelled, each attempt has its own timeout, the sleep clears its timer and listener, and body requests are bounded at six."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "Only public swamp-club.com URLs and placeholder fixtures; no IP addresses or internal hosts; .reviews is not in the published files."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Plain z.object schemas, no passthrough. Mechanical checks pass: the one writeResource writes every DigestSchema field, with truncated set from both caps and no placeholders."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "digest has infinite lifetime and keeps 10 versions; the README says records keep what the key can read for those versions."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "A read-only digest, not a CRUD lifecycle."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "issue",
+      "note": "Low, open by scope. R4-F6: numbers with since writes named issues into changes, so the jq form labels them changed. The instances do not collide: one write per run, same schema, and narrowed reads cannot replace the cursor."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "Reads no stored state; the cursor is passed as input."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "Initial version, never published."
+    }
+  ]
+}
