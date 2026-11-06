@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/local-dev",
+  "version": "2026.11.06.1",
+  "reviewedAt": "2026-11-06T20:39:59Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Tokens are sensitive, come from a vault and are read-only in use. They are sent only to the forge, redirects are refused, and error messages carry no token. This commit does not change that."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "runPrState logs entry and completion with structured placeholders, and warns when a read is incomplete. No sensitive values are logged."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "github.ts line 202 fails a missing commit only on an open PR, so a merged PR with none reads as checks none with complete true. Use state !== \"closed\". Otherwise failures are listed per PR, and a run that read nothing throws before writing."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "issue",
+      "note": "99 tests pass and the new paging and head tests are sound. Three cases are not covered, each reproduced with a throwaway fake: a status moving between Forgejo pages, a blank X-Total-Count, and a merged PR with no commit. The mismatched-head path has only fake coverage, as the change summary says."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only. A rerun overwrites the same instance, and a run that read nothing leaves the last good record in place."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "The X-Total-Count fix matches production: re-checked on swamp-extensions#666, with the real reader at page size 1 giving pages 1 and 2, total 2, 1 failed, complete true. Three gaps remain in forgejo.ts readStatuses. A status updated between pages is lost and another counted twice, reading as passing with complete true; throw on a repeated context. A blank header parses as total 0 and truncates; require /^\\d+$/. A 200 body with no statuses reads as no checks; require an array, or null with total_count 0."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Response bodies are cancelled on redirect, retry and error paths. Each attempt has its own timeout, and the abort signal is honored."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "The README names only public repositories and the public Forgejo host. Test fixtures use forge.example and ci.example. No IP addresses or internal hosts."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Plain z.object schemas with no passthrough. Mechanical check 1, schema-write conformance, passes: both readers populate every Pr field, and state carries prs, failures and complete."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "The state resource has lifetime infinite and garbageCollection 10."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only behaviors with one read method, not a CRUD lifecycle."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "Mechanical check 3 passes: one method writes one instance, pr-state, in one shape. Mechanical check 4 passes: every schema field is written, and none is a placeholder."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "pr_state reads no stored state back."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "github and forgejo are new types, and lab's behavior version stays 2026.11.04.1 with no schema change. The dry run's upgrade warnings call for --skip-upgrade-check if these types have never been published. That publication history was not checked."
+    }
+  ]
+}
