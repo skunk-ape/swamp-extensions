@@ -1,0 +1,82 @@
+{
+  "extension": "@skunk-ape/local-dev",
+  "version": "2026.11.06.1",
+  "reviewedAt": "2026-11-07T17:16:10Z",
+  "dimensions": [
+    {
+      "id": "credentials-secrets",
+      "verdict": "pass",
+      "note": "Token is .meta sensitive on both types, optional on Forgejo and required on GitHub. It goes only in the Authorization header, baseUrl must be https, redirects are refused, and it appears in no error, log or record. This commit does not touch the path."
+    },
+    {
+      "id": "logging-quality",
+      "verdict": "pass",
+      "note": "runPrState logs entry and completion at info and an incomplete read at warning, with structured placeholders and no secrets. Unchanged here."
+    },
+    {
+      "id": "error-handling",
+      "verdict": "pass",
+      "note": "The new errors are thrown per PR, caught in readPr's caller and listed in failures, and another PR still reads. A run that read nothing throws before writeResource. Confirmed by running 'moved during the read', malformed body on page 1 and on page 2, and a repeat within one page. The merged GitHub PR with no commit now fails."
+    },
+    {
+      "id": "testing-completeness",
+      "verdict": "pass",
+      "note": "103 tests pass with 0 failed, the Lab's 47 among them; lint is clean and swamp extension fmt --check passes. New tests fail the old code by construction (blank header, shift, malformed bodies, merged). Small gaps: no test of a repeat within a single page, though I confirmed by running it that it fails the PR, and none of the non-string context path (see forgejo-missing-context-skips-repeat-check)."
+    },
+    {
+      "id": "idempotency-resilience",
+      "verdict": "pass",
+      "note": "Read-only. A run writes one versioned record or nothing. A partial failure is recorded with complete false, and a moved list is cured by rerunning."
+    },
+    {
+      "id": "api-contracts",
+      "verdict": "issue",
+      "note": "Two low findings: x-total-count: 0 with a non-empty page stops after page 1 (forgejo-zero-total-header-truncates), and a status with no string context skips the repeat check (forgejo-missing-context-skips-repeat-check). Neither is seen in production. Paging otherwise holds. I read swamp-club/swamp-extensions #1 with the real reader on production: 85 total, 84 passed, 1 failed (CI / Claude Code Review), no false repeat, matching the summary. #666 answers not found and #662 reads merged, passing 2, also as the summary says. Rate limits: 429 and 503 retry with backoff and Retry-After. The summary reports 429s past the retries at 100 PRs, below the 200 input cap; they are listed in failures and disclosed in the README, so this is a limit and not a defect."
+    },
+    {
+      "id": "resource-management",
+      "verdict": "pass",
+      "note": "Bodies are cancelled before retry and on error, each attempt has its own timeout, and concurrency is bounded at six. No files or cloud resources."
+    },
+    {
+      "id": "published-surface-hygiene",
+      "verdict": "pass",
+      "note": "README and fixtures name only public repositories, the extension's public default forge and example hosts. No IPs, internal hosts or account identifiers. The README example's change to #662 reads correctly on production."
+    },
+    {
+      "id": "schema-strictness",
+      "verdict": "pass",
+      "note": "Plain z.object with no passthrough. Mechanical checks pass. Schema-write conformance: prs, failures and complete, and every Pr field, are written by both readers with no placeholders. Truncation honesty: 'complete' is the equivalent field, and the page caps throw, so a capped PR lands in failures. Field coverage is 1:1."
+    },
+    {
+      "id": "lifetime-gc",
+      "verdict": "pass",
+      "note": "prStateResources has lifetime infinite and garbageCollection 10."
+    },
+    {
+      "id": "crud-completeness",
+      "verdict": "na",
+      "note": "Read-only types with one read method and no resource lifecycle."
+    },
+    {
+      "id": "preflight-checks",
+      "verdict": "na",
+      "note": "No mutating methods."
+    },
+    {
+      "id": "instance-names",
+      "verdict": "pass",
+      "note": "One spec, one method and one instance, pr-state, per behavior. Mechanical instance-name consistency passes: no other method writes the spec, so nothing can collide."
+    },
+    {
+      "id": "data-access",
+      "verdict": "na",
+      "note": "pr_state reads no stored state."
+    },
+    {
+      "id": "version-upgrades",
+      "verdict": "na",
+      "note": "github and forgejo are new types at their initial version, unpublished (registry check: 2026.11.06.1 not published), and this commit bumps no behavior version. The dry run's version-bump-upgrade warnings are the known --skip-upgrade-check acknowledgement for those types. lab's version is not changed by this commit."
+    }
+  ]
+}
