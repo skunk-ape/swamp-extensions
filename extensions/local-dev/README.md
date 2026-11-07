@@ -144,7 +144,7 @@ writes one record in the same shape on either forge.
 ```bash
 swamp behavior create @skunk-ape/local-dev/forgejo forgejo
 set -o pipefail
-swamp behavior run forgejo pr_state --input 'prs=["swamp-club/swamp-extensions#666"]' --skip-reports --json \
+swamp behavior run forgejo pr_state --input 'prs=["swamp-club/swamp-extensions#662"]' --skip-reports --json \
   | jq -e '.dataArtifacts[0].attributes'
 ```
 
@@ -236,7 +236,10 @@ gets seen.
   on a PR that has more than 100. Waits and retries on 429, 502, 503, and 403 with
   a `Retry-After`.
 - **Forgejo:** two REST requests per PR, plus any further pages of statuses, six
-  PRs at a time. Waits and retries on 429 and 503.
+  PRs at a time. Waits and retries on 429 and 503. If a status changes while a PR
+  with more than 50 of them is being read, that PR is listed in `failures`, because
+  the pages no longer line up. Run it again. A large list can outlast the retries:
+  in one 100-PR read, some PRs were listed with `HTTP 429`. Read those again later.
 
 Redirects are refused on both, so a token can't follow one to another host. On
 Forgejo, a renamed repository therefore reports a failure until you use its new

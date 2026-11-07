@@ -210,6 +210,74 @@ Deno.test("status pages that end before their total fail that PR", async () => {
   assertEquals(state.prs.map((p) => p.number), [2]);
 });
 
+Deno.test("a status that changes between pages fails that PR rather than losing another", async () => {
+  const before = Array.from({ length: 60 }, (_, i) => status(`c${i}`, "success"));
+  // c55 turns to failure after page 1, and moves to the top of the list. That
+  // pushes c49 onto page 2, so a count alone would still match the total.
+  const after = [status("c55", "failure"), ...before.filter((s) => s.context !== "c55")];
+  const f = fakeForgejo({ "o/r#1": prBody(1), "o/r#2": prBody(2) }, {}, {
+    respond: (url) => {
+      if (!url.pathname.includes("/sha1/status")) return undefined;
+      const page = Number(url.searchParams.get("page"));
+      const statuses = (page === 1 ? before : after).slice((page - 1) * 50, page * 50);
+      return json({ statuses, total_count: statuses.length }, 200, { "x-total-count": "60" });
+    },
+  });
+  const state = await read(["o/r#1", "o/r#2"], f.opts);
+  assertEquals(state.failures, [{ pr: "o/r#1", error: "the status list moved during the read" }]);
+  assertEquals(state.prs.map((p) => p.number), [2]);
+  assertEquals(state.complete, false);
+});
+
+Deno.test("a blank total in the headers is no total, so every page is still read", async () => {
+  const all = Array.from({ length: 60 }, (_, i) => status(`c${i}`, i === 55 ? "failure" : "success"));
+  const f = fakeForgejo({ "o/r#1": prBody(1) }, {}, {
+    respond: (url) => {
+      if (!url.pathname.endsWith("/status")) return undefined;
+      const page = Number(url.searchParams.get("page"));
+      const statuses = all.slice((page - 1) * 50, page * 50);
+      return json(
+        { statuses: statuses.length ? statuses : null, total_count: statuses.length },
+        200,
+        { "x-total-count": "" },
+      );
+    },
+  });
+  const { prs: [pr], complete } = await read(["o/r#1"], f.opts);
+  assertEquals(pr.checks.total, 60);
+  assertEquals(pr.checks.failures.map((c) => c.name), ["c55"]);
+  assert(complete);
+});
+
+Deno.test("a status response that isn't a list fails that PR rather than reading as no checks", async () => {
+  for (
+    const body of [
+      {},
+      { statuses: "none" },
+      { statuses: null },
+      { statuses: null, total_count: 3 },
+      { statuses: [], total_count: 3 },
+    ]
+  ) {
+    const f = fakeForgejo({ "o/r#1": prBody(1) }, {}, {
+      respond: (url) => url.pathname.endsWith("/status") ? json(body) : undefined,
+    });
+    const state = await read(["o/r#1"], f.opts);
+    assertEquals(state.failures, [{ pr: "o/r#1", error: "the status response is missing its statuses" }]);
+  }
+});
+
+Deno.test("null statuses with a count of zero is the real empty answer", async () => {
+  // As production answers for a commit with no statuses, with no total header.
+  const f = fakeForgejo({ "o/r#1": prBody(1) }, {}, {
+    respond: (url) =>
+      url.pathname.endsWith("/status") ? json({ state: "", statuses: null, total_count: 0 }) : undefined,
+  });
+  const { prs: [pr], complete } = await read(["o/r#1"], f.opts);
+  assertEquals(pr.checks.state, "none");
+  assert(complete);
+});
+
 Deno.test("a missing PR is listed beside the ones that were found", async () => {
   const f = fakeForgejo({ "o/r#1": prBody(1) });
   const state = await read(["o/r#404", "o/r#1"], f.opts);

@@ -76,6 +76,7 @@ async function readStatuses(
 ): Promise<any[]> {
   // deno-lint-ignore no-explicit-any
   const statuses: any[] = [];
+  const seen = new Set<string>();
   let total: number | undefined;
   for (let page = 1; page <= MAX_STATUS_PAGES; page++) {
     const url = `${api}/repos/${ref.repo}/commits/${
@@ -84,13 +85,32 @@ async function readStatuses(
     const response = await requestWithHeaders(url, opts);
     // deno-lint-ignore no-explicit-any
     const body = response.body as any;
-    const batch = Array.isArray(body?.statuses) ? body.statuses : [];
+    // Only a list, or the empty answer, says what the checks are. Anything else
+    // must not read as no checks.
+    const batch = Array.isArray(body?.statuses)
+      ? body.statuses
+      : body?.statuses === null && body?.total_count === 0
+      ? []
+      : undefined;
+    if (batch === undefined) {
+      throw new Error("the status response is missing its statuses");
+    }
+    // The list holds each context once, newest first. A repeat means a status
+    // changed between pages and pushed the list along, so another may have been
+    // missed even though the count still matches the total.
+    for (const status of batch) {
+      if (typeof status?.context !== "string") continue;
+      if (seen.has(status.context)) {
+        throw new Error("the status list moved during the read");
+      }
+      seen.add(status.context);
+    }
     statuses.push(...batch);
     // The body's total_count is only this page's length. The header is the real
     // total. Without one, page to the empty page: a short page proves nothing,
     // because a server can cap a page below the limit asked for.
     const header = response.headers.get("x-total-count");
-    if (header !== null && Number.isInteger(Number(header))) {
+    if (header !== null && /^\d+$/.test(header)) {
       total = Number(header);
     }
     if (batch.length === 0) {
